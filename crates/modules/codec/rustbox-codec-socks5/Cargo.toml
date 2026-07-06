@@ -1,0 +1,11 @@
+[package]
+name = "rustbox-codec-socks5"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+
+[lints]
+workspace = true

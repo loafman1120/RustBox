@@ -1,0 +1,11 @@
+[package]
+name = "rustbox-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-types = { path = "../rustbox-types" }
+
+[lints]
+workspace = true

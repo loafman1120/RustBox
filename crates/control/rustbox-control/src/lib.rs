@@ -1,0 +1,149 @@
+//! Control-plane command and snapshot model.
+
+use rustbox_config::CompiledConfig;
+use rustbox_route::RouteTable;
+use rustbox_types::OutboundId;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EngineCommand {
+    Reload(CompiledConfig),
+    Stop,
+    ReplaceRouteTable(RouteTable),
+    EnableOutbound(OutboundId),
+    DisableOutbound(OutboundId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineSnapshot {
+    pub state: EngineState,
+    pub generation: u64,
+    pub inbound_count: usize,
+    pub outbound_count: usize,
+}
+
+impl EngineSnapshot {
+    pub fn created() -> Self {
+        Self {
+            state: EngineState::Created,
+            generation: 0,
+            inbound_count: 0,
+            outbound_count: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineState {
+    Created,
+    Prepared,
+    Running,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReloadPhase {
+    Prepare,
+    Commit,
+    Drain,
+    Rollback,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReloadPlan {
+    pub generation: u64,
+    pub config: CompiledConfig,
+    pub phase: ReloadPhase,
+}
+
+impl ReloadPlan {
+    pub fn prepare(next_generation: u64, config: CompiledConfig) -> Self {
+        Self {
+            generation: next_generation,
+            config,
+            phase: ReloadPhase::Prepare,
+        }
+    }
+
+    pub fn commit(mut self) -> Self {
+        self.phase = ReloadPhase::Commit;
+        self
+    }
+
+    pub fn drain(mut self) -> Self {
+        self.phase = ReloadPhase::Drain;
+        self
+    }
+
+    pub fn rollback(mut self) -> Self {
+        self.phase = ReloadPhase::Rollback;
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlState {
+    snapshot: EngineSnapshot,
+    pending_reload: Option<ReloadPlan>,
+}
+
+impl ControlState {
+    pub fn new(snapshot: EngineSnapshot) -> Self {
+        Self {
+            snapshot,
+            pending_reload: None,
+        }
+    }
+
+    pub fn snapshot(&self) -> &EngineSnapshot {
+        &self.snapshot
+    }
+
+    pub fn pending_reload(&self) -> Option<&ReloadPlan> {
+        self.pending_reload.as_ref()
+    }
+
+    pub fn apply_command(&mut self, command: EngineCommand) {
+        match command {
+            EngineCommand::Reload(config) => {
+                self.pending_reload =
+                    Some(ReloadPlan::prepare(self.snapshot.generation + 1, config));
+            }
+            EngineCommand::Stop => {
+                self.snapshot.state = EngineState::Stopping;
+            }
+            EngineCommand::ReplaceRouteTable(_)
+            | EngineCommand::EnableOutbound(_)
+            | EngineCommand::DisableOutbound(_) => {
+                self.snapshot.generation = self.snapshot.generation.saturating_add(1);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustbox_config::{ConfigCompiler, SourceConfig};
+    use rustbox_types::Endpoint;
+
+    #[test]
+    fn reload_command_creates_prepare_plan_without_mutating_live_generation() {
+        let source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
+        let compiled = ConfigCompiler::compile(
+            ConfigCompiler::validate(ConfigCompiler::parse(source).expect("parse"))
+                .expect("validate"),
+        )
+        .expect("compile");
+        let mut state = ControlState::new(EngineSnapshot::created());
+
+        state.apply_command(EngineCommand::Reload(compiled));
+
+        assert_eq!(state.snapshot().generation, 0);
+        assert_eq!(
+            state.pending_reload().expect("pending reload").phase,
+            ReloadPhase::Prepare
+        );
+    }
+}

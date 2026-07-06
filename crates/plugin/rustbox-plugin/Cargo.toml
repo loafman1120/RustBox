@@ -1,0 +1,11 @@
+[package]
+name = "rustbox-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-registry = { path = "../../kernel/rustbox-registry" }
+
+[lints]
+workspace = true

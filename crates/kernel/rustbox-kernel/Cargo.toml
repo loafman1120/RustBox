@@ -1,0 +1,17 @@
+[package]
+name = "rustbox-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-host-api = { path = "../../host/rustbox-host-api" }
+rustbox-io = { path = "../../foundation/rustbox-io" }
+rustbox-route = { path = "../rustbox-route" }
+rustbox-types = { path = "../../foundation/rustbox-types" }
+
+[dev-dependencies]
+rustbox-test-host = { path = "../../host/rustbox-test-host" }
+
+[lints]
+workspace = true

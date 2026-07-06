@@ -1,0 +1,12 @@
+[package]
+name = "rustbox-platform-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-host-api = { path = "../../host/rustbox-host-api" }
+rustbox-io = { path = "../../foundation/rustbox-io" }
+
+[lints]
+workspace = true

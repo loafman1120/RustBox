@@ -1,0 +1,13 @@
+[package]
+name = "rustbox-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-host-api = { path = "../../../host/rustbox-host-api" }
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+
+[lints]
+workspace = true

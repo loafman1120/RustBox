@@ -1,0 +1,13 @@
+[package]
+name = "rustbox-inspect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-host-api = { path = "../../../host/rustbox-host-api" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+
+[lints]
+workspace = true

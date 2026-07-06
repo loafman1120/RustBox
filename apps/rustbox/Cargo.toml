@@ -1,0 +1,14 @@
+[package]
+name = "rustbox-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-compose = { path = "../../crates/compose/rustbox-compose" }
+rustbox-kernel = { path = "../../crates/kernel/rustbox-kernel" }
+rustbox-types = { path = "../../crates/foundation/rustbox-types" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+
+[lints]
+workspace = true

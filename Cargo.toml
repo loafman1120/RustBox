@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/rustbox",
+    "crates/compose/rustbox-compose",
+    "crates/control/rustbox-config",
+    "crates/control/rustbox-control",
+    "crates/ffi/rustbox-ffi",
+    "crates/foundation/rustbox-types",
+    "crates/foundation/rustbox-io",
+    "crates/host/rustbox-host-api",
+    "crates/host/rustbox-test-host",
+    "crates/kernel/rustbox-kernel",
+    "crates/kernel/rustbox-registry",
+    "crates/kernel/rustbox-route",
+    "crates/modules/codec/rustbox-codec-socks5",
+    "crates/modules/dns/rustbox-dns-core",
+    "crates/modules/inspect/rustbox-inspect",
+    "crates/modules/inbound/rustbox-inbound-http",
+    "crates/modules/outbound/rustbox-outbound-direct",
+    "crates/modules/stack/rustbox-stack",
+    "crates/modules/transport/rustbox-transport",
+    "crates/platform/rustbox-platform-windows",
+    "crates/plugin/rustbox-plugin",
+    "crates/reload/rustbox-reload",
+    "crates/runtime/rustbox-runtime-tokio",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,13 @@
+[package]
+name = "rustbox-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-config = { path = "../rustbox-config" }
+rustbox-route = { path = "../../kernel/rustbox-route" }
+rustbox-types = { path = "../../foundation/rustbox-types" }
+
+[lints]
+workspace = true

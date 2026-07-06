@@ -1,0 +1,17 @@
+[package]
+name = "rustbox-compose"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-config = { path = "../../control/rustbox-config" }
+rustbox-inbound-http = { path = "../../modules/inbound/rustbox-inbound-http" }
+rustbox-kernel = { path = "../../kernel/rustbox-kernel" }
+rustbox-outbound-direct = { path = "../../modules/outbound/rustbox-outbound-direct" }
+rustbox-route = { path = "../../kernel/rustbox-route" }
+rustbox-runtime-tokio = { path = "../../runtime/rustbox-runtime-tokio" }
+rustbox-types = { path = "../../foundation/rustbox-types" }
+
+[lints]
+workspace = true

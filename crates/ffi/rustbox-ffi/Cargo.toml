@@ -1,0 +1,14 @@
+[package]
+name = "rustbox-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-compose = { path = "../../compose/rustbox-compose" }
+rustbox-config = { path = "../../control/rustbox-config" }
+rustbox-control = { path = "../../control/rustbox-control" }
+rustbox-types = { path = "../../foundation/rustbox-types" }
+
+[lints]
+workspace = true
