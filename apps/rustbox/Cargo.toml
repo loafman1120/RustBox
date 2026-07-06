@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 rustbox-compose = { path = "../../crates/compose/rustbox-compose" }
 rustbox-kernel = { path = "../../crates/kernel/rustbox-kernel" }
+rustbox-observability = { path = "../../crates/observability/rustbox-observability" }
 rustbox-types = { path = "../../crates/foundation/rustbox-types" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 

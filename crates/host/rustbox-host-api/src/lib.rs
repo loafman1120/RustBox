@@ -67,6 +67,15 @@ pub trait ObservabilitySink: Send + Sync {
     fn emit(&self, event: Event) -> BoxFuture<'_, ()>;
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct NoopObservabilitySink;
+
+impl ObservabilitySink for NoopObservabilitySink {
+    fn emit(&self, _event: Event) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TcpConnect {
     pub target: Endpoint,
@@ -128,6 +137,22 @@ pub struct Event {
     pub kind: EventKind,
 }
 
+impl Event {
+    pub fn new(
+        level: EventLevel,
+        target: impl Into<EventTarget>,
+        flow_id: Option<rustbox_types::FlowId>,
+        kind: EventKind,
+    ) -> Self {
+        Self {
+            level,
+            target: target.into(),
+            flow_id,
+            kind,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EventLevel {
     Trace,
@@ -140,12 +165,63 @@ pub enum EventLevel {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventTarget(pub String);
 
+impl From<&str> for EventTarget {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<String> for EventTarget {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventKind {
-    ServiceStarted,
-    ServiceStopped,
-    FlowAccepted,
-    FlowCompleted,
+    ServiceStarting {
+        service: String,
+    },
+    ServiceStarted {
+        service: String,
+    },
+    ServiceStopping {
+        service: String,
+    },
+    ServiceStopped {
+        service: String,
+    },
+    ConnectionAccepted {
+        listener: String,
+        peer: String,
+    },
+    FlowAccepted {
+        source: String,
+        destination: String,
+        network: String,
+    },
+    RouteSelected {
+        decision: String,
+    },
+    OutboundConnecting {
+        outbound: String,
+        target: String,
+    },
+    OutboundConnected {
+        outbound: String,
+        target: String,
+    },
+    OutboundFailed {
+        outbound: String,
+        target: String,
+        error: String,
+    },
+    FlowCompleted {
+        outcome: String,
+    },
+    FlowFailed {
+        error: String,
+    },
     Diagnostic(String),
 }
 

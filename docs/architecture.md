@@ -1230,6 +1230,56 @@ Internal modules remain Rust modules until they require one of the following:
 - strict platform isolation
 - explicit API boundary
 
+### 14.1 Current Repository Snapshot
+
+The current repository already follows this workspace shape with one practical
+minimum data plane:
+
+```text
+HTTP CONNECT inbound
+    -> kernel flow submission
+    -> route table
+    -> direct outbound
+    -> Tokio host network capability
+```
+
+Implemented crate groups:
+
+| Layer | Current crates |
+|---|---|
+| L5 Application and control | `rustbox-app`, `rustbox-config`, `rustbox-control`, `rustbox-ffi` |
+| L4 Composition | `rustbox-compose` |
+| L3 Modules | `rustbox-inbound-http`, `rustbox-outbound-direct`, `rustbox-codec-socks5`, `rustbox-dns-core`, `rustbox-inspect`, `rustbox-stack`, `rustbox-transport` |
+| L2 Kernel | `rustbox-kernel`, `rustbox-route`, `rustbox-registry` |
+| L1 Capabilities | `rustbox-host-api`, `rustbox-test-host` |
+| L0 Foundation | `rustbox-types`, `rustbox-io` |
+| Observability adapters | `rustbox-observability` |
+| Host/runtime adapters | `rustbox-runtime-tokio`, `rustbox-platform-windows` |
+
+The runnable application is currently:
+
+```text
+cargo run -p rustbox-app -- http-proxy
+```
+
+It starts an HTTP CONNECT proxy on `127.0.0.1:18080` using the default
+composition graph. This is the current executable proof of the architecture.
+
+The following pieces are intentionally still boundaries or models rather than
+complete runtime implementations:
+
+- SOCKS5 inbound and outbound runtime modules.
+- Direct UDP forwarding.
+- DNS transports beyond the portable resolver contracts.
+- Concrete TUN inbound and packet-to-flow stack.
+- Windows packet device, route control, transparent proxy, and process lookup.
+- External C ABI functions around the FFI handle table.
+- File-based configuration loading from the CLI.
+- File, platform-native, and remote telemetry logging sinks.
+
+The detailed implementation map is maintained in
+`docs/current-architecture.md`.
+
 ---
 
 ## 15. Portability Contract
@@ -1498,7 +1548,11 @@ Mobile bindings are built on top of this boundary.
 
 ## 21. Observability
 
-The core emits structured events.
+The core emits structured events through an `ObservabilitySink` capability.
+
+Observability is an architectural layer, not a side effect scattered through
+modules. Portable crates may construct events, attach flow identifiers, and
+choose event levels. They must not choose the final log backend.
 
 It does not decide whether output goes to:
 
@@ -1512,6 +1566,10 @@ It does not decide whether output goes to:
 Conceptually:
 
 ```rust
+pub trait ObservabilitySink {
+    fn emit(&self, event: Event) -> BoxFuture<'_, ()>;
+}
+
 pub struct Event {
     pub level: Level,
     pub target: EventTarget,
@@ -1519,6 +1577,37 @@ pub struct Event {
     pub kind: EventKind,
 }
 ```
+
+Recommended event boundaries:
+
+```text
+service lifecycle
+connection accepted
+flow accepted
+metadata enrichment
+route selected
+outbound connecting / connected / failed
+flow completed / failed
+reload prepared / committed / rolled back
+platform capability applied / released
+```
+
+Concrete sinks are adapters:
+
+```text
+Noop sink
+Console sink
+Recording sink
+tracing sink
+file sink
+platform-native sink
+remote telemetry sink
+```
+
+The application or embedding host chooses the sink in the composition root and
+passes it into the graph. This keeps `rustbox-kernel`, protocol modules, and
+portable codecs independent from a specific logging crate or operating-system
+logging facility.
 
 Metrics and diagnostic events should be separated.
 

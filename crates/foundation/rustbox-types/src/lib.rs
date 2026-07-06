@@ -18,10 +18,53 @@ impl Host {
     }
 }
 
+impl fmt::Display for Host {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Domain(domain) => f.write_str(domain),
+            Self::Ip(ip) => write!(f, "{ip}"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum IpAddress {
     V4([u8; 4]),
     V6([u8; 16]),
+}
+
+impl fmt::Display for IpAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::V4(octets) => {
+                write!(f, "{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+            }
+            Self::V6(octets) => {
+                let segments = [
+                    u16::from_be_bytes([octets[0], octets[1]]),
+                    u16::from_be_bytes([octets[2], octets[3]]),
+                    u16::from_be_bytes([octets[4], octets[5]]),
+                    u16::from_be_bytes([octets[6], octets[7]]),
+                    u16::from_be_bytes([octets[8], octets[9]]),
+                    u16::from_be_bytes([octets[10], octets[11]]),
+                    u16::from_be_bytes([octets[12], octets[13]]),
+                    u16::from_be_bytes([octets[14], octets[15]]),
+                ];
+                write!(
+                    f,
+                    "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+                    segments[0],
+                    segments[1],
+                    segments[2],
+                    segments[3],
+                    segments[4],
+                    segments[5],
+                    segments[6],
+                    segments[7]
+                )
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -39,6 +82,15 @@ impl Endpoint {
         Self {
             host: Host::Ip(IpAddress::V4([127, 0, 0, 1])),
             port,
+        }
+    }
+}
+
+impl fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.host {
+            Host::Ip(IpAddress::V6(_)) => write!(f, "[{}]:{}", self.host, self.port),
+            _ => write!(f, "{}:{}", self.host, self.port),
         }
     }
 }

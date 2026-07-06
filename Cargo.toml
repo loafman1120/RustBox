@@ -20,6 +20,7 @@ members = [
     "crates/modules/outbound/rustbox-outbound-direct",
     "crates/modules/stack/rustbox-stack",
     "crates/modules/transport/rustbox-transport",
+    "crates/observability/rustbox-observability",
     "crates/platform/rustbox-platform-windows",
     "crates/plugin/rustbox-plugin",
     "crates/reload/rustbox-reload",

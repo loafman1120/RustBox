@@ -2,10 +2,12 @@
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use rustbox_host_api::BoxFuture;
+use rustbox_host_api::{
+    BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
+};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind, stream_close};
 use rustbox_route::Router;
-use rustbox_types::{Endpoint, FlowMeta, Network, OutboundId, RejectReason, RouteDecision};
+use rustbox_types::{Endpoint, FlowId, FlowMeta, Network, OutboundId, RejectReason, RouteDecision};
 use std::collections::HashMap;
 use std::future::poll_fn;
 use std::sync::Arc;
@@ -96,6 +98,7 @@ pub struct Engine {
     router: Box<dyn Router>,
     enrichment: EnrichmentPipeline,
     outbounds: HashMap<OutboundId, Box<dyn Outbound>>,
+    observability: Arc<dyn ObservabilitySink>,
 }
 
 impl Engine {
@@ -104,6 +107,7 @@ impl Engine {
             router,
             enrichment: EnrichmentPipeline::new(),
             outbounds: HashMap::new(),
+            observability: Arc::new(NoopObservabilitySink),
         }
     }
 
@@ -116,12 +120,64 @@ impl Engine {
     }
 
     async fn execute_flow(&self, flow: Flow) -> Result<FlowOutcome, FlowError> {
+        let flow_id = flow.meta.id;
+        let result = self.execute_flow_inner(flow).await;
+        match &result {
+            Ok(outcome) => {
+                self.emit(
+                    EventLevel::Info,
+                    "rustbox.kernel.flow",
+                    Some(flow_id),
+                    EventKind::FlowCompleted {
+                        outcome: format!("{outcome:?}"),
+                    },
+                )
+                .await;
+            }
+            Err(err) => {
+                self.emit(
+                    EventLevel::Error,
+                    "rustbox.kernel.flow",
+                    Some(flow_id),
+                    EventKind::FlowFailed {
+                        error: format!("{err:?}"),
+                    },
+                )
+                .await;
+            }
+        }
+        result
+    }
+
+    async fn execute_flow_inner(&self, flow: Flow) -> Result<FlowOutcome, FlowError> {
+        self.emit(
+            EventLevel::Info,
+            "rustbox.kernel.flow",
+            Some(flow.meta.id),
+            EventKind::FlowAccepted {
+                source: flow.meta.source.to_string(),
+                destination: flow.meta.destination.to_string(),
+                network: format!("{:?}", flow.meta.network),
+            },
+        )
+        .await;
+
         let meta = self
             .enrichment
             .enrich(flow.meta)
             .await
             .map_err(FlowError::Inspect)?;
         let decision = self.router.route(&meta);
+        self.emit(
+            EventLevel::Debug,
+            "rustbox.kernel.route",
+            Some(meta.id),
+            EventKind::RouteSelected {
+                decision: format!("{decision:?}"),
+            },
+        )
+        .await;
+
         match decision {
             RouteDecision::Forward(outbound_id) => {
                 let outbound = self
@@ -163,6 +219,18 @@ impl Engine {
             RouteDecision::Hijack(service) => Ok(FlowOutcome::Hijacked(service)),
         }
     }
+
+    async fn emit(
+        &self,
+        level: EventLevel,
+        target: &'static str,
+        flow_id: Option<FlowId>,
+        kind: EventKind,
+    ) {
+        self.observability
+            .emit(Event::new(level, target, flow_id, kind))
+            .await;
+    }
 }
 
 impl FlowSink for Engine {
@@ -175,9 +243,15 @@ pub struct EngineBuilder {
     router: Box<dyn Router>,
     enrichment: EnrichmentPipeline,
     outbounds: HashMap<OutboundId, Box<dyn Outbound>>,
+    observability: Arc<dyn ObservabilitySink>,
 }
 
 impl EngineBuilder {
+    pub fn observability(mut self, observability: Arc<dyn ObservabilitySink>) -> Self {
+        self.observability = observability;
+        self
+    }
+
     pub fn register_enricher(mut self, enricher: Arc<dyn MetadataEnricher>) -> Self {
         self.enrichment.push(enricher);
         self
@@ -197,6 +271,7 @@ impl EngineBuilder {
             router: self.router,
             enrichment: self.enrichment,
             outbounds: self.outbounds,
+            observability: self.observability,
         })
     }
 }

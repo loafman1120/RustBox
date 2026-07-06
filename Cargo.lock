@@ -82,6 +82,7 @@ version = "0.1.0"
 dependencies = [
  "rustbox-compose",
  "rustbox-kernel",
+ "rustbox-observability",
  "rustbox-types",
  "tokio",
 ]
@@ -98,6 +99,7 @@ name = "rustbox-compose"
 version = "0.1.0"
 dependencies = [
  "rustbox-config",
+ "rustbox-host-api",
  "rustbox-inbound-http",
  "rustbox-kernel",
  "rustbox-outbound-direct",
@@ -138,6 +140,7 @@ dependencies = [
  "rustbox-config",
  "rustbox-control",
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]
@@ -186,6 +189,14 @@ dependencies = [
  "rustbox-io",
  "rustbox-route",
  "rustbox-test-host",
+ "rustbox-types",
+]
+
+[[package]]
+name = "rustbox-observability"
+version = "0.1.0"
+dependencies = [
+ "rustbox-host-api",
  "rustbox-types",
 ]
 

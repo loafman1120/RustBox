@@ -3,7 +3,8 @@
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rustbox_host_api::{
-    BoxFuture, NetworkProvider, StreamListener, TaskName, TaskSpawner, TcpBind,
+    BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
+    ObservabilitySink, StreamListener, TaskName, TaskSpawner, TcpBind,
 };
 use rustbox_io::{ByteStream, stream_close, stream_read, stream_write_all};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
@@ -21,6 +22,7 @@ pub struct HttpProxyInbound {
     network: Arc<dyn NetworkProvider>,
     spawner: Arc<dyn TaskSpawner>,
     sink: Arc<dyn FlowSink>,
+    observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
     local_endpoint: Arc<Mutex<Option<Endpoint>>>,
     started: AtomicBool,
@@ -40,10 +42,16 @@ impl HttpProxyInbound {
             network,
             spawner,
             sink,
+            observability: Arc::new(NoopObservabilitySink),
             next_flow_id: Arc::new(AtomicU64::new(1)),
             local_endpoint: Arc::new(Mutex::new(None)),
             started: AtomicBool::new(false),
         }
+    }
+
+    pub fn with_observability(mut self, observability: Arc<dyn ObservabilitySink>) -> Self {
+        self.observability = observability;
+        self
     }
 
     pub fn local_endpoint(&self) -> Option<Endpoint> {
@@ -67,6 +75,17 @@ impl Service for HttpProxyInbound {
                 return Err(ServiceError::new("http inbound already started"));
             }
 
+            self.observability
+                .emit(Event::new(
+                    EventLevel::Info,
+                    "rustbox.inbound.http",
+                    None,
+                    EventKind::ServiceStarting {
+                        service: format!("http-connect/{}", self.id),
+                    },
+                ))
+                .await;
+
             let listener = self
                 .network
                 .bind_tcp(TcpBind {
@@ -77,6 +96,7 @@ impl Service for HttpProxyInbound {
             let local_endpoint = listener
                 .local_endpoint()
                 .unwrap_or_else(|| self.listen.clone());
+            let local_endpoint_text = local_endpoint.to_string();
             *self
                 .local_endpoint
                 .lock()
@@ -85,22 +105,53 @@ impl Service for HttpProxyInbound {
             let id = self.id;
             let sink = Arc::clone(&self.sink);
             let spawner = Arc::clone(&self.spawner);
+            let observability = Arc::clone(&self.observability);
             let next_flow_id = Arc::clone(&self.next_flow_id);
             self.spawner
                 .spawn(
                     TaskName("http-inbound-accept".to_string()),
                     Box::pin(async move {
-                        accept_loop(id, listener, sink, spawner, next_flow_id).await;
+                        accept_loop(id, listener, sink, spawner, observability, next_flow_id).await;
                     }),
                 )
                 .map_err(|err| ServiceError::new(err.message))?;
+            self.observability
+                .emit(Event::new(
+                    EventLevel::Info,
+                    "rustbox.inbound.http",
+                    None,
+                    EventKind::ServiceStarted {
+                        service: format!("http-connect/{id}@{local_endpoint_text}"),
+                    },
+                ))
+                .await;
             Ok(())
         })
     }
 
     fn stop(&mut self) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async {
+            self.observability
+                .emit(Event::new(
+                    EventLevel::Info,
+                    "rustbox.inbound.http",
+                    None,
+                    EventKind::ServiceStopping {
+                        service: format!("http-connect/{}", self.id),
+                    },
+                ))
+                .await;
             self.started.store(false, Ordering::SeqCst);
+            self.observability
+                .emit(Event::new(
+                    EventLevel::Info,
+                    "rustbox.inbound.http",
+                    None,
+                    EventKind::ServiceStopped {
+                        service: format!("http-connect/{}", self.id),
+                    },
+                ))
+                .await;
             Ok(())
         })
     }
@@ -111,19 +162,40 @@ async fn accept_loop(
     mut listener: Box<dyn StreamListener>,
     sink: Arc<dyn FlowSink>,
     spawner: Arc<dyn TaskSpawner>,
+    observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
 ) {
+    let listener_endpoint = listener
+        .local_endpoint()
+        .map(|endpoint| endpoint.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
     loop {
         let Ok((stream, peer)) = listener.accept().await else {
             break;
         };
 
+        observability
+            .emit(Event::new(
+                EventLevel::Debug,
+                "rustbox.inbound.http",
+                None,
+                EventKind::ConnectionAccepted {
+                    listener: listener_endpoint.clone(),
+                    peer: peer.to_string(),
+                },
+            ))
+            .await;
+
         let sink = Arc::clone(&sink);
+        let observability = Arc::clone(&observability);
         let next_flow_id = Arc::clone(&next_flow_id);
         let _ = spawner.spawn(
             TaskName("http-inbound-connection".to_string()),
             Box::pin(async move {
-                let _ = handle_connection(inbound_id, peer, stream, sink, next_flow_id).await;
+                let _ =
+                    handle_connection(inbound_id, peer, stream, sink, observability, next_flow_id)
+                        .await;
             }),
         );
     }
@@ -134,11 +206,23 @@ async fn handle_connection(
     peer: Endpoint,
     mut stream: Box<dyn ByteStream>,
     sink: Arc<dyn FlowSink>,
+    observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
 ) -> Result<(), ServiceError> {
     let target = match read_connect_target(&mut *stream).await {
         Ok(target) => target,
         Err(err) => {
+            observability
+                .emit(Event::new(
+                    EventLevel::Warn,
+                    "rustbox.inbound.http",
+                    None,
+                    EventKind::Diagnostic(format!(
+                        "invalid HTTP CONNECT request from {peer}: {}",
+                        err.message
+                    )),
+                ))
+                .await;
             let _ = stream_write_all(&mut *stream, b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
             let _ = stream_close(&mut *stream).await;
             return Err(err);

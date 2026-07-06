@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 rustbox-config = { path = "../../control/rustbox-config" }
+rustbox-host-api = { path = "../../host/rustbox-host-api" }
 rustbox-inbound-http = { path = "../../modules/inbound/rustbox-inbound-http" }
 rustbox-kernel = { path = "../../kernel/rustbox-kernel" }
 rustbox-outbound-direct = { path = "../../modules/outbound/rustbox-outbound-direct" }

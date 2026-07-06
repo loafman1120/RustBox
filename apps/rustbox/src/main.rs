@@ -1,5 +1,7 @@
 use rustbox_compose::TokioComposition;
+use rustbox_observability::ConsoleObservabilitySink;
 use rustbox_types::Endpoint;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -10,8 +12,12 @@ async fn main() {
         return;
     }
 
-    let mut runtime = TokioComposition::default_http_proxy(Endpoint::localhost_v4(18080))
-        .expect("compose default HTTP proxy");
+    let observability = Arc::new(ConsoleObservabilitySink::stderr_from_env());
+    let mut runtime = TokioComposition::default_http_proxy_with_observability(
+        Endpoint::localhost_v4(18080),
+        observability,
+    )
+    .expect("compose default HTTP proxy");
     runtime
         .start("rustbox-app")
         .await

@@ -4,6 +4,7 @@ use rustbox_config::{
     CompiledConfig, CompiledInbound, CompiledOutbound, CompiledRouteRule, ConfigCompiler,
     ConfigError, SourceConfig,
 };
+use rustbox_host_api::{NoopObservabilitySink, ObservabilitySink};
 use rustbox_inbound_http::HttpProxyInbound;
 use rustbox_kernel::{Engine, EngineError, FlowSink, Service, ServiceContext, ServiceError};
 use rustbox_outbound_direct::DirectOutbound;
@@ -14,32 +15,59 @@ use std::sync::Arc;
 
 pub struct TokioComposition {
     host: Arc<TokioHost>,
+    observability: Arc<dyn ObservabilitySink>,
 }
 
 impl TokioComposition {
     pub fn new() -> Self {
         Self {
             host: Arc::new(TokioHost::new()),
+            observability: Arc::new(NoopObservabilitySink),
+        }
+    }
+
+    pub fn with_observability(observability: Arc<dyn ObservabilitySink>) -> Self {
+        Self {
+            host: Arc::new(TokioHost::new()),
+            observability,
         }
     }
 
     pub fn default_http_proxy(listen: Endpoint) -> Result<ComposedRuntime, ComposeError> {
+        Self::new().compose_default_http_proxy(listen)
+    }
+
+    pub fn default_http_proxy_with_observability(
+        listen: Endpoint,
+        observability: Arc<dyn ObservabilitySink>,
+    ) -> Result<ComposedRuntime, ComposeError> {
+        Self::with_observability(observability).compose_default_http_proxy(listen)
+    }
+
+    pub fn compose_default_http_proxy(
+        self,
+        listen: Endpoint,
+    ) -> Result<ComposedRuntime, ComposeError> {
         let source = SourceConfig::default_http_proxy(listen);
         let parsed = ConfigCompiler::parse(source).map_err(ComposeError::Config)?;
         let validated = ConfigCompiler::validate(parsed).map_err(ComposeError::Config)?;
         let compiled = ConfigCompiler::compile(validated).map_err(ComposeError::Config)?;
-        Self::new().compose(compiled)
+        self.compose(compiled)
     }
 
     pub fn compose(self, compiled: CompiledConfig) -> Result<ComposedRuntime, ComposeError> {
         let router = route_table(&compiled);
-        let mut builder = Engine::builder(Box::new(router));
+        let mut builder =
+            Engine::builder(Box::new(router)).observability(self.observability.clone());
 
         for outbound in &compiled.outbounds {
             match outbound {
                 CompiledOutbound::Direct { id, .. } => {
                     builder = builder
-                        .register_outbound(Box::new(DirectOutbound::new(*id, self.host.clone())))
+                        .register_outbound(Box::new(
+                            DirectOutbound::new(*id, self.host.clone())
+                                .with_observability(self.observability.clone()),
+                        ))
                         .map_err(ComposeError::Engine)?;
                 }
             }
@@ -52,13 +80,16 @@ impl TokioComposition {
         for inbound in compiled.inbounds {
             match inbound {
                 CompiledInbound::HttpConnect { id, listen, .. } => {
-                    services.push(Box::new(HttpProxyInbound::new(
-                        id,
-                        listen,
-                        self.host.clone(),
-                        self.host.clone(),
-                        sink.clone(),
-                    )));
+                    services.push(Box::new(
+                        HttpProxyInbound::new(
+                            id,
+                            listen,
+                            self.host.clone(),
+                            self.host.clone(),
+                            sink.clone(),
+                        )
+                        .with_observability(self.observability.clone()),
+                    ));
                 }
             }
         }

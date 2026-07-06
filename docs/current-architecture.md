@@ -29,6 +29,9 @@ Tokio host network capability
 Windows/default OS TCP stack
 ```
 
+The same graph now emits structured observability events at service,
+connection, flow, route, outbound, completion, and failure boundaries.
+
 The core architectural constraint is currently preserved:
 
 ```text
@@ -75,6 +78,8 @@ crates/
   modules/stack/rustbox-stack/              Packet-to-flow stack boundary
   modules/transport/rustbox-transport/      Transport contracts
 
+  observability/rustbox-observability/      Console and recording event sinks
+
   platform/rustbox-platform-windows/        Windows platform capability boundary
   plugin/rustbox-plugin/                    Future plugin manifest model
   reload/rustbox-reload/                    Reload transaction model
@@ -114,8 +119,10 @@ flowchart TB
     TOKIO["Runtime adapter\nrustbox-runtime-tokio"]
     TESTHOST["Test adapter\nrustbox-test-host"]
     WINDOWS["Platform adapter\nrustbox-platform-windows"]
+    OBS["Observability adapter\nrustbox-observability"]
 
     APP --> COMPOSE
+    APP --> OBS
     APP --> CONFIG
     CONTROL --> CONFIG
     FFI --> COMPOSE
@@ -126,6 +133,7 @@ flowchart TB
     COMPOSE --> DIRECT
     COMPOSE --> KERNEL
     COMPOSE --> ROUTE
+    COMPOSE --> HOSTAPI
     COMPOSE --> TOKIO
 
     HTTP --> KERNEL
@@ -168,6 +176,7 @@ flowchart TB
     TESTHOST --> TYPES
     WINDOWS --> HOSTAPI
     WINDOWS --> IO
+    OBS --> HOSTAPI
 ```
 
 ---
@@ -241,7 +250,10 @@ Runtime:  TokioHost
 The application does not manually wire module internals. It calls:
 
 ```text
-TokioComposition::default_http_proxy(Endpoint::localhost_v4(18080))
+TokioComposition::default_http_proxy_with_observability(
+    Endpoint::localhost_v4(18080),
+    ConsoleObservabilitySink::stderr_from_env(),
+)
 ```
 
 ---
@@ -295,7 +307,40 @@ Current capabilities:
 | Task spawning | `TaskSpawner` | `TokioHost` |
 | Packet device | `PacketDeviceProvider` | Windows boundary returns explicit planned error |
 | Network control | `NetworkControl` | Windows boundary returns explicit planned error |
-| Observability | `ObservabilitySink` | contract only |
+| Observability | `ObservabilitySink` | `NoopObservabilitySink`, `ConsoleObservabilitySink`, `RecordingObservabilitySink` |
+
+### 7.1 Observability Layer
+
+Runtime logging is modeled as a capability, not as direct calls to a concrete
+logging framework from the portable core.
+
+```mermaid
+flowchart LR
+    CORE["kernel / modules\nemit Event"]
+    API["ObservabilitySink\nhost-api contract"]
+    NOOP["Noop sink\nlibrary default"]
+    CONSOLE["Console sink\napp default"]
+    RECORD["Recording sink\ntests / embedding"]
+
+    CORE --> API
+    API --> NOOP
+    API --> CONSOLE
+    API --> RECORD
+```
+
+Current event coverage:
+
+| Boundary | Current events |
+|---|---|
+| HTTP inbound service | service starting, started, stopping, stopped |
+| HTTP inbound accept path | connection accepted, malformed CONNECT diagnostic |
+| Kernel flow path | flow accepted, route selected, flow completed, flow failed |
+| Direct outbound | outbound connecting, connected, failed |
+
+The `rustbox-app` binary uses `ConsoleObservabilitySink::stderr_from_env()`.
+`RUSTBOX_LOG` accepts `trace`, `debug`, `info`, `warn`, `error`, or `off`.
+Library composition defaults to `NoopObservabilitySink` unless the caller
+injects an observability sink.
 
 ---
 
@@ -330,6 +375,8 @@ Important current status:
 | HTTP CONNECT inbound | Implemented |
 | Direct TCP outbound | Implemented |
 | Generic stream relay | Implemented |
+| Structured observability events | Implemented |
+| Console log adapter | Implemented |
 | SOCKS5 codec | Portable parser/encoder implemented |
 | SOCKS5 inbound/outbound module | Not implemented yet |
 | DNS resolver contract | Implemented |
@@ -463,6 +510,7 @@ The current implementation satisfies these architecture invariants:
 | Configuration formats are outside runtime modules | Satisfied |
 | FFI is separate from internal Rust traits | Satisfied |
 | Plugin ABI is not internal Rust trait API | Satisfied |
+| Concrete logging output is outside portable core | Satisfied |
 
 ---
 
@@ -478,5 +526,6 @@ The following are intentionally not complete yet:
 - Linux, Apple, Android, and BSD platform adapters.
 - External C ABI functions around the FFI handle model.
 - Full controlled live reload integration into the running app.
+- File, tracing, ETW, Android logcat, Apple unified logging, and remote telemetry sinks.
 
 These are now extension points, not missing architecture seams in the kernel.

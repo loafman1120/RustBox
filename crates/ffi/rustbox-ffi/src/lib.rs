@@ -4,10 +4,17 @@
 //! types behind an opaque handle table.
 
 use rustbox_compose::{ComposeError, ComposedRuntime, TokioComposition};
-use rustbox_config::{ConfigCompiler, ConfigError, SourceConfig};
+use rustbox_config::{CompiledConfig, ConfigCompiler, ConfigError, SourceConfig};
 use rustbox_control::{EngineSnapshot, EngineState};
 use rustbox_types::Endpoint;
 use std::collections::HashMap;
+use std::ffi::CString;
+use std::os::raw::c_char;
+use std::ptr;
+use std::sync::{Mutex, OnceLock};
+use tokio::runtime::{Builder, Runtime};
+
+const RUSTBOX_FFI_ABI_VERSION: u32 = 1;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -21,6 +28,35 @@ pub enum RustBoxStatusCode {
     NotFound = 2,
     AlreadyRunning = 3,
     RuntimeError = 4,
+    InvalidArgument = 5,
+    LockPoisoned = 6,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustBoxEngineStateCode {
+    Created = 0,
+    Prepared = 1,
+    Running = 2,
+    Stopping = 3,
+    Stopped = 4,
+    Failed = 5,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RustBoxFfiEngineSnapshot {
+    pub state: RustBoxEngineStateCode,
+    pub generation: u64,
+    pub inbound_count: u64,
+    pub outbound_count: u64,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct RustBoxFfiDiagnostic {
+    pub code: RustBoxStatusCode,
+    pub message: *mut c_char,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,9 +88,7 @@ impl FfiEngineTable {
     }
 
     pub fn validate(source: SourceConfig) -> Result<(), RustBoxFfiError> {
-        let parsed = ConfigCompiler::parse(source).map_err(config_error)?;
-        let validated = ConfigCompiler::validate(parsed).map_err(config_error)?;
-        ConfigCompiler::compile(validated).map_err(config_error)?;
+        compile_source(source)?;
         Ok(())
     }
 
@@ -93,7 +127,9 @@ impl FfiEngineTable {
             .map_err(compose_error)?;
         runtime.start("rustbox-ffi").await.map_err(compose_error)?;
         managed.snapshot.state = EngineState::Running;
-        managed.runtime = Some(runtime);
+        managed.snapshot.inbound_count = runtime.service_count();
+        managed.snapshot.outbound_count = runtime.engine().outbound_count();
+        managed.runtime = Some(ManagedRuntime::Borrowed(runtime));
         Ok(())
     }
 
@@ -102,10 +138,19 @@ impl FfiEngineTable {
             .engines
             .get_mut(&handle)
             .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
-        if let Some(runtime) = &mut managed.runtime {
-            managed.snapshot.state = EngineState::Stopping;
-            runtime.stop().await.map_err(compose_error)?;
-            managed.runtime = None;
+        managed.snapshot.state = EngineState::Stopping;
+        if let Some(runtime) = managed.runtime.take() {
+            match runtime {
+                ManagedRuntime::Borrowed(mut runtime) => {
+                    runtime.stop().await.map_err(compose_error)?;
+                }
+                ManagedRuntime::Owned(mut active) => {
+                    active
+                        .runtime
+                        .block_on(active.composed.stop())
+                        .map_err(compose_error)?;
+                }
+            }
         }
         managed.snapshot.state = EngineState::Stopped;
         Ok(())
@@ -119,10 +164,127 @@ impl FfiEngineTable {
     }
 
     pub fn destroy(&mut self, handle: RustBoxEngineHandle) -> Result<(), RustBoxFfiError> {
-        self.engines
-            .remove(&handle)
-            .map(|_| ())
-            .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))
+        let Some(mut managed) = self.engines.remove(&handle) else {
+            return Err(RustBoxFfiError::new(
+                RustBoxStatusCode::NotFound,
+                "unknown handle",
+            ));
+        };
+        if let Some(runtime) = managed.runtime.take() {
+            match runtime {
+                ManagedRuntime::Borrowed(_runtime) => {}
+                ManagedRuntime::Owned(mut active) => {
+                    active
+                        .runtime
+                        .block_on(active.composed.stop())
+                        .map_err(compose_error)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn start_blocking(&mut self, handle: RustBoxEngineHandle) -> Result<(), RustBoxFfiError> {
+        let managed = self
+            .engines
+            .get_mut(&handle)
+            .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
+        if managed.runtime.is_some() {
+            return Err(RustBoxFfiError::new(
+                RustBoxStatusCode::AlreadyRunning,
+                "engine is already running",
+            ));
+        }
+
+        let compiled = compile_source(managed.source.clone())?;
+        let active = start_owned_runtime(compiled)?;
+        managed.snapshot.state = EngineState::Running;
+        managed.snapshot.inbound_count = active.composed.service_count();
+        managed.snapshot.outbound_count = active.composed.engine().outbound_count();
+        managed.runtime = Some(ManagedRuntime::Owned(active));
+        Ok(())
+    }
+
+    pub fn stop_blocking(&mut self, handle: RustBoxEngineHandle) -> Result<(), RustBoxFfiError> {
+        let managed = self
+            .engines
+            .get_mut(&handle)
+            .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
+        managed.snapshot.state = EngineState::Stopping;
+        if let Some(runtime) = managed.runtime.take() {
+            match runtime {
+                ManagedRuntime::Borrowed(_runtime) => {
+                    return Err(RustBoxFfiError::new(
+                        RustBoxStatusCode::RuntimeError,
+                        "engine was started by an async Rust caller and cannot be stopped through the blocking C ABI",
+                    ));
+                }
+                ManagedRuntime::Owned(mut active) => {
+                    active
+                        .runtime
+                        .block_on(active.composed.stop())
+                        .map_err(compose_error)?;
+                }
+            }
+        }
+        managed.snapshot.state = EngineState::Stopped;
+        Ok(())
+    }
+
+    pub fn reload_default_http_proxy_blocking(
+        &mut self,
+        handle: RustBoxEngineHandle,
+        listen: Endpoint,
+    ) -> Result<(), RustBoxFfiError> {
+        let next_source = SourceConfig::default_http_proxy(listen);
+        let compiled = compile_source(next_source.clone())?;
+        let managed = self
+            .engines
+            .get_mut(&handle)
+            .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
+
+        let was_running = managed.runtime.is_some();
+        if let Some(runtime) = managed.runtime.take() {
+            managed.snapshot.state = EngineState::Stopping;
+            match runtime {
+                ManagedRuntime::Borrowed(_runtime) => {
+                    return Err(RustBoxFfiError::new(
+                        RustBoxStatusCode::RuntimeError,
+                        "engine was started by an async Rust caller and cannot be reloaded through the blocking C ABI",
+                    ));
+                }
+                ManagedRuntime::Owned(mut active) => {
+                    active
+                        .runtime
+                        .block_on(active.composed.stop())
+                        .map_err(compose_error)?;
+                }
+            }
+        }
+
+        managed.source = next_source;
+        managed.snapshot.generation = managed.snapshot.generation.saturating_add(1);
+        managed.snapshot.inbound_count = compiled.inbounds.len();
+        managed.snapshot.outbound_count = compiled.outbounds.len();
+
+        if was_running {
+            match start_owned_runtime(compiled) {
+                Ok(active) => {
+                    managed.snapshot.state = EngineState::Running;
+                    managed.snapshot.inbound_count = active.composed.service_count();
+                    managed.snapshot.outbound_count = active.composed.engine().outbound_count();
+                    managed.runtime = Some(ManagedRuntime::Owned(active));
+                    Ok(())
+                }
+                Err(err) => {
+                    managed.snapshot.state = EngineState::Failed;
+                    Err(err)
+                }
+            }
+        } else {
+            managed.snapshot.state = EngineState::Prepared;
+            Ok(())
+        }
     }
 }
 
@@ -134,8 +296,39 @@ impl Default for FfiEngineTable {
 
 struct ManagedEngine {
     source: SourceConfig,
-    runtime: Option<ComposedRuntime>,
+    runtime: Option<ManagedRuntime>,
     snapshot: EngineSnapshot,
+}
+
+enum ManagedRuntime {
+    Borrowed(ComposedRuntime),
+    Owned(ActiveRuntime),
+}
+
+struct ActiveRuntime {
+    runtime: Runtime,
+    composed: ComposedRuntime,
+}
+
+fn compile_source(source: SourceConfig) -> Result<CompiledConfig, RustBoxFfiError> {
+    let parsed = ConfigCompiler::parse(source).map_err(config_error)?;
+    let validated = ConfigCompiler::validate(parsed).map_err(config_error)?;
+    ConfigCompiler::compile(validated).map_err(config_error)
+}
+
+fn start_owned_runtime(compiled: CompiledConfig) -> Result<ActiveRuntime, RustBoxFfiError> {
+    let runtime = Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| RustBoxFfiError::new(RustBoxStatusCode::RuntimeError, err.to_string()))?;
+    let mut composed = TokioComposition::new()
+        .compose(compiled)
+        .map_err(compose_error)?;
+    if let Err(err) = runtime.block_on(composed.start("rustbox-ffi")) {
+        let _ = runtime.block_on(composed.stop());
+        return Err(compose_error(err));
+    }
+    Ok(ActiveRuntime { runtime, composed })
 }
 
 fn config_error(err: ConfigError) -> RustBoxFfiError {
@@ -144,4 +337,392 @@ fn config_error(err: ConfigError) -> RustBoxFfiError {
 
 fn compose_error(err: ComposeError) -> RustBoxFfiError {
     RustBoxFfiError::new(RustBoxStatusCode::RuntimeError, format!("{err:?}"))
+}
+
+fn ffi_table() -> &'static Mutex<FfiEngineTable> {
+    static TABLE: OnceLock<Mutex<FfiEngineTable>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(FfiEngineTable::new()))
+}
+
+fn ffi_result(
+    result: Result<(), RustBoxFfiError>,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match result {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(err) => {
+            let code = err.code;
+            write_diagnostic(diagnostic, err.code, &err.diagnostic);
+            code
+        }
+    }
+}
+
+fn with_table<T>(
+    diagnostic: *mut RustBoxFfiDiagnostic,
+    f: impl FnOnce(&mut FfiEngineTable) -> Result<T, RustBoxFfiError>,
+) -> Result<T, RustBoxStatusCode> {
+    match ffi_table().lock() {
+        Ok(mut table) => f(&mut table).map_err(|err| {
+            let code = err.code;
+            write_diagnostic(diagnostic, err.code, &err.diagnostic);
+            code
+        }),
+        Err(_) => {
+            write_diagnostic(
+                diagnostic,
+                RustBoxStatusCode::LockPoisoned,
+                "FFI engine table lock is poisoned",
+            );
+            Err(RustBoxStatusCode::LockPoisoned)
+        }
+    }
+}
+
+fn write_out<T>(out: *mut T, value: T) -> Result<(), RustBoxFfiError> {
+    if out.is_null() {
+        return Err(RustBoxFfiError::new(
+            RustBoxStatusCode::InvalidArgument,
+            "output pointer must not be null",
+        ));
+    }
+    unsafe {
+        out.write(value);
+    }
+    Ok(())
+}
+
+fn write_diagnostic(diagnostic: *mut RustBoxFfiDiagnostic, code: RustBoxStatusCode, message: &str) {
+    if diagnostic.is_null() {
+        return;
+    }
+    let message = diagnostic_c_string(message).into_raw();
+    unsafe {
+        diagnostic.write(RustBoxFfiDiagnostic { code, message });
+    }
+}
+
+fn diagnostic_c_string(message: &str) -> CString {
+    match CString::new(message) {
+        Ok(message) => message,
+        Err(err) => {
+            let bytes = err
+                .into_vec()
+                .into_iter()
+                .map(|byte| if byte == 0 { b'?' } else { byte })
+                .collect::<Vec<_>>();
+            CString::new(bytes).expect("nul bytes were replaced")
+        }
+    }
+}
+
+impl From<EngineSnapshot> for RustBoxFfiEngineSnapshot {
+    fn from(snapshot: EngineSnapshot) -> Self {
+        Self {
+            state: snapshot.state.into(),
+            generation: snapshot.generation,
+            inbound_count: snapshot.inbound_count as u64,
+            outbound_count: snapshot.outbound_count as u64,
+        }
+    }
+}
+
+impl From<EngineState> for RustBoxEngineStateCode {
+    fn from(state: EngineState) -> Self {
+        match state {
+            EngineState::Created => Self::Created,
+            EngineState::Prepared => Self::Prepared,
+            EngineState::Running => Self::Running,
+            EngineState::Stopping => Self::Stopping,
+            EngineState::Stopped => Self::Stopped,
+            EngineState::Failed => Self::Failed,
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_ffi_abi_version() -> u32 {
+    RUSTBOX_FFI_ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_validate_default_http_proxy(
+    listen_port: u16,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    ffi_result(
+        FfiEngineTable::validate(SourceConfig::default_http_proxy(Endpoint::localhost_v4(
+            listen_port,
+        ))),
+        diagnostic,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_create_default_http_proxy(
+    listen_port: u16,
+    out_handle: *mut RustBoxEngineHandle,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| {
+        let handle = table.create_default_http_proxy(Endpoint::localhost_v4(listen_port));
+        write_out(out_handle, handle)?;
+        Ok(())
+    }) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_start(
+    handle: RustBoxEngineHandle,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| table.start_blocking(handle)) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_reload_default_http_proxy(
+    handle: RustBoxEngineHandle,
+    listen_port: u16,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| {
+        table.reload_default_http_proxy_blocking(handle, Endpoint::localhost_v4(listen_port))
+    }) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_snapshot(
+    handle: RustBoxEngineHandle,
+    out_snapshot: *mut RustBoxFfiEngineSnapshot,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| {
+        let snapshot = table.snapshot(handle)?;
+        write_out(out_snapshot, snapshot.into())?;
+        Ok(())
+    }) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_stop(
+    handle: RustBoxEngineHandle,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| table.stop_blocking(handle)) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_destroy(
+    handle: RustBoxEngineHandle,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| table.destroy(handle)) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Frees a diagnostic message returned by RustBox FFI functions.
+///
+/// # Safety
+///
+/// `message` must be either null or a pointer previously returned in
+/// `RustBoxFfiDiagnostic.message` by this library. Passing any other pointer,
+/// or freeing the same pointer more than once, is undefined behavior.
+pub unsafe extern "C" fn rustbox_diagnostic_message_free(message: *mut c_char) {
+    if message.is_null() {
+        return;
+    }
+    unsafe {
+        drop(CString::from_raw(message));
+    }
+}
+
+impl Default for RustBoxFfiDiagnostic {
+    fn default() -> Self {
+        Self {
+            code: RustBoxStatusCode::Ok,
+            message: ptr::null_mut(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    #[test]
+    fn validates_default_http_proxy_through_c_abi() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+
+        let code = rustbox_validate_default_http_proxy(0, &mut diagnostic);
+
+        assert_eq!(code, RustBoxStatusCode::Ok);
+        assert_eq!(diagnostic.code, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
+    fn creates_snapshots_reloads_and_destroys_through_c_abi() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+        let mut handle = RustBoxEngineHandle(0);
+
+        let create = rustbox_engine_create_default_http_proxy(0, &mut handle, &mut diagnostic);
+        assert_eq!(create, RustBoxStatusCode::Ok);
+        assert_ne!(handle.0, 0);
+        free_diagnostic(&mut diagnostic);
+
+        let reload = rustbox_engine_reload_default_http_proxy(handle, 0, &mut diagnostic);
+        assert_eq!(reload, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+
+        let mut snapshot = RustBoxFfiEngineSnapshot {
+            state: RustBoxEngineStateCode::Failed,
+            generation: 0,
+            inbound_count: 0,
+            outbound_count: 0,
+        };
+        let snapshot_code = rustbox_engine_snapshot(handle, &mut snapshot, &mut diagnostic);
+        assert_eq!(snapshot_code, RustBoxStatusCode::Ok);
+        assert_eq!(snapshot.state, RustBoxEngineStateCode::Prepared);
+        assert_eq!(snapshot.generation, 1);
+        assert_eq!(snapshot.inbound_count, 1);
+        assert_eq!(snapshot.outbound_count, 1);
+        free_diagnostic(&mut diagnostic);
+
+        let destroy = rustbox_engine_destroy(handle, &mut diagnostic);
+        assert_eq!(destroy, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
+    fn starts_and_stops_runtime_through_c_abi() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+        let mut handle = RustBoxEngineHandle(0);
+
+        let create = rustbox_engine_create_default_http_proxy(0, &mut handle, &mut diagnostic);
+        assert_eq!(create, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+
+        let start = rustbox_engine_start(handle, &mut diagnostic);
+        assert_eq!(start, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+
+        let mut snapshot = RustBoxFfiEngineSnapshot {
+            state: RustBoxEngineStateCode::Failed,
+            generation: 0,
+            inbound_count: 0,
+            outbound_count: 0,
+        };
+        let snapshot_code = rustbox_engine_snapshot(handle, &mut snapshot, &mut diagnostic);
+        assert_eq!(snapshot_code, RustBoxStatusCode::Ok);
+        assert_eq!(snapshot.state, RustBoxEngineStateCode::Running);
+        assert_eq!(snapshot.inbound_count, 1);
+        assert_eq!(snapshot.outbound_count, 1);
+        free_diagnostic(&mut diagnostic);
+
+        let stop = rustbox_engine_stop(handle, &mut diagnostic);
+        assert_eq!(stop, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+
+        let snapshot_code = rustbox_engine_snapshot(handle, &mut snapshot, &mut diagnostic);
+        assert_eq!(snapshot_code, RustBoxStatusCode::Ok);
+        assert_eq!(snapshot.state, RustBoxEngineStateCode::Stopped);
+        free_diagnostic(&mut diagnostic);
+
+        let destroy = rustbox_engine_destroy(handle, &mut diagnostic);
+        assert_eq!(destroy, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
+    fn not_found_error_returns_utf8_diagnostic() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+        let mut snapshot = RustBoxFfiEngineSnapshot {
+            state: RustBoxEngineStateCode::Created,
+            generation: 0,
+            inbound_count: 0,
+            outbound_count: 0,
+        };
+
+        let code = rustbox_engine_snapshot(
+            RustBoxEngineHandle(u64::MAX),
+            &mut snapshot,
+            &mut diagnostic,
+        );
+
+        assert_eq!(code, RustBoxStatusCode::NotFound);
+        assert_eq!(diagnostic_message(&diagnostic), "unknown handle");
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
+    fn null_output_pointer_is_invalid_argument() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+
+        let code = rustbox_engine_create_default_http_proxy(0, ptr::null_mut(), &mut diagnostic);
+
+        assert_eq!(code, RustBoxStatusCode::InvalidArgument);
+        assert_eq!(
+            diagnostic_message(&diagnostic),
+            "output pointer must not be null"
+        );
+        free_diagnostic(&mut diagnostic);
+    }
+
+    fn diagnostic_message(diagnostic: &RustBoxFfiDiagnostic) -> String {
+        if diagnostic.message.is_null() {
+            return String::new();
+        }
+        unsafe {
+            CStr::from_ptr(diagnostic.message)
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    fn free_diagnostic(diagnostic: &mut RustBoxFfiDiagnostic) {
+        unsafe {
+            rustbox_diagnostic_message_free(diagnostic.message);
+        }
+        diagnostic.message = ptr::null_mut();
+    }
 }
