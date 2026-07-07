@@ -125,20 +125,61 @@ struct TomlObservabilityConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlInboundConfig {
-    HttpConnect { id: String, listen: String },
-    Socks5 { id: String, listen: String },
+    Mixed {
+        id: String,
+        listen: String,
+        username: Option<String>,
+        password: Option<String>,
+    },
+    HttpConnect {
+        id: String,
+        listen: String,
+        username: Option<String>,
+        password: Option<String>,
+    },
+    Socks5 {
+        id: String,
+        listen: String,
+        username: Option<String>,
+        password: Option<String>,
+    },
 }
 
 impl TomlInboundConfig {
     fn into_source(self) -> Result<InboundConfig, ConfigFileError> {
         match self {
-            Self::HttpConnect { id, listen } => Ok(InboundConfig::HttpConnect {
+            Self::Mixed {
+                id,
+                listen,
+                username,
+                password,
+            } => Ok(InboundConfig::Mixed {
                 id,
                 listen: parse_endpoint(&listen)?,
+                username,
+                password,
             }),
-            Self::Socks5 { id, listen } => Ok(InboundConfig::Socks5 {
+            Self::HttpConnect {
+                id,
+                listen,
+                username,
+                password,
+            } => Ok(InboundConfig::HttpConnect {
                 id,
                 listen: parse_endpoint(&listen)?,
+                username,
+                password,
+            }),
+            Self::Socks5 {
+                id,
+                listen,
+                username,
+                password,
+            } => Ok(InboundConfig::Socks5 {
+                id,
+                listen: parse_endpoint(&listen)?,
+                username,
+                password,
             }),
         }
     }
@@ -307,6 +348,13 @@ id = "socks"
 type = "socks5"
 listen = "127.0.0.1:1080"
 
+[[inbounds]]
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:2080"
+username = "alice"
+password = "secret"
+
 [[outbounds]]
 id = "direct"
 type = "direct"
@@ -341,9 +389,17 @@ outbound = "direct"
         )
         .expect("parse config");
 
-        assert_eq!(config.source.inbounds.len(), 2);
+        assert_eq!(config.source.inbounds.len(), 3);
         assert_eq!(config.source.outbounds.len(), 5);
         assert_eq!(config.source.routes.len(), 1);
+        assert!(matches!(
+            &config.source.inbounds[2],
+            InboundConfig::Mixed {
+                username: Some(username),
+                password: Some(password),
+                ..
+            } if username == "alice" && password == "secret"
+        ));
         assert!(matches!(
             config.source.outbounds[2],
             OutboundConfig::Block { .. }

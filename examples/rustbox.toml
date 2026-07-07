@@ -9,11 +9,22 @@ level = "info"
 id = "http"
 type = "http-connect"
 listen = "127.0.0.1:18080"
+# username = "alice"
+# password = "secret"
 
 [[inbounds]]
 id = "socks"
 type = "socks5"
 listen = "127.0.0.1:1080"
+# username = "alice"
+# password = "secret"
+
+[[inbounds]]
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:2080"
+# username = "alice"
+# password = "secret"
 
 [[outbounds]]
 id = "direct"

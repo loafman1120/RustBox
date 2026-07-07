@@ -8,8 +8,10 @@ use rustbox_config::{
     ConfigError, SourceConfig,
 };
 use rustbox_host_api::{NoopObservabilitySink, ObservabilitySink};
-use rustbox_inbound_http::HttpProxyInbound;
-use rustbox_inbound_socks5::Socks5Inbound;
+use rustbox_inbound_http::{HttpInboundCredentials, HttpProxyInbound};
+use rustbox_inbound_socks5::{
+    MixedInbound, MixedInboundCredentials, Socks5Inbound, Socks5InboundCredentials,
+};
 use rustbox_kernel::{Engine, EngineError, FlowSink, Service, ServiceContext, ServiceError};
 use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
@@ -171,29 +173,68 @@ impl TokioComposition {
 
         for inbound in compiled.inbounds {
             match inbound {
-                CompiledInbound::HttpConnect { id, listen, .. } => {
-                    services.push(Box::new(
-                        HttpProxyInbound::new(
-                            id,
-                            listen,
-                            self.host.clone(),
-                            self.host.clone(),
-                            sink.clone(),
-                        )
-                        .with_observability(self.observability.clone()),
-                    ));
+                CompiledInbound::Mixed {
+                    id,
+                    listen,
+                    username,
+                    password,
+                    ..
+                } => {
+                    let mut inbound = MixedInbound::new(
+                        id,
+                        listen,
+                        self.host.clone(),
+                        self.host.clone(),
+                        sink.clone(),
+                    )
+                    .with_observability(self.observability.clone());
+                    if let (Some(username), Some(password)) = (username, password) {
+                        inbound = inbound
+                            .with_credentials(MixedInboundCredentials { username, password });
+                    }
+                    services.push(Box::new(inbound));
                 }
-                CompiledInbound::Socks5 { id, listen, .. } => {
-                    services.push(Box::new(
-                        Socks5Inbound::new(
-                            id,
-                            listen,
-                            self.host.clone(),
-                            self.host.clone(),
-                            sink.clone(),
-                        )
-                        .with_observability(self.observability.clone()),
-                    ));
+                CompiledInbound::HttpConnect {
+                    id,
+                    listen,
+                    username,
+                    password,
+                    ..
+                } => {
+                    let mut inbound = HttpProxyInbound::new(
+                        id,
+                        listen,
+                        self.host.clone(),
+                        self.host.clone(),
+                        sink.clone(),
+                    )
+                    .with_observability(self.observability.clone());
+                    if let (Some(username), Some(password)) = (username, password) {
+                        inbound =
+                            inbound.with_credentials(HttpInboundCredentials { username, password });
+                    }
+                    services.push(Box::new(inbound));
+                }
+                CompiledInbound::Socks5 {
+                    id,
+                    listen,
+                    username,
+                    password,
+                    ..
+                } => {
+                    let mut inbound = Socks5Inbound::new(
+                        id,
+                        listen,
+                        self.host.clone(),
+                        self.host.clone(),
+                        sink.clone(),
+                    )
+                    .with_observability(self.observability.clone());
+                    if let (Some(username), Some(password)) = (username, password) {
+                        inbound = inbound
+                            .with_credentials(Socks5InboundCredentials { username, password });
+                    }
+                    services.push(Box::new(inbound));
                 }
             }
         }
@@ -297,6 +338,8 @@ mod tests {
             inbounds: vec![InboundConfig::HttpConnect {
                 id: "http".to_string(),
                 listen: Endpoint::localhost_v4(0),
+                username: None,
+                password: None,
             }],
             outbounds: vec![
                 OutboundConfig::Direct {
@@ -334,6 +377,31 @@ mod tests {
             .expect("compose proxy outbounds");
 
         assert_eq!(runtime.engine().outbound_count(), 4);
+        assert_eq!(runtime.service_count(), 1);
+    }
+
+    #[test]
+    fn composes_mixed_inbound_runtime_graph() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::Mixed {
+                id: "mixed".to_string(),
+                listen: Endpoint::localhost_v4(0),
+                username: Some("alice".to_string()),
+                password: Some("secret".to_string()),
+            }],
+            outbounds: vec![OutboundConfig::Direct {
+                id: "direct".to_string(),
+            }],
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "direct".to_string(),
+            }],
+        };
+
+        let runtime = TokioComposition::new()
+            .compose_source(source)
+            .expect("compose mixed inbound");
+
+        assert_eq!(runtime.engine().outbound_count(), 1);
         assert_eq!(runtime.service_count(), 1);
     }
 }

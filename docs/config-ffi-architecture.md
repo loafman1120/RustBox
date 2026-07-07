@@ -199,6 +199,14 @@ file = "target/rustbox.log"
 id = "http"
 type = "http-connect"
 listen = "127.0.0.1:18080"
+# Optional for "http-connect", "socks5", and "mixed" inbounds.
+# username = "alice"
+# password = "secret"
+
+[[inbounds]]
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:2080"
 
 [[outbounds]]
 id = "direct"

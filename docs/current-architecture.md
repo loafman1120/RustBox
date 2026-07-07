@@ -17,8 +17,9 @@ RustBox currently implements a portable proxy core with working minimum proxy
 graphs:
 
 ```text
-HTTP CONNECT inbound
-or SOCKS5 CONNECT inbound
+HTTP proxy inbound
+or mixed inbound
+or SOCKS5 inbound
         ↓
 Kernel flow submission
         ↓
@@ -80,8 +81,8 @@ crates/
   kernel/rustbox-registry/         L2 construction-time registries
 
   modules/dns/rustbox-dns-core/             Portable DNS resolver contracts
-  modules/inbound/rustbox-inbound-http/     HTTP CONNECT inbound
-  modules/inbound/rustbox-inbound-socks5/   SOCKS5 CONNECT inbound
+  modules/inbound/rustbox-inbound-http/     HTTP CONNECT and ordinary HTTP proxy inbound
+  modules/inbound/rustbox-inbound-socks5/   SOCKS5 and mixed inbound
   modules/inspect/rustbox-inspect/          Metadata enrichers
   modules/outbound/rustbox-outbound-direct/ Direct outbound
   modules/outbound/rustbox-outbound-http/   HTTP CONNECT outbound
@@ -112,8 +113,8 @@ flowchart TB
 
     COMPOSE["L4 rustbox-compose\ncomposition root"]
 
-    HTTP["L3 rustbox-inbound-http\nHTTP CONNECT inbound"]
-    SOCKS["L3 rustbox-inbound-socks5\nSOCKS5 CONNECT inbound"]
+    HTTP["L3 rustbox-inbound-http\nHTTP proxy inbound"]
+    SOCKS["L3 rustbox-inbound-socks5\nSOCKS5 / mixed inbound"]
     DIRECT["L3 rustbox-outbound-direct\ndirect outbound"]
     OUTHTTP["L3 rustbox-outbound-http\nHTTP CONNECT outbound"]
     OUTSS["L3 rustbox-outbound-shadowsocks\nShadowsocks outbound"]
@@ -220,8 +221,9 @@ flowchart TB
 
 ## 4. Current Data Plane
 
-The implemented end-to-end data paths are HTTP CONNECT and SOCKS5 CONNECT
-tunnels over TCP.
+The implemented end-to-end data paths are HTTP CONNECT tunnels, ordinary
+absolute-form HTTP proxy requests, SOCKS5 CONNECT tunnels, and SOCKS5 UDP
+ASSOCIATE flows.
 
 ```mermaid
 sequenceDiagram
@@ -255,11 +257,13 @@ Verified by:
 
 ```text
 rustbox-inbound-http::tests::http_connect_tunnels_bytes_to_direct_outbound
+rustbox-inbound-http::tests::http_absolute_form_request_is_forwarded_as_origin_form
 rustbox-inbound-socks5::tests::socks5_connect_tunnels_bytes_to_direct_outbound
+rustbox-inbound-socks5::tests::socks5_udp_associate_relays_datagrams_to_direct_outbound
 ```
 
-Those tests start a local TCP echo server, connect through the proxy, send
-`ping`, and receive `pong`.
+Those tests start local TCP or UDP echo servers, connect through the proxy,
+send `ping`, and receive `pong`.
 
 ---
 
@@ -282,7 +286,7 @@ flowchart LR
 Current default source:
 
 ```text
-Inbound:  http CONNECT on 127.0.0.1:18080, or SOCKS5 on 127.0.0.1:1080
+Inbound:  HTTP proxy on 127.0.0.1:18080, or SOCKS5 on 127.0.0.1:1080
 Outbound: direct
 Route:    default -> direct
 Runtime:  TokioHost
@@ -292,7 +296,7 @@ Current config-file source:
 
 ```text
 schema_version = 1
-[[inbounds]] type = "http-connect" or "socks5"
+[[inbounds]] type = "http-connect", "socks5", or "mixed"
 [[outbounds]] type = "direct"
 [[routes]] type = "default"
 ```
@@ -448,7 +452,7 @@ Current module groups:
 ```mermaid
 flowchart TB
     CODEC["codec\nSOCKS5 parser/encoder"]
-    INBOUND["inbound\nHTTP CONNECT / SOCKS5 CONNECT -> Flow"]
+    INBOUND["inbound\nHTTP proxy / SOCKS5 / mixed -> Flow"]
     OUTBOUND["outbound\nDirect -> host TCP"]
     TRANSPORT["transport\nStreamTransport"]
     DNS["dns\nResolver"]
@@ -470,7 +474,12 @@ Important current status:
 | Area | Status |
 |---|---|
 | HTTP CONNECT inbound | Implemented |
+| HTTP ordinary absolute-form proxy requests | Implemented |
+| HTTP inbound Basic authentication | Implemented |
+| mixed inbound | Implemented |
 | SOCKS5 CONNECT inbound | Implemented |
+| SOCKS5 UDP ASSOCIATE inbound | Implemented |
+| SOCKS5 inbound username-password auth | Implemented |
 | Direct TCP outbound | Implemented |
 | Generic stream relay | Implemented |
 | Structured observability events | Implemented |
@@ -481,8 +490,8 @@ Important current status:
 | Platform-native log bridge | Adapter implemented, concrete OS backend planned |
 | Remote telemetry bridge | Adapter implemented, concrete exporter planned |
 | SOCKS5 codec | Portable parser/encoder implemented |
-| SOCKS5 outbound module | Not implemented yet |
-| SOCKS5 BIND / UDP ASSOCIATE / username-password auth | Not implemented yet |
+| SOCKS5 outbound module | Implemented |
+| SOCKS5 BIND | Not implemented yet |
 | DNS resolver contract | Implemented |
 | DNS UDP/TCP/DoH/DoQ transports | Not implemented yet |
 | Packet-to-flow stack | Boundary implemented, concrete stack planned |
@@ -603,7 +612,10 @@ Key tests:
 | `parses_default_http_proxy_command` | CLI maps `http-proxy` to the typed application command |
 | `parses_config_file_without_subcommand` | CLI accepts config-file startup without a subcommand |
 | `http_connect_tunnels_bytes_to_direct_outbound` | Full HTTP CONNECT -> kernel -> direct outbound tunnel |
+| `http_absolute_form_request_is_forwarded_as_origin_form` | Plain HTTP proxy request rewrite and forwarding |
 | `socks5_connect_tunnels_bytes_to_direct_outbound` | Full SOCKS5 CONNECT -> kernel -> direct outbound tunnel |
+| `socks5_connect_accepts_username_password_auth` | SOCKS5 inbound username-password authentication |
+| `socks5_udp_associate_relays_datagrams_to_direct_outbound` | SOCKS5 UDP ASSOCIATE -> kernel -> direct UDP relay |
 | `forwards_stream_flow_to_selected_outbound` | Kernel route and outbound dispatch |
 | `compiles_default_http_proxy_to_typed_runtime_plan` | Config pipeline |
 | `compiles_default_socks5_proxy_to_typed_runtime_plan` | SOCKS5 config pipeline |
@@ -641,8 +653,7 @@ The current implementation satisfies these architecture invariants:
 
 The following are intentionally not complete yet:
 
-- SOCKS5 outbound runtime module.
-- SOCKS5 BIND, UDP ASSOCIATE, and username-password authentication.
+- SOCKS5 BIND.
 - DNS UDP/TCP/TLS/HTTPS/QUIC transports.
 - Concrete TUN inbound.
 - Concrete packet-to-flow network stack.

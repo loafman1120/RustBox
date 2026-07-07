@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 fast-socks5 = "1.0.0"
 rustbox-host-api = { path = "../../../host/rustbox-host-api" }
+rustbox-inbound-http = { path = "../rustbox-inbound-http" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }

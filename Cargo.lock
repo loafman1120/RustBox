@@ -1350,6 +1350,7 @@ dependencies = [
 name = "rustbox-inbound-http"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
@@ -1366,6 +1367,7 @@ version = "0.1.0"
 dependencies = [
  "fast-socks5",
  "rustbox-host-api",
+ "rustbox-inbound-http",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-outbound-direct",

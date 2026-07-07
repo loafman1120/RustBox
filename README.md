@@ -7,7 +7,7 @@ adapters, protocol modules, and a composition root.
 The repository currently includes a runnable minimum proxy graph:
 
 ```text
-HTTP CONNECT / SOCKS5 inbound -> RustBox kernel -> route table -> outbound -> Tokio host
+HTTP / mixed / SOCKS5 inbound -> RustBox kernel -> route table -> outbound -> Tokio host
 ```
 
 For the full target architecture, see `docs/architecture.md`. For what exists
@@ -106,11 +106,25 @@ level = "info"
 id = "http"
 type = "http-connect"
 listen = "127.0.0.1:18080"
+# Optional inbound Basic proxy auth.
+# username = "alice"
+# password = "secret"
 
 [[inbounds]]
 id = "socks"
 type = "socks5"
 listen = "127.0.0.1:1080"
+# Optional inbound SOCKS5 username/password auth.
+# username = "alice"
+# password = "secret"
+
+[[inbounds]]
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:2080"
+# Optional auth is applied to both HTTP Basic and SOCKS5 password auth.
+# username = "alice"
+# password = "secret"
 
 [[outbounds]]
 id = "direct"
@@ -150,7 +164,7 @@ type = "default"
 outbound = "direct"
 ```
 
-Supported inbound `type` values are `http-connect` and `socks5`. Supported
+Supported inbound `type` values are `http-connect`, `socks5`, and `mixed`. Supported
 outbound `type` values are `direct`, `block`, `socks5`, `http`, and
 `shadowsocks`. The current runtime can instantiate `direct`, `socks5`, `http`,
 and `shadowsocks`; `block` compiles to a policy rejection.
@@ -175,9 +189,8 @@ In another terminal, send an HTTPS request through the proxy:
 curl.exe -x http://127.0.0.1:18080 https://example.com -I
 ```
 
-Use an `https://` URL for this quick check. The current inbound supports HTTP
-CONNECT tunnels; plain `http://` proxy requests that use absolute-form `GET`
-are not implemented yet.
+Use an `https://` URL to exercise CONNECT tunnels, or an `http://` URL to
+exercise ordinary absolute-form HTTP proxy requests.
 
 Verify SOCKS5:
 
@@ -207,8 +220,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Current Capabilities
 
-- HTTP CONNECT inbound over TCP.
-- SOCKS5 CONNECT inbound over TCP with no-authentication method support.
+- HTTP inbound over TCP with CONNECT tunnels, ordinary absolute-form proxy
+  requests, and optional Basic authentication.
+- SOCKS5 inbound over TCP with CONNECT, UDP ASSOCIATE, no-authentication, and
+  username/password authentication.
+- mixed inbound over TCP that accepts HTTP proxy and SOCKS5 connections on one
+  listener.
 - Direct TCP outbound through the host network capability.
 - Portable kernel flow submission, routing, metadata enrichment pipeline, and
   stream relay.
@@ -224,8 +241,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## Current Limits
 
 - Direct UDP forwarding is not implemented yet.
-- SOCKS5 `BIND`, `UDP ASSOCIATE`, and username/password authentication are not
-  implemented yet.
+- SOCKS5 `BIND` is not implemented yet.
 - TUN, packet-to-flow stack, route control, transparent proxy, and process
   lookup are planned extension points.
 - A networked HTTP/gRPC observability and control API is not implemented yet.

@@ -21,6 +21,8 @@ impl SourceConfig {
             inbounds: vec![InboundConfig::HttpConnect {
                 id: "http".to_string(),
                 listen,
+                username: None,
+                password: None,
             }],
             outbounds: vec![OutboundConfig::Direct {
                 id: "direct".to_string(),
@@ -36,6 +38,8 @@ impl SourceConfig {
             inbounds: vec![InboundConfig::Socks5 {
                 id: "socks5".to_string(),
                 listen,
+                username: None,
+                password: None,
             }],
             outbounds: vec![OutboundConfig::Direct {
                 id: "direct".to_string(),
@@ -70,10 +74,27 @@ pub struct CompiledConfig {
 /// inbound 的源配置，描述用户想暴露的入口类型和监听地址。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InboundConfig {
-    /// HTTP CONNECT 入口，监听本地 TCP 地址并把 CONNECT 目标提交给内核。
-    HttpConnect { id: String, listen: Endpoint },
+    /// mixed 入口，在同一 TCP 监听地址上接受 HTTP 代理和 SOCKS5。
+    Mixed {
+        id: String,
+        listen: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
+    },
+    /// HTTP 代理入口，监听本地 TCP 地址并支持 CONNECT 和普通 absolute-form 请求。
+    HttpConnect {
+        id: String,
+        listen: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
+    },
     /// SOCKS5 入口，监听本地 TCP 地址并支持 CONNECT/UDP ASSOCIATE。
-    Socks5 { id: String, listen: Endpoint },
+    Socks5 {
+        id: String,
+        listen: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
+    },
 }
 
 /// outbound 的源配置，描述可被路由引用的出站能力。
@@ -136,15 +157,26 @@ pub enum RouteRuleConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompiledInbound {
+    Mixed {
+        id: InboundId,
+        logical_id: String,
+        listen: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
+    },
     HttpConnect {
         id: InboundId,
         logical_id: String,
         listen: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
     },
     Socks5 {
         id: InboundId,
         logical_id: String,
         listen: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
     },
 }
 
@@ -262,6 +294,21 @@ impl ConfigCompiler {
                     "duplicate inbound id `{logical_id}`"
                 )));
             }
+            match inbound {
+                InboundConfig::Mixed {
+                    username, password, ..
+                } => {
+                    validate_optional_credentials("mixed inbound", logical_id, username, password)?
+                }
+                InboundConfig::HttpConnect {
+                    username, password, ..
+                } => validate_optional_credentials("http inbound", logical_id, username, password)?,
+                InboundConfig::Socks5 {
+                    username, password, ..
+                } => {
+                    validate_optional_credentials("socks5 inbound", logical_id, username, password)?
+                }
+            }
         }
 
         for rule in &parsed.source.routes {
@@ -287,15 +334,41 @@ impl ConfigCompiler {
             .iter()
             .enumerate()
             .map(|(index, inbound)| match inbound {
-                InboundConfig::HttpConnect { id, listen } => Ok(CompiledInbound::HttpConnect {
+                InboundConfig::Mixed {
+                    id,
+                    listen,
+                    username,
+                    password,
+                } => Ok(CompiledInbound::Mixed {
                     id: InboundId::new(non_zero_id(index)),
                     logical_id: id.clone(),
                     listen: listen.clone(),
+                    username: username.clone(),
+                    password: password.clone(),
                 }),
-                InboundConfig::Socks5 { id, listen } => Ok(CompiledInbound::Socks5 {
+                InboundConfig::HttpConnect {
+                    id,
+                    listen,
+                    username,
+                    password,
+                } => Ok(CompiledInbound::HttpConnect {
                     id: InboundId::new(non_zero_id(index)),
                     logical_id: id.clone(),
                     listen: listen.clone(),
+                    username: username.clone(),
+                    password: password.clone(),
+                }),
+                InboundConfig::Socks5 {
+                    id,
+                    listen,
+                    username,
+                    password,
+                } => Ok(CompiledInbound::Socks5 {
+                    id: InboundId::new(non_zero_id(index)),
+                    logical_id: id.clone(),
+                    listen: listen.clone(),
+                    username: username.clone(),
+                    password: password.clone(),
                 }),
             })
             .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -384,6 +457,7 @@ impl ConfigCompiler {
 impl InboundConfig {
     pub fn logical_id(&self) -> &str {
         match self {
+            Self::Mixed { id, .. } => id,
             Self::HttpConnect { id, .. } => id,
             Self::Socks5 { id, .. } => id,
         }
@@ -433,7 +507,12 @@ fn validate_optional_credentials(
     // 代理认证字段成对出现，避免运行时猜测“空用户名”或“空密码”的含义。
     if username.is_some() != password.is_some() {
         return Err(ConfigError::new(format!(
-            "{protocol} outbound `{logical_id}` must set username and password together"
+            "{protocol} `{logical_id}` must set username and password together"
+        )));
+    }
+    if username.as_deref() == Some("") || password.as_deref() == Some("") {
+        return Err(ConfigError::new(format!(
+            "{protocol} `{logical_id}` credentials must not be empty"
         )));
     }
     Ok(())
@@ -482,6 +561,8 @@ mod tests {
             inbounds: vec![InboundConfig::HttpConnect {
                 id: "http".to_string(),
                 listen: Endpoint::localhost_v4(18080),
+                username: None,
+                password: None,
             }],
             outbounds: vec![
                 OutboundConfig::Direct {
@@ -526,11 +607,67 @@ mod tests {
     }
 
     #[test]
+    fn compiles_mixed_inbound_with_credentials() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::Mixed {
+                id: "mixed".to_string(),
+                listen: Endpoint::localhost_v4(2080),
+                username: Some("alice".to_string()),
+                password: Some("secret".to_string()),
+            }],
+            outbounds: vec![OutboundConfig::Direct {
+                id: "direct".to_string(),
+            }],
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "direct".to_string(),
+            }],
+        };
+
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let validated = ConfigCompiler::validate(parsed).expect("validate");
+        let compiled = ConfigCompiler::compile(validated).expect("compile");
+
+        assert!(matches!(
+            &compiled.inbounds[0],
+            CompiledInbound::Mixed {
+                username: Some(username),
+                password: Some(password),
+                ..
+            } if username == "alice" && password == "secret"
+        ));
+    }
+
+    #[test]
+    fn rejects_incomplete_inbound_credentials() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::Socks5 {
+                id: "socks".to_string(),
+                listen: Endpoint::localhost_v4(1080),
+                username: Some("alice".to_string()),
+                password: None,
+            }],
+            outbounds: vec![OutboundConfig::Direct {
+                id: "direct".to_string(),
+            }],
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "direct".to_string(),
+            }],
+        };
+
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let error = ConfigCompiler::validate(parsed).expect_err("reject credentials");
+
+        assert!(error.message.contains("username and password together"));
+    }
+
+    #[test]
     fn rejects_incomplete_http_outbound_credentials() {
         let source = SourceConfig {
             inbounds: vec![InboundConfig::HttpConnect {
                 id: "http".to_string(),
                 listen: Endpoint::localhost_v4(18080),
+                username: None,
+                password: None,
             }],
             outbounds: vec![OutboundConfig::Http {
                 id: "http-out".to_string(),
@@ -555,6 +692,8 @@ mod tests {
             inbounds: vec![InboundConfig::HttpConnect {
                 id: "http".to_string(),
                 listen: Endpoint::localhost_v4(18080),
+                username: None,
+                password: None,
             }],
             outbounds: vec![OutboundConfig::Shadowsocks {
                 id: "ss".to_string(),
