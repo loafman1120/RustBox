@@ -358,7 +358,7 @@ impl PacketDevice for TunPacketDevice {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, IoError>> {
-        match self.get_mut().device.try_recv(buf) {
+        match self.get_mut().device.recv(buf) {
             Ok(len) => Poll::Ready(Ok(len)),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 // The adapter is deliberately tiny; a future runtime-specific
@@ -375,7 +375,7 @@ impl PacketDevice for TunPacketDevice {
         cx: &mut Context<'_>,
         packet: &[u8],
     ) -> Poll<Result<usize, IoError>> {
-        match self.get_mut().device.try_send(packet) {
+        match self.get_mut().device.send(packet) {
             Ok(len) => Poll::Ready(Ok(len)),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 cx.waker().wake_by_ref();
