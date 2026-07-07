@@ -226,7 +226,7 @@ cargo clippy --workspace --all-targets -- -D warnings
   username/password authentication.
 - mixed inbound over TCP that accepts HTTP proxy and SOCKS5 connections on one
   listener.
-- Direct TCP outbound through the host network capability.
+- Direct TCP and UDP outbound through the host network capability.
 - Portable kernel flow submission, routing, metadata enrichment pipeline, and
   stream relay.
 - Staged configuration model: source, parsed, validated, compiled.
@@ -240,7 +240,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Current Limits
 
-- Direct UDP forwarding is not implemented yet.
 - SOCKS5 `BIND` is not implemented yet.
 - TUN, packet-to-flow stack, route control, transparent proxy, and process
   lookup are planned extension points.

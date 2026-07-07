@@ -481,6 +481,7 @@ Important current status:
 | SOCKS5 UDP ASSOCIATE inbound | Implemented |
 | SOCKS5 inbound username-password auth | Implemented |
 | Direct TCP outbound | Implemented |
+| Direct UDP outbound | Implemented |
 | Generic stream relay | Implemented |
 | Structured observability events | Implemented |
 | Console log adapter | Implemented |

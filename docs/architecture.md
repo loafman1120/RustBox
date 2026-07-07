@@ -358,7 +358,6 @@ HTTP CONNECT or SOCKS5 inbound
     -> Tokio host network capability
 ```
 
-Known planned areas include SOCKS5 outbound, direct UDP forwarding, full TUN and
-packet stack integration, platform route control, richer config handles, a
-networked HTTP/gRPC control API, and concrete platform/remote telemetry
-adapters.
+Known planned areas include full TUN and packet stack integration, platform
+route control, richer config handles, a networked HTTP/gRPC control API, and
+concrete platform/remote telemetry adapters.

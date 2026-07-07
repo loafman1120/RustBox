@@ -1,0 +1,55 @@
+name: CI Proxy Smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      external_network:
+        description: Also check outbound egress through the proxy to https://example.com
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  proxy-smoke:
+    name: Build, lint, and curl proxy paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Test workspace
+        run: cargo test --workspace --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build CLI
+        run: cargo build -p rustbox-app
+
+      - name: Curl inbound and outbound proxy smoke test
+        env:
+          RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
+        run: bash scripts/ci/proxy-smoke.sh
