@@ -1,9 +1,12 @@
-//! Control-plane command and snapshot model.
+//! 控制面命令和快照模型。
+//!
+//! 控制面通过命令、快照和 reload plan 观察或调整引擎，不直接持有内核可变引用。
 
 use rustbox_config::CompiledConfig;
 use rustbox_route::RouteTable;
 use rustbox_types::OutboundId;
 
+/// 控制面可表达的引擎命令。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineCommand {
     Reload(CompiledConfig),
@@ -13,6 +16,7 @@ pub enum EngineCommand {
     DisableOutbound(OutboundId),
 }
 
+/// 面向 CLI、FFI、GUI 的引擎状态快照。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineSnapshot {
     pub state: EngineState,
@@ -50,6 +54,7 @@ pub enum ReloadPhase {
     Rollback,
 }
 
+/// reload 的轻量计划，表示下一代配置仍处于事务阶段而非直接修改 live graph。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReloadPlan {
     pub generation: u64,
@@ -82,6 +87,7 @@ impl ReloadPlan {
     }
 }
 
+/// 控制面状态机，保存当前快照和待处理 reload。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControlState {
     snapshot: EngineSnapshot,
@@ -105,6 +111,7 @@ impl ControlState {
     }
 
     pub fn apply_command(&mut self, command: EngineCommand) {
+        // 控制命令只更新控制状态；真正运行图替换由组合/运行时层执行。
         match command {
             EngineCommand::Reload(config) => {
                 self.pending_reload =

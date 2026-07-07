@@ -1,7 +1,10 @@
-//! Compile-and-swap reload transaction model.
+//! compile-and-swap reload 事务模型。
+//!
+//! reload 必须先准备新配置，再提交替换，最后排空旧图；失败时保留显式回滚阶段。
 
 use rustbox_config::CompiledConfig;
 
+/// 单次 reload 事务，记录目标代际、编译配置和当前阶段。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReloadTransaction {
     generation: u64,
@@ -51,6 +54,7 @@ impl ReloadTransaction {
     }
 
     fn transition(&mut self, from: ReloadPhase, to: ReloadPhase) -> Result<(), ReloadError> {
+        // 阶段转换必须单向、有序，避免边验证边修改 live engine。
         if self.phase != from {
             return Err(ReloadError::new(format!(
                 "invalid reload transition from {:?} to {:?}",

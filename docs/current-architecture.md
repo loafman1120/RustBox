@@ -4,6 +4,7 @@
 > **Last updated:** 2026-07-06  
 > **Scope:** Code currently present in this repository  
 > **Reference architecture:** `docs/architecture.md`
+> **Configuration and FFI design:** `docs/config-ffi-architecture.md`
 
 This document describes the architecture that exists in code today. It is not a replacement for the target architecture document. It maps the current Rust workspace to the intended RustBox layers and shows the implemented boundaries, planned adapters, and verified dependency direction.
 
@@ -11,10 +12,12 @@ This document describes the architecture that exists in code today. It is not a 
 
 ## 1. Current Summary
 
-RustBox currently implements a portable proxy core with a working minimum proxy graph:
+RustBox currently implements a portable proxy core with working minimum proxy
+graphs:
 
 ```text
 HTTP CONNECT inbound
+or SOCKS5 CONNECT inbound
         ↓
 Kernel flow submission
         ↓
@@ -55,6 +58,8 @@ apps/
 crates/
   compose/rustbox-compose/         L4 composition root
 
+  config/rustbox-config-file/      TOML file adapter to SourceConfig
+
   control/rustbox-config/          L5 configuration pipeline
   control/rustbox-control/         L5 control commands and snapshots
 
@@ -73,6 +78,7 @@ crates/
   modules/codec/rustbox-codec-socks5/       Portable SOCKS5 codec
   modules/dns/rustbox-dns-core/             Portable DNS resolver contracts
   modules/inbound/rustbox-inbound-http/     HTTP CONNECT inbound
+  modules/inbound/rustbox-inbound-socks5/   SOCKS5 CONNECT inbound
   modules/inspect/rustbox-inspect/          Metadata enrichers
   modules/outbound/rustbox-outbound-direct/ Direct outbound
   modules/stack/rustbox-stack/              Packet-to-flow stack boundary
@@ -95,11 +101,13 @@ flowchart TB
     APP["L5 rustbox-app\nCLI / process lifecycle"]
     CONTROL["L5 rustbox-control\ncommands / snapshots"]
     CONFIG["L5 rustbox-config\nsource -> parsed -> validated -> compiled"]
+    CONFIGFILE["L5 rustbox-config-file\nTOML -> SourceConfig"]
     FFI["L5 rustbox-ffi\nopaque handle table"]
 
     COMPOSE["L4 rustbox-compose\ncomposition root"]
 
     HTTP["L3 rustbox-inbound-http\nHTTP CONNECT inbound"]
+    SOCKS["L3 rustbox-inbound-socks5\nSOCKS5 CONNECT inbound"]
     DIRECT["L3 rustbox-outbound-direct\ndirect outbound"]
     TRANSPORT["L3 rustbox-transport\nstream transport contracts"]
     DNS["L3 rustbox-dns-core\nresolver contracts"]
@@ -123,13 +131,16 @@ flowchart TB
 
     APP --> COMPOSE
     APP --> OBS
+    APP --> CONFIGFILE
     APP --> CONFIG
     CONTROL --> CONFIG
     FFI --> COMPOSE
+    FFI --> CONFIGFILE
     FFI --> CONFIG
     FFI --> CONTROL
 
     COMPOSE --> HTTP
+    COMPOSE --> SOCKS
     COMPOSE --> DIRECT
     COMPOSE --> KERNEL
     COMPOSE --> ROUTE
@@ -140,6 +151,11 @@ flowchart TB
     HTTP --> HOSTAPI
     HTTP --> IO
     HTTP --> TYPES
+    SOCKS --> KERNEL
+    SOCKS --> HOSTAPI
+    SOCKS --> IO
+    SOCKS --> TYPES
+    SOCKS --> CODEC
 
     DIRECT --> KERNEL
     DIRECT --> HOSTAPI
@@ -183,7 +199,8 @@ flowchart TB
 
 ## 4. Current Data Plane
 
-The implemented end-to-end data path is an HTTP CONNECT tunnel over TCP.
+The implemented end-to-end data paths are HTTP CONNECT and SOCKS5 CONNECT
+tunnels over TCP.
 
 ```mermaid
 sequenceDiagram
@@ -217,9 +234,11 @@ Verified by:
 
 ```text
 rustbox-inbound-http::tests::http_connect_tunnels_bytes_to_direct_outbound
+rustbox-inbound-socks5::tests::socks5_connect_tunnels_bytes_to_direct_outbound
 ```
 
-That test starts a local TCP echo server, connects through the HTTP proxy, sends `ping`, and receives `pong`.
+Those tests start a local TCP echo server, connect through the proxy, send
+`ping`, and receive `pong`.
 
 ---
 
@@ -229,22 +248,32 @@ Configuration is implemented as a staged pipeline:
 
 ```mermaid
 flowchart LR
+    FILE["TOML file or FFI TOML bytes"]
     SOURCE["SourceConfig\nformat-neutral"]
     PARSED["ParsedConfig"]
     VALIDATED["ValidatedConfig\nids and references checked"]
     COMPILED["CompiledConfig\ntyped runtime plan"]
     COMPOSED["ComposedRuntime\nengine + services"]
 
-    SOURCE --> PARSED --> VALIDATED --> COMPILED --> COMPOSED
+    FILE --> SOURCE --> PARSED --> VALIDATED --> COMPILED --> COMPOSED
 ```
 
 Current default source:
 
 ```text
-Inbound:  http CONNECT on 127.0.0.1:18080
+Inbound:  http CONNECT on 127.0.0.1:18080, or SOCKS5 on 127.0.0.1:1080
 Outbound: direct
 Route:    default -> direct
 Runtime:  TokioHost
+```
+
+Current config-file source:
+
+```text
+schema_version = 1
+[[inbounds]] type = "http-connect" or "socks5"
+[[outbounds]] type = "direct"
+[[routes]] type = "default"
 ```
 
 The application does not manually wire module internals. It calls:
@@ -334,6 +363,8 @@ Current event coverage:
 |---|---|
 | HTTP inbound service | service starting, started, stopping, stopped |
 | HTTP inbound accept path | connection accepted, malformed CONNECT diagnostic |
+| SOCKS5 inbound service | service starting, started, stopping, stopped |
+| SOCKS5 inbound accept path | connection accepted, malformed greeting/request diagnostic |
 | Kernel flow path | flow accepted, route selected, flow completed, flow failed |
 | Direct outbound | outbound connecting, connected, failed |
 
@@ -351,7 +382,7 @@ Current module groups:
 ```mermaid
 flowchart TB
     CODEC["codec\nSOCKS5 parser/encoder"]
-    INBOUND["inbound\nHTTP CONNECT -> Flow"]
+    INBOUND["inbound\nHTTP CONNECT / SOCKS5 CONNECT -> Flow"]
     OUTBOUND["outbound\nDirect -> host TCP"]
     TRANSPORT["transport\nStreamTransport"]
     DNS["dns\nResolver"]
@@ -373,12 +404,14 @@ Important current status:
 | Area | Status |
 |---|---|
 | HTTP CONNECT inbound | Implemented |
+| SOCKS5 CONNECT inbound | Implemented |
 | Direct TCP outbound | Implemented |
 | Generic stream relay | Implemented |
 | Structured observability events | Implemented |
 | Console log adapter | Implemented |
 | SOCKS5 codec | Portable parser/encoder implemented |
-| SOCKS5 inbound/outbound module | Not implemented yet |
+| SOCKS5 outbound module | Not implemented yet |
+| SOCKS5 BIND / UDP ASSOCIATE / username-password auth | Not implemented yet |
 | DNS resolver contract | Implemented |
 | DNS UDP/TCP/DoH/DoQ transports | Not implemented yet |
 | Packet-to-flow stack | Boundary implemented, concrete stack planned |
@@ -444,6 +477,17 @@ The FFI boundary does not expose:
 - Tokio types
 - internal module pointers
 
+Current FFI configuration entrypoints:
+
+```text
+rustbox_validate_config_toml
+rustbox_engine_create_from_config_toml
+rustbox_engine_reload_config_toml
+```
+
+These parse UTF-8 TOML bytes into `SourceConfig` on the Rust side. Existing
+default HTTP CONNECT and SOCKS5 convenience functions remain available.
+
 ---
 
 ## 11. Platform Status
@@ -485,8 +529,12 @@ Key tests:
 | Test | Purpose |
 |---|---|
 | `http_connect_tunnels_bytes_to_direct_outbound` | Full HTTP CONNECT -> kernel -> direct outbound tunnel |
+| `socks5_connect_tunnels_bytes_to_direct_outbound` | Full SOCKS5 CONNECT -> kernel -> direct outbound tunnel |
 | `forwards_stream_flow_to_selected_outbound` | Kernel route and outbound dispatch |
 | `compiles_default_http_proxy_to_typed_runtime_plan` | Config pipeline |
+| `compiles_default_socks5_proxy_to_typed_runtime_plan` | SOCKS5 config pipeline |
+| `rustbox-config-file::tests::parses_http_and_socks5_proxy_config` | TOML file adapter |
+| `validates_toml_config_through_c_abi` | FFI TOML validation path |
 | `reload_transaction_enforces_prepare_commit_drain_order` | Reload transaction order |
 | `manifest_declares_modules_without_exposing_rust_traits` | Plugin ABI separation |
 | `parses_domain_connect_request_without_runtime_dependencies` | Portable SOCKS5 codec |
@@ -508,6 +556,7 @@ The current implementation satisfies these architecture invariants:
 | TUN creation is outside kernel | Satisfied |
 | Stream, datagram, and packet abstractions are distinct | Satisfied |
 | Configuration formats are outside runtime modules | Satisfied |
+| Config file parsing is outside kernel and protocol modules | Satisfied |
 | FFI is separate from internal Rust traits | Satisfied |
 | Plugin ABI is not internal Rust trait API | Satisfied |
 | Concrete logging output is outside portable core | Satisfied |
@@ -518,13 +567,14 @@ The current implementation satisfies these architecture invariants:
 
 The following are intentionally not complete yet:
 
-- SOCKS5 inbound/outbound runtime modules.
+- SOCKS5 outbound runtime module.
+- SOCKS5 BIND, UDP ASSOCIATE, and username-password authentication.
 - DNS UDP/TCP/TLS/HTTPS/QUIC transports.
 - Concrete TUN inbound.
 - Concrete packet-to-flow network stack.
 - Windows Wintun / WFP / route-control implementation.
 - Linux, Apple, Android, and BSD platform adapters.
-- External C ABI functions around the FFI handle model.
+- General FFI config-handle API for arbitrary user configuration.
 - Full controlled live reload integration into the running app.
 - File, tracing, ETW, Android logcat, Apple unified logging, and remote telemetry sinks.
 

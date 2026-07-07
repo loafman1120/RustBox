@@ -1,9 +1,13 @@
-//! User-space network stack boundary.
+//! 用户态网络栈边界。
+//!
+//! TUN/PacketDevice 进入后，由该边界把三层包转换为内核 Flow。
+//! 当前只保留接口和 planned 实现，避免把具体 stack 塞进 kernel。
 
 use rustbox_host_api::BoxFuture;
 use rustbox_io::PacketDevice;
 use rustbox_kernel::FlowSink;
 
+/// 包设备到 FlowSink 的桥接接口。
 pub trait NetworkStack: Send {
     fn attach(
         &mut self,
@@ -25,6 +29,7 @@ impl StackError {
     }
 }
 
+/// 占位 stack，用显式错误标记该能力尚未实现。
 #[derive(Default)]
 pub struct PlannedStack;
 

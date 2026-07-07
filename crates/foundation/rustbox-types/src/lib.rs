@@ -1,11 +1,12 @@
-//! Portable RustBox data types.
+//! RustBox 的可移植基础数据模型。
 //!
-//! This crate intentionally contains no runtime, socket, executor, or platform
-//! implementation details.
+//! 本 crate 位于 L0 Foundation，只描述协议和内核都能共享的纯数据。
+//! 这里刻意不出现 socket、executor、Tokio、平台句柄或操作系统语义。
 
 use core::fmt;
 use core::num::NonZeroU64;
 
+/// 可路由的主机标识，可以是域名，也可以是已经解析出的 IP。
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Host {
     Domain(String),
@@ -27,6 +28,7 @@ impl fmt::Display for Host {
     }
 }
 
+/// 平台无关的 IP 表示，避免在基础层泄漏 `std::net` 具体类型。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum IpAddress {
     V4([u8; 4]),
@@ -67,6 +69,7 @@ impl fmt::Display for IpAddress {
     }
 }
 
+/// 网络端点，由主机和端口组成，是配置、路由、能力调用之间的通用地址。
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Endpoint {
     pub host: Host,
@@ -95,6 +98,7 @@ impl fmt::Display for Endpoint {
     }
 }
 
+/// RustBox 数据面当前处理的网络类别。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Network {
     Tcp,
@@ -147,6 +151,7 @@ id_type!(OutboundId);
 id_type!(SessionId);
 id_type!(ServiceId);
 
+/// 流元数据是路由和观测的核心输入，不持有真实 socket 或平台资源。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlowMeta {
     pub id: FlowId,
@@ -158,6 +163,7 @@ pub struct FlowMeta {
     pub protocol_hint: Option<ProtocolHint>,
 }
 
+/// 路由层输出的纯决策：转发、拒绝或交给内部服务处理。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RouteDecision {
     Forward(OutboundId),
@@ -172,6 +178,7 @@ pub enum RejectReason {
     UnsupportedNetwork,
 }
 
+/// 跨层传播的轻量错误信息，保留错误类别但不绑定具体平台错误类型。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ErrorInfo {
     pub kind: ErrorKind,

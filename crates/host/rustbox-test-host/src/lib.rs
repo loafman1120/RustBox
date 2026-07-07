@@ -1,4 +1,6 @@
-//! Deterministic host capability implementations for tests.
+//! 用于测试的确定性宿主能力实现。
+//!
+//! 本 crate 让核心和模块测试不依赖真实 socket、真实时间或系统随机源。
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -11,6 +13,7 @@ use rustbox_types::Endpoint;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// 可注入内存流和虚拟时钟的测试宿主。
 #[derive(Clone, Default)]
 pub struct TestHost {
     inner: Arc<Mutex<TestHostState>>,
@@ -121,6 +124,7 @@ impl StreamListener for EmptyListener {
     }
 }
 
+/// 简单内存字节流，用于 relay、outbound 和能力测试。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MemoryStream {
     read: VecDeque<u8>,

@@ -1,13 +1,17 @@
-//! Portable DNS core contracts.
+//! 可移植 DNS 核心契约。
+//!
+//! DNS 是独立子系统，不隐藏在路由器内部；解析器通过能力或未来 DNS transport 获取效果。
 
 use rustbox_host_api::BoxFuture;
 use rustbox_types::{Host, IpAddress};
 use std::collections::HashMap;
 
+/// DNS 解析接口，输入查询，输出响应，不直接决定代理路由。
 pub trait Resolver: Send + Sync {
     fn resolve(&self, query: DnsQuery) -> BoxFuture<'_, Result<DnsResponse, DnsError>>;
 }
 
+/// 已验证的 DNS 名称。
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct DnsName(String);
 
@@ -69,6 +73,7 @@ impl DnsError {
     }
 }
 
+/// 测试和默认场景使用的静态解析器。
 #[derive(Clone, Debug, Default)]
 pub struct StaticResolver {
     records: HashMap<DnsName, Vec<DnsAnswer>>,

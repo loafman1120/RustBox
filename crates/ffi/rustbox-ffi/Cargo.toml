@@ -10,6 +10,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 rustbox-compose = { path = "../../compose/rustbox-compose" }
 rustbox-config = { path = "../../control/rustbox-config" }
+rustbox-config-file = { path = "../../config/rustbox-config-file" }
 rustbox-control = { path = "../../control/rustbox-control" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }

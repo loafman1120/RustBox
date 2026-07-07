@@ -1,11 +1,11 @@
-//! Future plugin boundary metadata.
+//! 未来插件边界元数据。
 //!
-//! RustBox v0.x uses workspace modules first. This crate models the metadata a
-//! future external plugin boundary would need without making internal Rust
-//! traits the external ABI.
+//! RustBox v0.x 优先使用 workspace 内静态模块。本 crate 只描述未来外部插件
+//! 需要声明的元数据，不把内部 Rust trait 当成外部 ABI。
 
 use rustbox_registry::{CapabilityRequirement, ModuleCategory};
 
+/// 插件清单，声明 ABI 版本、模块类别和所需宿主能力。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginManifest {
     pub id: PluginId,

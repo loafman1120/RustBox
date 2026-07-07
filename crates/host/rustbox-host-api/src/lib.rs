@@ -1,7 +1,7 @@
-//! Host capability contracts.
+//! 宿主能力契约。
 //!
-//! The portable kernel depends on these traits, never on concrete host
-//! implementations such as Tokio, Linux, or Windows adapters.
+//! 本 crate 是 L1 Capability Contracts。可移植内核和模块只依赖这些 trait，
+//! 不直接依赖 Tokio、Linux、Windows 或任何真实宿主实现。
 
 use core::future::Future;
 use core::pin::Pin;
@@ -11,6 +11,7 @@ use rustbox_types::Endpoint;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type AcceptedStream = (Box<dyn ByteStream>, Endpoint);
 
+/// 网络能力端口：核心通过它请求 TCP/UDP 操作，而不是直接打开系统 socket。
 pub trait NetworkProvider: Send + Sync {
     fn connect_tcp(
         &self,
@@ -28,27 +29,32 @@ pub trait NetworkProvider: Send + Sync {
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, NetError>>;
 }
 
+/// TCP 监听器抽象，由具体运行时负责 accept 并返回可移植字节流。
 pub trait StreamListener: Send {
     fn local_endpoint(&self) -> Option<Endpoint>;
 
     fn accept(&mut self) -> BoxFuture<'_, Result<AcceptedStream, NetError>>;
 }
 
+/// 时钟能力端口，用于超时、定时器和可确定性测试。
 pub trait Clock: Send + Sync {
     fn now(&self) -> HostInstant;
 
     fn sleep_until(&self, deadline: HostInstant) -> BoxFuture<'_, ()>;
 }
 
+/// 熵能力端口，避免协议代码隐式绑定平台随机源。
 pub trait Entropy: Send + Sync {
     fn fill(&self, output: &mut [u8]) -> Result<(), EntropyError>;
 }
 
+/// 任务派生能力端口，让后台任务拥有显式生命周期归属。
 pub trait TaskSpawner: Send + Sync {
     fn spawn(&self, name: TaskName, task: BoxFuture<'static, ()>)
     -> Result<TaskHandle, SpawnError>;
 }
 
+/// 包设备能力端口，TUN/Wintun/VpnService 等平台设施从这里进入系统。
 pub trait PacketDeviceProvider: Send + Sync {
     fn open(
         &self,
@@ -56,6 +62,7 @@ pub trait PacketDeviceProvider: Send + Sync {
     ) -> BoxFuture<'_, Result<Box<dyn PacketDevice>, PacketDeviceError>>;
 }
 
+/// 网络控制能力端口，承载路由、透明代理、策略路由等平台状态变更。
 pub trait NetworkControl: Send + Sync {
     fn apply(
         &self,
@@ -63,10 +70,12 @@ pub trait NetworkControl: Send + Sync {
     ) -> BoxFuture<'_, Result<NetworkLease, NetworkControlError>>;
 }
 
+/// 观测能力端口，核心只发结构化事件，不选择最终日志后端。
 pub trait ObservabilitySink: Send + Sync {
     fn emit(&self, event: Event) -> BoxFuture<'_, ()>;
 }
 
+/// 默认空观测实现，供库调用者尚未注入日志后端时使用。
 #[derive(Clone, Debug, Default)]
 pub struct NoopObservabilitySink;
 
@@ -129,6 +138,7 @@ pub struct NetworkLease {
     pub id: u64,
 }
 
+/// 结构化事件是核心和模块跨观测边界传递的唯一载体。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Event {
     pub level: EventLevel,
@@ -177,6 +187,7 @@ impl From<String> for EventTarget {
     }
 }
 
+/// 数据面和控制面的关键事件类型，保持可序列化、可转接。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventKind {
     ServiceStarting {

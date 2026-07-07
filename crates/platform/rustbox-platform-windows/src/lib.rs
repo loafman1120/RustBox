@@ -1,8 +1,7 @@
-//! Windows platform capability adapter boundary.
+//! Windows 平台能力适配边界。
 //!
-//! The initial default HTTP proxy does not require Windows route control or
-//! packet devices. These capabilities are explicit and currently unsupported,
-//! so the kernel never infers platform support from `cfg(target_os)`.
+//! 当前最小代理图不需要 Windows route control 或 packet device。
+//! 这些能力以显式 planned error 暴露，内核不会通过 `cfg(target_os)` 推断平台能力。
 
 use rustbox_host_api::{
     BoxFuture, NetworkControl, NetworkControlError, NetworkLease, NetworkTransaction,
@@ -10,6 +9,7 @@ use rustbox_host_api::{
 };
 use rustbox_io::PacketDevice;
 
+/// Windows 平台能力集合的占位实现。
 #[derive(Clone, Debug, Default)]
 pub struct WindowsPlatform;
 
@@ -55,6 +55,7 @@ impl NetworkControl for WindowsPlatform {
     }
 }
 
+/// Windows 能力矩阵，用于向组合层或控制面声明当前支持状态。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WindowsCapabilityMatrix {
     pub tcp_udp: CapabilitySupport,

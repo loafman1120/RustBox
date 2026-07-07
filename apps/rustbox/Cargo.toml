@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+rustbox-config-file = { path = "../../crates/config/rustbox-config-file" }
 rustbox-compose = { path = "../../crates/compose/rustbox-compose" }
 rustbox-kernel = { path = "../../crates/kernel/rustbox-kernel" }
 rustbox-observability = { path = "../../crates/observability/rustbox-observability" }

@@ -1,9 +1,12 @@
-//! Metadata enrichment pipeline contracts.
+//! 元数据增强模块。
+//!
+//! inspect 模块在路由前补充 FlowMeta，保持“观察/补充”和“路由决策”分离。
 
 use rustbox_host_api::BoxFuture;
 use rustbox_kernel::{InspectError, MetadataEnricher};
 use rustbox_types::{FlowMeta, Host, ProtocolHint};
 
+/// 测试和固定策略使用的域名增强器。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticDomainEnricher {
     domain: Host,
@@ -28,6 +31,7 @@ impl MetadataEnricher for StaticDomainEnricher {
     }
 }
 
+/// 测试和固定策略使用的协议提示增强器。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticProtocolHintEnricher {
     hint: ProtocolHint,

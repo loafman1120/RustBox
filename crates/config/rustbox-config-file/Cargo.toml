@@ -1,0 +1,14 @@
+[package]
+name = "rustbox-config-file"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-config = { path = "../../control/rustbox-config" }
+rustbox-types = { path = "../../foundation/rustbox-types" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[lints]
+workspace = true

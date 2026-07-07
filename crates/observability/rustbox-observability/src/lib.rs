@@ -1,17 +1,19 @@
-//! Concrete observability sinks.
+//! 具体观测 sink。
 //!
-//! Portable crates emit structured `rustbox-host-api` events. This crate decides
-//! how those events are rendered or collected.
+//! 可移植 crate 只发出 `rustbox-host-api` 的结构化事件；本 crate 决定事件
+//! 如何打印、过滤或记录，避免核心绑定具体日志框架。
 
 use rustbox_host_api::{BoxFuture, Event, EventKind, EventLevel, EventTarget, ObservabilitySink};
 use std::sync::Mutex;
 
+/// 控制台输出目标。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConsoleStream {
     Stdout,
     Stderr,
 }
 
+/// 事件级别过滤器，当前可由 `RUSTBOX_LOG` 配置。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LevelFilter {
     Trace,
@@ -57,6 +59,7 @@ impl LevelFilter {
     }
 }
 
+/// 控制台 sink，用于 CLI 默认观测输出。
 #[derive(Clone, Debug)]
 pub struct ConsoleObservabilitySink {
     stream: ConsoleStream,
@@ -103,6 +106,7 @@ impl ObservabilitySink for ConsoleObservabilitySink {
     }
 }
 
+/// 记录型 sink，供测试和嵌入方断言事件序列。
 #[derive(Debug, Default)]
 pub struct RecordingObservabilitySink {
     events: Mutex<Vec<Event>>,
@@ -128,6 +132,7 @@ impl ObservabilitySink for RecordingObservabilitySink {
     }
 }
 
+/// 将结构化事件渲染为当前 CLI 友好的单行文本。
 pub fn format_event(event: &Event) -> String {
     let flow = event
         .flow_id

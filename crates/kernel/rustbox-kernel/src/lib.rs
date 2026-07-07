@@ -1,4 +1,7 @@
-//! Portable RustBox kernel skeleton.
+//! RustBox 可移植内核。
+//!
+//! 本 crate 位于 L2 Kernel，负责 Flow 生命周期、元数据增强、路由决策、
+//! 出站分发和通用 relay。它不依赖具体运行时、平台适配器或协议入口。
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -16,20 +19,24 @@ pub fn architecture_summary() -> &'static str {
     "RustBox: portable core + capability ports + host adapters + composition root"
 }
 
+/// 数据面进入内核后的基本工作单元。
 pub struct Flow {
     pub meta: FlowMeta,
     pub payload: FlowPayload,
 }
 
+/// Flow 的载荷形态。字节流、数据报保持分离，避免把 UDP 伪装成 TCP。
 pub enum FlowPayload {
     Stream(Box<dyn ByteStream>),
     Datagram(Box<dyn DatagramSocket>),
 }
 
+/// inbound 向内核提交 Flow 的入口。
 pub trait FlowSink: Send + Sync {
     fn submit(&self, flow: Flow) -> BoxFuture<'_, Result<FlowOutcome, FlowError>>;
 }
 
+/// 长生命周期组件的统一生命周期接口。
 pub trait Service: Send {
     fn start(&mut self, ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>>;
 
@@ -41,10 +48,12 @@ pub struct ServiceContext<'a> {
     pub engine_name: &'a str,
 }
 
+/// inbound 只负责接入外部连接并创建 Flow，不参与路由选择。
 pub trait Inbound: Service {
     fn id(&self) -> rustbox_types::InboundId;
 }
 
+/// outbound 执行出站请求，但不拥有路由规则。
 pub trait Outbound: Send + Sync {
     fn id(&self) -> OutboundId;
 
@@ -66,12 +75,14 @@ pub struct OutboundContext<'a> {
     pub flow: &'a FlowMeta,
 }
 
+/// 元数据增强阶段在路由前运行，用于补充域名、协议提示、进程信息等。
 pub trait MetadataEnricher: Send + Sync {
     fn name(&self) -> &'static str;
 
     fn enrich(&self, meta: FlowMeta) -> BoxFuture<'_, Result<FlowMeta, InspectError>>;
 }
 
+/// 按注册顺序执行的元数据增强流水线。
 #[derive(Clone, Default)]
 pub struct EnrichmentPipeline {
     enrichers: Vec<Arc<dyn MetadataEnricher>>,
@@ -94,6 +105,7 @@ impl EnrichmentPipeline {
     }
 }
 
+/// RustBox 的可移植执行核心，持有路由器、增强器、出站集合和观测端口。
 pub struct Engine {
     router: Box<dyn Router>,
     enrichment: EnrichmentPipeline,
@@ -150,6 +162,7 @@ impl Engine {
     }
 
     async fn execute_flow_inner(&self, flow: Flow) -> Result<FlowOutcome, FlowError> {
+        // 关键数据面路径：接收 Flow -> 增强元数据 -> 路由 -> 打开 outbound -> relay。
         self.emit(
             EventLevel::Info,
             "rustbox.kernel.flow",
@@ -239,6 +252,7 @@ impl FlowSink for Engine {
     }
 }
 
+/// 构造期专用 builder，用显式依赖注入替代全局上下文。
 pub struct EngineBuilder {
     router: Box<dyn Router>,
     enrichment: EnrichmentPipeline,
@@ -276,6 +290,7 @@ impl EngineBuilder {
     }
 }
 
+/// Flow 处理完成后的归一化结果，供控制面、测试和观测使用。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FlowOutcome {
     Forwarded {
@@ -363,6 +378,7 @@ impl RelayError {
     }
 }
 
+/// 通用双向流转发原语，协议模块不需要重复实现 copy loop。
 pub async fn relay_stream(
     mut inbound: Box<dyn ByteStream>,
     mut outbound: Box<dyn ByteStream>,

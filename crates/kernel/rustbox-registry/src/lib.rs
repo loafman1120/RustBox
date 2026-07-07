@@ -1,7 +1,10 @@
-//! Construction-time module registries.
+//! 构造期模块注册表。
+//!
+//! 注册表只服务于模块发现和构造，不是运行时服务定位器。
 
 use std::collections::HashMap;
 
+/// 所有工厂都必须暴露稳定 kind，用于配置编译后的模块查找。
 pub trait Factory: Send + Sync {
     fn kind(&self) -> &'static str;
 }
@@ -65,12 +68,14 @@ pub enum ModuleCategory {
     Stack,
 }
 
+/// 模块工厂声明类别和能力需求，组合根据此构建运行图。
 pub trait ModuleFactory: Factory {
     fn category(&self) -> ModuleCategory;
 
     fn required_capabilities(&self) -> &[CapabilityRequirement];
 }
 
+/// 模块需要宿主提供的能力集合，是未来权限和平台校验的基础。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CapabilityRequirement {
     Network,
@@ -83,6 +88,7 @@ pub enum CapabilityRequirement {
     Observability,
 }
 
+/// 按模块类别分桶的构造期注册表。
 #[derive(Default)]
 pub struct ModuleRegistry {
     inbound: Registry<dyn ModuleFactory>,

@@ -1,25 +1,29 @@
-//! Coarse handle-based FFI boundary model.
+//! 基于不透明句柄的粗粒度 FFI 边界。
 //!
-//! This crate intentionally keeps Rust traits, references, and runtime-specific
-//! types behind an opaque handle table.
+//! 本 crate 位于外部 ABI 边界，刻意把 Rust trait、引用、Tokio runtime
+//! 和内部模块指针都隐藏在 Rust 侧句柄表后面。
 
 use rustbox_compose::{ComposeError, ComposedRuntime, TokioComposition};
 use rustbox_config::{CompiledConfig, ConfigCompiler, ConfigError, SourceConfig};
+use rustbox_config_file::{ConfigFileError, parse_toml_str};
 use rustbox_control::{EngineSnapshot, EngineState};
 use rustbox_types::Endpoint;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
+use std::slice;
 use std::sync::{Mutex, OnceLock};
 use tokio::runtime::{Builder, Runtime};
 
 const RUSTBOX_FFI_ABI_VERSION: u32 = 1;
 
+/// C ABI 暴露的引擎句柄。宿主只能传回该值，不能解引用内部对象。
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct RustBoxEngineHandle(pub u64);
 
+/// C ABI 稳定状态码，用于跨语言调用时替代 Rust error/enum。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RustBoxStatusCode {
@@ -32,6 +36,7 @@ pub enum RustBoxStatusCode {
     LockPoisoned = 6,
 }
 
+/// C ABI 可见的引擎状态镜像。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RustBoxEngineStateCode {
@@ -43,6 +48,7 @@ pub enum RustBoxEngineStateCode {
     Failed = 5,
 }
 
+/// C ABI 快照结构，只包含值类型字段，避免暴露 Rust 所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RustBoxFfiEngineSnapshot {
@@ -52,6 +58,7 @@ pub struct RustBoxFfiEngineSnapshot {
     pub outbound_count: u64,
 }
 
+/// Rust 分配的诊断字符串由调用方通过 `rustbox_diagnostic_message_free` 释放。
 #[repr(C)]
 #[derive(Debug)]
 pub struct RustBoxFfiDiagnostic {
@@ -74,6 +81,7 @@ impl RustBoxFfiError {
     }
 }
 
+/// Rust 侧维护的引擎句柄表，是 FFI 和真实运行图之间的隔离层。
 pub struct FfiEngineTable {
     next: u64,
     engines: HashMap<RustBoxEngineHandle, ManagedEngine>,
@@ -93,9 +101,20 @@ impl FfiEngineTable {
     }
 
     pub fn create_default_http_proxy(&mut self, listen: Endpoint) -> RustBoxEngineHandle {
+        self.create_with_source(SourceConfig::default_http_proxy(listen))
+    }
+
+    pub fn create_default_socks5_proxy(&mut self, listen: Endpoint) -> RustBoxEngineHandle {
+        self.create_with_source(SourceConfig::default_socks5_proxy(listen))
+    }
+
+    pub fn create_from_source(&mut self, source: SourceConfig) -> RustBoxEngineHandle {
+        self.create_with_source(source)
+    }
+
+    fn create_with_source(&mut self, source: SourceConfig) -> RustBoxEngineHandle {
         let handle = RustBoxEngineHandle(self.next);
         self.next = self.next.saturating_add(1);
-        let source = SourceConfig::default_http_proxy(listen);
         self.engines.insert(
             handle,
             ManagedEngine {
@@ -236,7 +255,23 @@ impl FfiEngineTable {
         handle: RustBoxEngineHandle,
         listen: Endpoint,
     ) -> Result<(), RustBoxFfiError> {
-        let next_source = SourceConfig::default_http_proxy(listen);
+        self.reload_source_blocking(handle, SourceConfig::default_http_proxy(listen))
+    }
+
+    pub fn reload_default_socks5_proxy_blocking(
+        &mut self,
+        handle: RustBoxEngineHandle,
+        listen: Endpoint,
+    ) -> Result<(), RustBoxFfiError> {
+        self.reload_source_blocking(handle, SourceConfig::default_socks5_proxy(listen))
+    }
+
+    fn reload_source_blocking(
+        &mut self,
+        handle: RustBoxEngineHandle,
+        next_source: SourceConfig,
+    ) -> Result<(), RustBoxFfiError> {
+        // 当前 FFI reload 先编译新配置，再按 stop/start 模式替换运行图。
         let compiled = compile_source(next_source.clone())?;
         let managed = self
             .engines
@@ -316,7 +351,29 @@ fn compile_source(source: SourceConfig) -> Result<CompiledConfig, RustBoxFfiErro
     ConfigCompiler::compile(validated).map_err(config_error)
 }
 
+fn parse_toml_source(bytes: *const u8, len: usize) -> Result<SourceConfig, RustBoxFfiError> {
+    // FFI 指针入口只负责边界检查和文本转换，随后立即进入统一配置流水线。
+    if bytes.is_null() {
+        return Err(RustBoxFfiError::new(
+            RustBoxStatusCode::InvalidArgument,
+            "config bytes pointer must not be null",
+        ));
+    }
+
+    let bytes = unsafe { slice::from_raw_parts(bytes, len) };
+    let text = std::str::from_utf8(bytes).map_err(|err| {
+        RustBoxFfiError::new(
+            RustBoxStatusCode::InvalidArgument,
+            format!("config bytes must be UTF-8: {err}"),
+        )
+    })?;
+    parse_toml_str(text)
+        .map(|config| config.source)
+        .map_err(config_file_error)
+}
+
 fn start_owned_runtime(compiled: CompiledConfig) -> Result<ActiveRuntime, RustBoxFfiError> {
+    // C ABI 调用方通常没有 Tokio runtime，因此这里由 FFI 层持有独立 runtime。
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -332,6 +389,10 @@ fn start_owned_runtime(compiled: CompiledConfig) -> Result<ActiveRuntime, RustBo
 }
 
 fn config_error(err: ConfigError) -> RustBoxFfiError {
+    RustBoxFfiError::new(RustBoxStatusCode::InvalidConfig, err.message)
+}
+
+fn config_file_error(err: ConfigFileError) -> RustBoxFfiError {
     RustBoxFfiError::new(RustBoxStatusCode::InvalidConfig, err.message)
 }
 
@@ -396,6 +457,7 @@ fn write_out<T>(out: *mut T, value: T) -> Result<(), RustBoxFfiError> {
 }
 
 fn write_diagnostic(diagnostic: *mut RustBoxFfiDiagnostic, code: RustBoxStatusCode, message: &str) {
+    // 诊断内存由 Rust 分配，保证嵌套字符串所有权规则集中在一个释放函数里。
     if diagnostic.is_null() {
         return;
     }
@@ -462,6 +524,29 @@ pub extern "C" fn rustbox_validate_default_http_proxy(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rustbox_validate_default_socks5_proxy(
+    listen_port: u16,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    ffi_result(
+        FfiEngineTable::validate(SourceConfig::default_socks5_proxy(Endpoint::localhost_v4(
+            listen_port,
+        ))),
+        diagnostic,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_validate_config_toml(
+    bytes: *const u8,
+    len: usize,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    let result = parse_toml_source(bytes, len).and_then(FfiEngineTable::validate);
+    ffi_result(result, diagnostic)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rustbox_engine_create_default_http_proxy(
     listen_port: u16,
     out_handle: *mut RustBoxEngineHandle,
@@ -469,6 +554,47 @@ pub extern "C" fn rustbox_engine_create_default_http_proxy(
 ) -> RustBoxStatusCode {
     match with_table(diagnostic, |table| {
         let handle = table.create_default_http_proxy(Endpoint::localhost_v4(listen_port));
+        write_out(out_handle, handle)?;
+        Ok(())
+    }) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_create_from_config_toml(
+    bytes: *const u8,
+    len: usize,
+    out_handle: *mut RustBoxEngineHandle,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| {
+        let source = parse_toml_source(bytes, len)?;
+        compile_source(source.clone())?;
+        let handle = table.create_from_source(source);
+        write_out(out_handle, handle)?;
+        Ok(())
+    }) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_create_default_socks5_proxy(
+    listen_port: u16,
+    out_handle: *mut RustBoxEngineHandle,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| {
+        let handle = table.create_default_socks5_proxy(Endpoint::localhost_v4(listen_port));
         write_out(out_handle, handle)?;
         Ok(())
     }) {
@@ -502,6 +628,42 @@ pub extern "C" fn rustbox_engine_reload_default_http_proxy(
 ) -> RustBoxStatusCode {
     match with_table(diagnostic, |table| {
         table.reload_default_http_proxy_blocking(handle, Endpoint::localhost_v4(listen_port))
+    }) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_reload_config_toml(
+    handle: RustBoxEngineHandle,
+    bytes: *const u8,
+    len: usize,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| {
+        let source = parse_toml_source(bytes, len)?;
+        table.reload_source_blocking(handle, source)
+    }) {
+        Ok(()) => {
+            write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
+            RustBoxStatusCode::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rustbox_engine_reload_default_socks5_proxy(
+    handle: RustBoxEngineHandle,
+    listen_port: u16,
+    diagnostic: *mut RustBoxFfiDiagnostic,
+) -> RustBoxStatusCode {
+    match with_table(diagnostic, |table| {
+        table.reload_default_socks5_proxy_blocking(handle, Endpoint::localhost_v4(listen_port))
     }) {
         Ok(()) => {
             write_diagnostic(diagnostic, RustBoxStatusCode::Ok, "");
@@ -601,6 +763,28 @@ mod tests {
     }
 
     #[test]
+    fn validates_default_socks5_proxy_through_c_abi() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+
+        let code = rustbox_validate_default_socks5_proxy(0, &mut diagnostic);
+
+        assert_eq!(code, RustBoxStatusCode::Ok);
+        assert_eq!(diagnostic.code, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
+    fn validates_toml_config_through_c_abi() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+        let config = sample_toml_config();
+
+        let code = rustbox_validate_config_toml(config.as_ptr(), config.len(), &mut diagnostic);
+
+        assert_eq!(code, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
     fn creates_snapshots_reloads_and_destroys_through_c_abi() {
         let mut diagnostic = RustBoxFfiDiagnostic::default();
         let mut handle = RustBoxEngineHandle(0);
@@ -674,6 +858,55 @@ mod tests {
     }
 
     #[test]
+    fn creates_reloads_and_destroys_socks5_through_c_abi() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+        let mut handle = RustBoxEngineHandle(0);
+
+        let create = rustbox_engine_create_default_socks5_proxy(0, &mut handle, &mut diagnostic);
+        assert_eq!(create, RustBoxStatusCode::Ok);
+        assert_ne!(handle.0, 0);
+        free_diagnostic(&mut diagnostic);
+
+        let reload = rustbox_engine_reload_default_socks5_proxy(handle, 0, &mut diagnostic);
+        assert_eq!(reload, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+
+        let destroy = rustbox_engine_destroy(handle, &mut diagnostic);
+        assert_eq!(destroy, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
+    fn creates_reloads_and_destroys_toml_config_through_c_abi() {
+        let mut diagnostic = RustBoxFfiDiagnostic::default();
+        let mut handle = RustBoxEngineHandle(0);
+        let config = sample_toml_config();
+
+        let create = rustbox_engine_create_from_config_toml(
+            config.as_ptr(),
+            config.len(),
+            &mut handle,
+            &mut diagnostic,
+        );
+        assert_eq!(create, RustBoxStatusCode::Ok);
+        assert_ne!(handle.0, 0);
+        free_diagnostic(&mut diagnostic);
+
+        let reload = rustbox_engine_reload_config_toml(
+            handle,
+            config.as_ptr(),
+            config.len(),
+            &mut diagnostic,
+        );
+        assert_eq!(reload, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+
+        let destroy = rustbox_engine_destroy(handle, &mut diagnostic);
+        assert_eq!(destroy, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+    }
+
+    #[test]
     fn not_found_error_returns_utf8_diagnostic() {
         let mut diagnostic = RustBoxFfiDiagnostic::default();
         let mut snapshot = RustBoxFfiEngineSnapshot {
@@ -724,5 +957,25 @@ mod tests {
             rustbox_diagnostic_message_free(diagnostic.message);
         }
         diagnostic.message = ptr::null_mut();
+    }
+
+    fn sample_toml_config() -> Vec<u8> {
+        br#"
+schema_version = 1
+
+[[inbounds]]
+id = "socks"
+type = "socks5"
+listen = "127.0.0.1:0"
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[routes]]
+type = "default"
+outbound = "direct"
+"#
+        .to_vec()
     }
 }

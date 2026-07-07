@@ -1,0 +1,22 @@
+schema_version = 1
+
+[observability]
+level = "info"
+
+[[inbounds]]
+id = "http"
+type = "http-connect"
+listen = "127.0.0.1:18080"
+
+[[inbounds]]
+id = "socks"
+type = "socks5"
+listen = "127.0.0.1:1080"
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[routes]]
+type = "default"
+outbound = "direct"

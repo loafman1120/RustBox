@@ -6,6 +6,7 @@
 > **Language:** Rust  
 > **Document path:** `docs/architecture.md`
 > **Current implementation map:** `docs/current-architecture.md`
+> **Configuration and FFI design:** `docs/config-ffi-architecture.md`
 
 ---
 
@@ -1247,9 +1248,9 @@ Implemented crate groups:
 
 | Layer | Current crates |
 |---|---|
-| L5 Application and control | `rustbox-app`, `rustbox-config`, `rustbox-control`, `rustbox-ffi` |
+| L5 Application and control | `rustbox-app`, `rustbox-config`, `rustbox-config-file`, `rustbox-control`, `rustbox-ffi` |
 | L4 Composition | `rustbox-compose` |
-| L3 Modules | `rustbox-inbound-http`, `rustbox-outbound-direct`, `rustbox-codec-socks5`, `rustbox-dns-core`, `rustbox-inspect`, `rustbox-stack`, `rustbox-transport` |
+| L3 Modules | `rustbox-inbound-http`, `rustbox-inbound-socks5`, `rustbox-outbound-direct`, `rustbox-codec-socks5`, `rustbox-dns-core`, `rustbox-inspect`, `rustbox-stack`, `rustbox-transport` |
 | L2 Kernel | `rustbox-kernel`, `rustbox-route`, `rustbox-registry` |
 | L1 Capabilities | `rustbox-host-api`, `rustbox-test-host` |
 | L0 Foundation | `rustbox-types`, `rustbox-io` |
@@ -1260,6 +1261,7 @@ The runnable application is currently:
 
 ```text
 cargo run -p rustbox-app -- http-proxy
+cargo run -p rustbox-app -- socks5-proxy
 ```
 
 It starts an HTTP CONNECT proxy on `127.0.0.1:18080` using the default
@@ -1268,13 +1270,13 @@ composition graph. This is the current executable proof of the architecture.
 The following pieces are intentionally still boundaries or models rather than
 complete runtime implementations:
 
-- SOCKS5 inbound and outbound runtime modules.
+- SOCKS5 outbound runtime module.
+- SOCKS5 BIND, UDP ASSOCIATE, and username-password authentication.
 - Direct UDP forwarding.
 - DNS transports beyond the portable resolver contracts.
 - Concrete TUN inbound and packet-to-flow stack.
 - Windows packet device, route control, transparent proxy, and process lookup.
-- External C ABI functions around the FFI handle table.
-- File-based configuration loading from the CLI.
+- General FFI config-handle API for arbitrary user configuration.
 - File, platform-native, and remote telemetry logging sinks.
 
 The detailed implementation map is maintained in

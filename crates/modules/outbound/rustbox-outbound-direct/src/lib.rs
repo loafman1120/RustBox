@@ -1,4 +1,7 @@
-//! Direct outbound using the host network capability.
+//! direct outbound。
+//!
+//! 本模块执行“直连”出站：把内核给出的目标 Endpoint 转换为宿主
+//! `NetworkProvider.connect_tcp` 调用，不直接接触系统 socket。
 
 use rustbox_host_api::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
@@ -9,6 +12,7 @@ use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, OutboundId};
 use std::sync::Arc;
 
+/// 直连出站实现，依赖注入的网络能力负责真正的 TCP 连接。
 pub struct DirectOutbound {
     id: OutboundId,
     network: Arc<dyn NetworkProvider>,
@@ -40,6 +44,7 @@ impl Outbound for DirectOutbound {
         ctx: OutboundContext<'_>,
         target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn ByteStream>, OutboundError>> {
+        // 出站模块只执行连接动作，并在能力调用前后发出结构化观测事件。
         let outbound = self.id.to_string();
         let flow_id = Some(ctx.flow.id);
         let target_text = target.to_string();

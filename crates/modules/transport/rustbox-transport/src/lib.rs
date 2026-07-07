@@ -1,10 +1,13 @@
-//! Transport contracts and baseline TCP transport.
+//! transport 契约和基础 TCP transport。
+//!
+//! transport 描述字节如何到达对端，和 outbound 协议语义分离。
 
 use rustbox_host_api::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_io::ByteStream;
 use rustbox_types::Endpoint;
 use std::sync::Arc;
 
+/// 流式 transport 接口，可用于 TCP、TLS、WebSocket、QUIC 等链式组合。
 pub trait StreamTransport: Send + Sync {
     fn connect(
         &self,
@@ -31,6 +34,7 @@ impl TransportError {
     }
 }
 
+/// 最小 TCP transport，通过注入的网络能力建立字节流。
 #[derive(Clone)]
 pub struct TcpTransport {
     network: Arc<dyn NetworkProvider>,

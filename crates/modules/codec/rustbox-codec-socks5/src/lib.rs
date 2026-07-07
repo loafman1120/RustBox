@@ -1,12 +1,13 @@
-//! Runtime-neutral SOCKS5 codec primitives.
+//! 运行时无关的 SOCKS5 codec。
 //!
-//! This crate parses and encodes protocol bytes only. It never opens sockets,
-//! spawns tasks, reads files, or depends on a runtime.
+//! 本 crate 只解析和编码协议字节，不打开 socket、不派生任务、不读文件、
+//! 也不依赖 Tokio。它可被 inbound、未来 outbound 和 fuzz 测试共同复用。
 
 use rustbox_types::{Endpoint, Host, IpAddress};
 
 pub const SOCKS_VERSION: u8 = 0x05;
 
+/// SOCKS5 greeting 中客户端声明的认证方法集合。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Greeting {
     pub methods: Vec<AuthMethod>,
@@ -20,6 +21,7 @@ pub enum AuthMethod {
     Private(u8),
 }
 
+/// SOCKS5 CONNECT 请求的解析结果。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectRequest {
     pub command: Command,
@@ -31,6 +33,14 @@ pub enum Command {
     Connect,
     Bind,
     UdpAssociate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplyCode {
+    Succeeded,
+    GeneralFailure,
+    CommandNotSupported,
+    AddressTypeNotSupported,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,6 +56,7 @@ impl SocksError {
     }
 }
 
+/// 解析 greeting 字节，不执行任何网络 I/O。
 pub fn parse_greeting(input: &[u8]) -> Result<Greeting, SocksError> {
     if input.len() < 2 {
         return Err(SocksError::new("SOCKS5 greeting is too short"));
@@ -61,10 +72,36 @@ pub fn parse_greeting(input: &[u8]) -> Result<Greeting, SocksError> {
     Ok(Greeting { methods })
 }
 
+/// 编码服务端选择的认证方法。
 pub fn encode_method_selection(method: AuthMethod) -> [u8; 2] {
     [SOCKS_VERSION, method.into()]
 }
 
+/// 编码 SOCKS5 reply，供 inbound 成功/失败握手复用。
+pub fn encode_reply(code: ReplyCode, bound: &Endpoint) -> Result<Vec<u8>, SocksError> {
+    let mut output = vec![SOCKS_VERSION, code.into(), 0x00];
+    match &bound.host {
+        Host::Ip(IpAddress::V4(octets)) => {
+            output.push(0x01);
+            output.extend_from_slice(octets);
+        }
+        Host::Domain(domain) => {
+            let len = u8::try_from(domain.len())
+                .map_err(|_| SocksError::new("SOCKS5 domain reply is too long"))?;
+            output.push(0x03);
+            output.push(len);
+            output.extend_from_slice(domain.as_bytes());
+        }
+        Host::Ip(IpAddress::V6(octets)) => {
+            output.push(0x04);
+            output.extend_from_slice(octets);
+        }
+    }
+    output.extend_from_slice(&bound.port.to_be_bytes());
+    Ok(output)
+}
+
+/// 解析 SOCKS5 request，并把目标地址转换成 RustBox `Endpoint`。
 pub fn parse_connect_request(input: &[u8]) -> Result<ConnectRequest, SocksError> {
     if input.len() < 7 {
         return Err(SocksError::new("SOCKS5 request is too short"));
@@ -148,6 +185,17 @@ impl TryFrom<u8> for Command {
     }
 }
 
+impl From<ReplyCode> for u8 {
+    fn from(value: ReplyCode) -> Self {
+        match value {
+            ReplyCode::Succeeded => 0x00,
+            ReplyCode::GeneralFailure => 0x01,
+            ReplyCode::CommandNotSupported => 0x07,
+            ReplyCode::AddressTypeNotSupported => 0x08,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +214,16 @@ mod tests {
             request.target.host,
             Host::Domain("example.test".to_string())
         );
+    }
+
+    #[test]
+    fn encodes_success_reply_without_runtime_dependencies() {
+        let reply = encode_reply(
+            ReplyCode::Succeeded,
+            &Endpoint::new(Host::Ip(IpAddress::V4([0, 0, 0, 0])), 0),
+        )
+        .expect("encode reply");
+
+        assert_eq!(reply, vec![0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
     }
 }
