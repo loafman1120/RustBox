@@ -1,53 +1,66 @@
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use rustbox_compose::TokioComposition;
 use rustbox_config_file::load_toml_file;
+use rustbox_control::{ControlState, EngineCommand, EngineSnapshot, EngineState};
+use rustbox_control_api::{AuthPolicy, ControlApiConfig, ControlApiState};
 use rustbox_observability::{
     CompositeObservabilitySink, ConsoleObservabilitySink, FileObservabilitySink, LevelFilter,
+    ObservabilityStore,
 };
 use rustbox_types::Endpoint;
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 /// 应用入口只负责选择配置来源、建立组合根、启动和响应 Ctrl-C。
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let observability = Arc::new(observability_from_cli(&cli));
-    let (mut runtime, listen) = match (cli.command, cli.config) {
+    let control_api_config = control_api_config_from_cli(&cli)
+        .unwrap_or_else(|err| Cli::command().error(ErrorKind::ValueValidation, err).exit());
+    let (mut runtime, listen, observability_store) = match (cli.command, cli.config.clone()) {
         (None, None) => {
             print_architecture_summary();
             return;
         }
-        (Some(CliCommand::HttpProxy), None) => (
-            TokioComposition::default_http_proxy_with_observability(
-                Endpoint::localhost_v4(18080),
-                observability,
+        (Some(CliCommand::HttpProxy), None) => {
+            let observability = observability_from_cli();
+            (
+                TokioComposition::default_http_proxy_with_observability(
+                    Endpoint::localhost_v4(18080),
+                    observability.sink,
+                )
+                .expect("compose default HTTP proxy"),
+                "HTTP CONNECT proxy listening on 127.0.0.1:18080",
+                observability.store,
             )
-            .expect("compose default HTTP proxy"),
-            "HTTP CONNECT proxy listening on 127.0.0.1:18080",
-        ),
-        (Some(CliCommand::Socks5Proxy), None) => (
-            TokioComposition::default_socks5_proxy_with_observability(
-                Endpoint::localhost_v4(1080),
-                observability,
+        }
+        (Some(CliCommand::Socks5Proxy), None) => {
+            let observability = observability_from_cli();
+            (
+                TokioComposition::default_socks5_proxy_with_observability(
+                    Endpoint::localhost_v4(1080),
+                    observability.sink,
+                )
+                .expect("compose default SOCKS5 proxy"),
+                "SOCKS5 proxy listening on 127.0.0.1:1080",
+                observability.store,
             )
-            .expect("compose default SOCKS5 proxy"),
-            "SOCKS5 proxy listening on 127.0.0.1:1080",
-        ),
+        }
         (None | Some(CliCommand::Run), Some(path)) => {
             // 文件配置先进入 config-file，再进入统一 SourceConfig -> CompiledConfig 流水线。
             let file_config = load_toml_file(&path).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", path.display(), err.message)
             });
-            let configured_observability = Arc::new(
-                observability_from_file(&file_config)
-                    .unwrap_or_else(|err| panic!("configure observability: {err}")),
-            );
+            let observability = observability_from_file(&file_config)
+                .unwrap_or_else(|err| panic!("configure observability: {err}"));
             (
-                TokioComposition::with_observability(configured_observability)
+                TokioComposition::with_observability(observability.sink)
                     .compose_source(file_config.source)
                     .expect("compose config file"),
                 "configured proxy graph started",
+                observability.store,
             )
         }
         (Some(CliCommand::Run), None) => Cli::command()
@@ -68,9 +81,67 @@ async fn main() {
         .await
         .expect("start default proxy");
 
+    let inbound_count = runtime.service_count();
+    let outbound_count = runtime.engine().outbound_count();
+    let control_state = Arc::new(Mutex::new(ControlState::new(EngineSnapshot {
+        state: EngineState::Running,
+        generation: 0,
+        inbound_count,
+        outbound_count,
+    })));
+
+    let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+    let control_api_task = if let Some(config) = control_api_config {
+        let listen = config.listen;
+        let state = ControlApiState::new(observability_store, Arc::clone(&control_state))
+            .with_command_sender(command_tx);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            rustbox_control_api::serve_grpc(config, state, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
+        println!("RustBox control gRPC listening on {listen}");
+        Some((shutdown_tx, task))
+    } else {
+        None
+    };
+
     println!("RustBox {listen}");
-    tokio::signal::ctrl_c().await.expect("wait for ctrl-c");
+    let stop_reason = tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result.expect("wait for ctrl-c");
+            "Ctrl-C"
+        }
+        command = command_rx.recv(), if control_api_task.is_some() => {
+            match command {
+                Some(EngineCommand::Stop) => "control API stop command",
+                Some(_) => "control API command",
+                None => "control API command channel closed",
+            }
+        }
+    };
+
+    eprintln!("RustBox stopping after {stop_reason}");
     runtime.stop().await.expect("stop default proxy");
+
+    if let Ok(mut state) = control_state.lock() {
+        let mut snapshot = state.snapshot().clone();
+        snapshot.state = EngineState::Stopped;
+        snapshot.inbound_count = inbound_count;
+        snapshot.outbound_count = outbound_count;
+        state.replace_snapshot(snapshot);
+    }
+
+    if let Some((shutdown_tx, task)) = control_api_task {
+        let _ = shutdown_tx.send(());
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("RustBox control gRPC stopped with error: {err}"),
+            Err(err) => eprintln!("RustBox control gRPC task failed: {err}"),
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -78,6 +149,12 @@ async fn main() {
 struct Cli {
     #[arg(short, long, value_name = "FILE", global = true)]
     config: Option<PathBuf>,
+
+    #[arg(long, value_name = "ADDR", global = true)]
+    control_grpc: Option<SocketAddr>,
+
+    #[arg(long, value_name = "TOKEN", global = true)]
+    control_token: Option<String>,
 
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -104,6 +181,11 @@ impl CliCommand {
     }
 }
 
+struct RuntimeObservability {
+    sink: Arc<CompositeObservabilitySink>,
+    store: Arc<ObservabilityStore>,
+}
+
 fn print_architecture_summary() {
     println!("{}", rustbox_kernel::architecture_summary());
     println!("Run `rustbox-app http-proxy` to start the default local HTTP CONNECT proxy.");
@@ -111,36 +193,68 @@ fn print_architecture_summary() {
     println!("Run `rustbox-app --config rustbox.toml` to start from a config file.");
 }
 
-fn observability_from_cli(cli: &Cli) -> ConsoleObservabilitySink {
-    if cli.config.is_some() {
-        return ConsoleObservabilitySink::stderr(LevelFilter::from_env());
+fn control_api_config_from_cli(cli: &Cli) -> Result<Option<ControlApiConfig>, String> {
+    if cli.control_grpc.is_none() && cli.control_token.is_some() {
+        return Err("`--control-token` requires `--control-grpc <ADDR>`".to_string());
     }
-    ConsoleObservabilitySink::stderr_from_env()
+
+    let Some(listen) = cli.control_grpc else {
+        return Ok(None);
+    };
+    let auth = cli
+        .control_token
+        .clone()
+        .or_else(|| std::env::var("RUSTBOX_CONTROL_TOKEN").ok())
+        .map(AuthPolicy::bearer_token)
+        .unwrap_or_else(AuthPolicy::disabled);
+    let config = ControlApiConfig {
+        listen,
+        auth,
+        ..ControlApiConfig::default()
+    };
+    config.validate().map_err(|err| err.message)?;
+    Ok(Some(config))
+}
+
+fn observability_from_cli() -> RuntimeObservability {
+    observability_with_outputs(LevelFilter::from_env(), None).expect("configure CLI observability")
 }
 
 fn observability_from_file(
     config: &rustbox_config_file::FileConfig,
-) -> Result<CompositeObservabilitySink, String> {
+) -> Result<RuntimeObservability, String> {
     let level = config
         .observability
         .as_ref()
         .and_then(|observability| observability.level.as_deref())
         .and_then(LevelFilter::parse)
         .unwrap_or_else(LevelFilter::from_env);
-    let mut sink = CompositeObservabilitySink::new()
-        .with_sink(Arc::new(ConsoleObservabilitySink::stderr(level)));
-
-    if let Some(path) = config
+    let file = config
         .observability
         .as_ref()
-        .and_then(|observability| observability.file.as_deref())
-    {
+        .and_then(|observability| observability.file.as_deref());
+    observability_with_outputs(level, file)
+}
+
+fn observability_with_outputs(
+    level: LevelFilter,
+    file: Option<&str>,
+) -> Result<RuntimeObservability, String> {
+    let store = Arc::new(ObservabilityStore::default());
+    let mut sink = CompositeObservabilitySink::new()
+        .with_sink(Arc::new(ConsoleObservabilitySink::stderr(level)))
+        .with_sink(store.clone());
+
+    if let Some(path) = file {
         let file_sink = FileObservabilitySink::append(path, level)
             .map_err(|err| format!("failed to open observability file `{path}`: {err}"))?;
         sink = sink.with_sink(Arc::new(file_sink));
     }
 
-    Ok(sink)
+    Ok(RuntimeObservability {
+        sink: Arc::new(sink),
+        store,
+    })
 }
 
 #[cfg(test)]
@@ -178,5 +292,34 @@ mod tests {
         let error = Cli::try_parse_from(["rustbox-app", "unknown"]).expect_err("reject cli");
 
         assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn parses_control_grpc_flags() {
+        let cli = Cli::try_parse_from([
+            "rustbox-app",
+            "--control-grpc",
+            "127.0.0.1:19090",
+            "--control-token",
+            "secret",
+            "http-proxy",
+        ])
+        .expect("parse cli");
+
+        assert_eq!(
+            cli.control_grpc,
+            Some("127.0.0.1:19090".parse().expect("socket addr"))
+        );
+        assert_eq!(cli.control_token, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn rejects_control_token_without_grpc_listener() {
+        let cli = Cli::try_parse_from(["rustbox-app", "--control-token", "secret", "http-proxy"])
+            .expect("parse cli");
+
+        let error = control_api_config_from_cli(&cli).expect_err("reject unused token");
+
+        assert!(error.contains("--control-grpc"));
     }
 }

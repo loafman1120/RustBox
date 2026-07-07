@@ -6,6 +6,7 @@
 > **Current implementation map:** `docs/current-architecture.md`
 > **Configuration and FFI design:** `docs/config-ffi-architecture.md`
 > **Observability design:** `docs/observability-architecture.md`
+> **TUN / transparent proxy design:** `docs/tun-transparent-proxy-architecture.md`
 
 This document defines the stable architectural boundaries for RustBox. It is
 intentionally short. Current implementation details, crate inventories, test
@@ -358,6 +359,8 @@ HTTP CONNECT or SOCKS5 inbound
     -> Tokio host network capability
 ```
 
-Known planned areas include full TUN and packet stack integration, platform
-route control, richer config handles, a networked HTTP/gRPC control API, and
-concrete platform/remote telemetry adapters.
+Known planned areas include full TUN and packet stack integration, transparent
+proxy integration, full platform route control, richer config handles, a
+networked HTTP/gRPC control API, and concrete platform/remote telemetry
+adapters. The TUN and transparent proxy design is maintained in
+`docs/tun-transparent-proxy-architecture.md`.

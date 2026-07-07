@@ -6,6 +6,7 @@
 > **Reference architecture:** `docs/architecture.md`
 > **Configuration and FFI design:** `docs/config-ffi-architecture.md`
 > **Observability design:** `docs/observability-architecture.md`
+> **TUN / transparent proxy design:** `docs/tun-transparent-proxy-architecture.md`
 
 This document describes the architecture that exists in code today. It is not a replacement for the target architecture document. It maps the current Rust workspace to the intended RustBox layers and shows the implemented boundaries, planned adapters, and verified dependency direction.
 
@@ -67,6 +68,7 @@ crates/
 
   control/rustbox-config/          L5 configuration pipeline
   control/rustbox-control/         L5 control commands and snapshots
+  control/rustbox-control-api/     L5 gRPC control and stats API
 
   ffi/rustbox-ffi/                 External handle boundary
 
@@ -93,6 +95,7 @@ crates/
 
   observability/rustbox-observability/      Console, recording, file, metrics/query, platform, and telemetry sinks
 
+  platform/rustbox-platform-linux/          Linux platform capability boundary
   platform/rustbox-platform-windows/        Windows platform capability boundary
   plugin/rustbox-plugin/                    Future plugin manifest model
   reload/rustbox-reload/                    Reload transaction model
@@ -327,7 +330,7 @@ command with `--config`.
 
 ---
 
-## 6. Control And Reload
+## 6. Control, API, And Reload
 
 The control plane currently defines commands and snapshots without exposing mutable kernel internals.
 
@@ -337,10 +340,13 @@ flowchart TB
     SNAP["EngineSnapshot\nstate / generation / counts"]
     PLAN["ReloadPlan\nPrepare"]
     TX["ReloadTransaction\nPrepare -> Commit -> Drain\nor Rollback"]
+    API["rustbox-control-api\nnative gRPC + V2Ray stats"]
 
     CMD --> SNAP
     CMD --> PLAN
     PLAN --> TX
+    API --> CMD
+    API --> SNAP
 ```
 
 Reload is modeled as compile-and-swap. The live engine is not mutated while a new config is still being validated.
@@ -374,8 +380,9 @@ Current capabilities:
 | Clock | `Clock` | `TokioHost`, `TestHost` |
 | Entropy | `Entropy` | `TokioHost`, `TestHost` |
 | Task spawning | `TaskSpawner` | `TokioHost` |
-| Packet device | `PacketDeviceProvider` | Windows boundary returns explicit planned error |
-| Network control | `NetworkControl` | Windows boundary returns explicit planned error |
+| Packet device | `PacketDeviceProvider` | Windows and Linux open real TUN devices through `tun-rs`; non-native targets return typed unsupported errors |
+| Network control | `NetworkControl` | Typed transaction contract exists; Windows and Linux add routes through `net-route`; address, MTU, rule, transparent proxy, and socket-protection operations return typed planned/unsupported errors |
+| Process lookup | `ProcessLookup` | Windows and Linux boundaries return typed planned/unsupported errors |
 | Observability | `ObservabilitySink` | `NoopObservabilitySink`, `ConsoleObservabilitySink`, `RecordingObservabilitySink`, `CompositeObservabilitySink`, `ObservabilityStore`, `FileObservabilitySink`, `PlatformLogSink`, `RemoteTelemetrySink` |
 
 ### 7.1 Observability Layer
@@ -425,6 +432,7 @@ Current metrics and query coverage:
 | Connection stats | `ObservabilityStore::connections()` returns per-flow source, destination, state, byte totals, outcome, and error |
 | Bounded event queries | `ObservabilityStore::query_events(ObservabilityQuery)` filters by level, target prefix, flow id, and limit |
 | Whole snapshot | `ObservabilityStore::snapshot()` returns metrics, connection stats, and recent events |
+| gRPC API | `rustbox-control-api` exposes native RustBox protobuf APIs plus V2Ray global traffic stats |
 
 The `rustbox-app` binary uses `ConsoleObservabilitySink::stderr_from_env()`.
 `RUSTBOX_LOG` accepts `trace`, `debug`, `info`, `warn`, `error`, or `off`.
@@ -442,6 +450,17 @@ gRPC API service for observation/control, a V2Ray gRPC stats service, and a
 Clash REST control API. RustBox follows the same layer split by keeping local
 HTTP/gRPC compatibility APIs above `ObservabilityStore` and control commands,
 not inside the kernel.
+
+The implemented `rustbox-control-api` crate currently serves:
+
+| Service | Current methods |
+|---|---|
+| `rustbox.control.v1.RustBoxControl` | metrics, connections, event query, observability snapshot, engine snapshot, stop |
+| `v2ray.core.app.stats.command.StatsService` | `GetStats`, `QueryStats` over process-wide traffic counters |
+
+The app starts this API only when `--control-grpc <ADDR>` is supplied. Loopback
+listeners may run without a token; non-loopback listeners require a bearer token
+via `--control-token` or `RUSTBOX_CONTROL_TOKEN`.
 
 ---
 
@@ -487,6 +506,8 @@ Important current status:
 | Console log adapter | Implemented |
 | Metrics and connection statistics | Implemented through `ObservabilityStore` |
 | Bounded observability query API | Implemented as in-process store queries |
+| Native gRPC control API | Implemented through `rustbox-control-api` |
+| V2Ray stats gRPC compatibility | Implemented for global byte counters |
 | File log adapter | Implemented |
 | Platform-native log bridge | Adapter implemented, concrete OS backend planned |
 | Remote telemetry bridge | Adapter implemented, concrete exporter planned |
@@ -577,17 +598,23 @@ Current platform implementation:
 
 ```text
 rustbox-platform-windows
+rustbox-platform-linux
 ```
 
-This crate currently declares the Windows capability boundary and returns explicit planned errors for capabilities that are not implemented yet.
+These crates currently implement the first Windows and Linux platform
+capabilities. Packet devices are opened through `tun-rs`. Route additions are
+applied through `net-route`, with best-effort rollback if a multi-route
+transaction fails under a required rollback policy. Address, MTU, route-rule,
+transparent proxy, socket protection, and process lookup operations still return
+explicit typed planned or unsupported errors.
 
-| Windows capability | Current status |
-|---|---|
-| TCP/UDP through runtime | Supported by `TokioHost` |
-| Packet device | Planned |
-| Route control | Planned |
-| Transparent proxy | Planned |
-| Process lookup | Planned |
+| Capability | Windows status | Linux status |
+|---|---|---|
+| TCP/UDP through runtime | Supported by `TokioHost` | Supported by `TokioHost` on Linux targets |
+| Packet device | Supported on Windows through `tun-rs` / Wintun | Supported on Linux through `tun-rs`, unsupported elsewhere |
+| Route control | Limited: `AddRoute` through `net-route`; other operations planned | Limited: `AddRoute` through `net-route`; route rules and other operations planned |
+| Transparent proxy | Planned | Planned on Linux targets, unsupported elsewhere |
+| Process lookup | Planned | Planned on Linux targets, unsupported elsewhere |
 
 The kernel does not infer platform support from `cfg(target_os)`.
 
@@ -658,11 +685,13 @@ The following are intentionally not complete yet:
 - DNS UDP/TCP/TLS/HTTPS/QUIC transports.
 - Concrete TUN inbound.
 - Concrete packet-to-flow network stack.
-- Windows Wintun / WFP / route-control implementation.
-- Linux, Apple, Android, and BSD platform adapters.
+- Transparent proxy inbound.
+- Windows WFP transparent proxy implementation.
+- Linux tproxy/redirect transparent proxy implementation.
+- Apple, Android, and BSD platform adapters.
 - General FFI config-handle API for arbitrary user configuration.
 - Full controlled live reload integration into the running app.
-- Networked HTTP/gRPC control API over the current `ObservabilityStore`.
+- HTTP and Clash REST control APIs over the current `ObservabilityStore`.
 - Concrete ETW, Android logcat, Apple unified logging, tracing, and OTLP/exporter adapters.
 
 These are now extension points, not missing architecture seams in the kernel.

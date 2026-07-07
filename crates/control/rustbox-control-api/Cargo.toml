@@ -1,0 +1,26 @@
+[package]
+name = "rustbox-control-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prost = "0.14.1"
+rustbox-control = { path = "../rustbox-control" }
+rustbox-host-api = { path = "../../host/rustbox-host-api" }
+rustbox-observability = { path = "../../observability/rustbox-observability" }
+tokio = { version = "1", features = ["net", "sync"] }
+tonic = { version = "0.14.6", features = ["transport"] }
+tonic-prost = "0.14.2"
+
+[build-dependencies]
+prost-build = "0.14.1"
+protoc-bin-vendored = "3.2.0"
+tonic-prost-build = "0.14.2"
+
+[dev-dependencies]
+rustbox-types = { path = "../../foundation/rustbox-types" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

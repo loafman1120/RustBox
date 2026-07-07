@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package rustbox.control.v1;
+
+service RustBoxControl {
+  rpc GetMetrics(GetMetricsRequest) returns (MetricsSnapshot);
+  rpc ListConnections(ListConnectionsRequest) returns (ListConnectionsResponse);
+  rpc QueryEvents(QueryEventsRequest) returns (QueryEventsResponse);
+  rpc GetObservabilitySnapshot(GetObservabilitySnapshotRequest) returns (ObservabilitySnapshot);
+  rpc GetEngineSnapshot(GetEngineSnapshotRequest) returns (EngineSnapshot);
+  rpc Stop(StopRequest) returns (EngineSnapshot);
+}
+
+message GetMetricsRequest {}
+message ListConnectionsRequest {}
+message GetObservabilitySnapshotRequest {}
+message GetEngineSnapshotRequest {}
+message StopRequest {}
+
+message QueryEventsRequest {
+  string min_level = 1;
+  string target_prefix = 2;
+  uint64 flow_id = 3;
+  uint32 limit = 4;
+}
+
+message MetricsSnapshot {
+  uint64 services_started = 1;
+  uint64 services_stopped = 2;
+  uint64 connections_accepted = 3;
+  uint64 flows_accepted = 4;
+  uint64 flows_active = 5;
+  uint64 flows_completed = 6;
+  uint64 flows_failed = 7;
+  uint64 routes_selected = 8;
+  uint64 outbound_connect_attempts = 9;
+  uint64 outbound_connect_successes = 10;
+  uint64 outbound_connect_failures = 11;
+  uint64 inbound_to_outbound_bytes = 12;
+  uint64 outbound_to_inbound_bytes = 13;
+  uint64 diagnostics = 14;
+}
+
+message ConnectionStats {
+  uint64 flow_id = 1;
+  string source = 2;
+  string destination = 3;
+  string network = 4;
+  ConnectionState state = 5;
+  uint64 inbound_to_outbound_bytes = 6;
+  uint64 outbound_to_inbound_bytes = 7;
+  string outcome = 8;
+  string error = 9;
+}
+
+enum ConnectionState {
+  CONNECTION_STATE_UNSPECIFIED = 0;
+  CONNECTION_STATE_ACTIVE = 1;
+  CONNECTION_STATE_COMPLETED = 2;
+  CONNECTION_STATE_FAILED = 3;
+}
+
+message Event {
+  string level = 1;
+  string target = 2;
+  uint64 flow_id = 3;
+  string kind = 4;
+  string message = 5;
+  map<string, string> attributes = 6;
+}
+
+message ListConnectionsResponse {
+  repeated ConnectionStats connections = 1;
+}
+
+message QueryEventsResponse {
+  repeated Event events = 1;
+}
+
+message ObservabilitySnapshot {
+  MetricsSnapshot metrics = 1;
+  repeated ConnectionStats connections = 2;
+  repeated Event recent_events = 3;
+}
+
+message EngineSnapshot {
+  EngineState state = 1;
+  uint64 generation = 2;
+  uint64 inbound_count = 3;
+  uint64 outbound_count = 4;
+}
+
+enum EngineState {
+  ENGINE_STATE_UNSPECIFIED = 0;
+  ENGINE_STATE_CREATED = 1;
+  ENGINE_STATE_PREPARED = 2;
+  ENGINE_STATE_RUNNING = 3;
+  ENGINE_STATE_STOPPING = 4;
+  ENGINE_STATE_STOPPED = 5;
+  ENGINE_STATE_FAILED = 6;
+}

@@ -48,6 +48,7 @@ The current code implements the following pieces:
 | File sink | `FileObservabilitySink` | Append structured text events to a host file |
 | Platform bridge | `PlatformLogSink` + `PlatformLogBackend` | Adapter point for ETW/logcat/os_log/syslog-like backends |
 | Remote bridge | `RemoteTelemetrySink` + `TelemetryExporter` | Adapter point for HTTP/gRPC/OTLP/custom telemetry exporters |
+| Control API | `rustbox-control-api` | gRPC snapshots, event queries, stop command, and V2Ray stats compatibility |
 
 `rustbox-app --config` currently wires console output and optional file output
 from TOML:
@@ -165,16 +166,21 @@ ObservabilityStore::query_events(ObservabilityQuery) -> Vec<Event>
 - flow id
 - result limit
 
-This is enough for a first HTTP/gRPC/FFI control layer:
+This is enough for the first gRPC/FFI control layers:
 
 ```text
-GET /metrics       -> MetricsSnapshot
-GET /connections   -> Vec<ConnectionStats>
-GET /events?...    -> query_events(...)
+RustBoxControl/GetMetrics                -> MetricsSnapshot
+RustBoxControl/ListConnections           -> Vec<ConnectionStats>
+RustBoxControl/QueryEvents               -> query_events(...)
+RustBoxControl/GetObservabilitySnapshot  -> ObservabilitySnapshot
+RustBoxControl/GetEngineSnapshot         -> EngineSnapshot
+RustBoxControl/Stop                      -> EngineCommand::Stop
 ```
 
-The transport shape can be JSON, protobuf, or C ABI DTOs. The data source should
-remain the same store.
+The implemented protobuf transport lives in `rustbox-control-api`. The same
+crate also exposes a small V2Ray StatsService-compatible surface that maps the
+process-wide RustBox byte counters to global `Stat` values. HTTP and Clash REST
+compatibility layers should translate to the same store and command model later.
 
 ---
 
@@ -221,6 +227,7 @@ References:
 | File | Implemented | Host file append sink |
 | Platform native | Adapter implemented | Concrete backend belongs to platform/product crates |
 | Remote telemetry | Adapter implemented | Concrete exporter belongs to product/integration crates |
+| gRPC control API | Implemented | Native RustBox service plus V2Ray stats compatibility |
 
 Multiple sinks should be combined with `CompositeObservabilitySink`. A slow or
 remote sink should use buffering in its own adapter; the portable event
@@ -249,9 +256,10 @@ cannot be opened.
 
 Recommended order:
 
-1. Add a `rustbox-control-api` crate that serves `ObservabilityStore` snapshots
-   over HTTP or gRPC.
-2. Add protobuf/JSON DTOs for `MetricsSnapshot`, `ConnectionStats`, and `Event`.
+1. Add HTTP and Clash REST compatibility frontends over the same store/command
+   model.
+2. Add richer protobuf/JSON DTOs when route/outbound control commands become
+   executable.
 3. Add a platform crate backend for Windows ETW or Event Log.
 4. Add an OTLP exporter crate using `RemoteTelemetrySink`.
 5. Add redaction policy to event construction before any remote exporter is

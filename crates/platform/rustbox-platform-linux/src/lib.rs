@@ -1,64 +1,68 @@
-//! Windows 平台能力适配边界。
+//! Linux 平台能力适配边界。
 //!
-//! 当前只接入 Wintun-backed packet device。Route control、透明代理和进程查询
-//! 仍以显式 planned error 暴露，内核不会通过 `cfg(target_os)` 推断平台能力。
+//! 本 crate 只承载 Linux TUN、route control、redirect/TPROXY 和进程查询的
+//! 平台边界。当前只接入 `tun-rs` packet device；netlink、nftables 和进程
+//! 查询会继续隔离在这里，portable kernel 和协议模块不直接看到 OS 细节。
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use net_route::{Handle as RouteHandle, Route};
 use rustbox_host_api::{
     BoxFuture, ConnectionKey, NetworkControl, NetworkControlError, NetworkLease,
     NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceProvider, ProcessInfo,
     ProcessLookup, ProcessLookupError,
 };
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use rustbox_host_api::{InterfaceRef, NetworkOperation, RollbackPolicy};
 use rustbox_io::PacketDevice;
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use rustbox_io::{IoError, IoErrorKind};
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use rustbox_types::IpAddress;
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use std::pin::Pin;
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use std::task::{Context, Poll};
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 use tun_rs::{DeviceBuilder, Layer, SyncDevice};
 
-/// Windows 平台能力集合的占位实现。
+/// Linux 平台能力集合。
+///
+/// 当前实现先提供 typed capability 边界和明确诊断；真实实现应在后续小步中把
+/// `tun-rs`/`rtnetlink`/`nftables` 等依赖限制在本 crate 内。
 #[derive(Clone, Debug, Default)]
-pub struct WindowsPlatform;
+pub struct LinuxPlatform;
 
-impl WindowsPlatform {
+impl LinuxPlatform {
     pub fn new() -> Self {
         Self
     }
 
-    pub fn capability_matrix(&self) -> WindowsCapabilityMatrix {
-        windows_capability_matrix()
+    pub fn capability_matrix(&self) -> LinuxCapabilityMatrix {
+        linux_capability_matrix()
     }
 }
 
-impl PacketDeviceProvider for WindowsPlatform {
+impl PacketDeviceProvider for LinuxPlatform {
     fn open(
         &self,
         config: PacketDeviceConfig,
     ) -> BoxFuture<'_, Result<Box<dyn PacketDevice>, PacketDeviceError>> {
-        Box::pin(async move { open_windows_packet_device(config) })
+        Box::pin(async move { open_linux_packet_device(config) })
     }
 }
 
-impl NetworkControl for WindowsPlatform {
+impl NetworkControl for LinuxPlatform {
     fn apply(
         &self,
         transaction: NetworkTransaction,
     ) -> BoxFuture<'_, Result<NetworkLease, NetworkControlError>> {
-        Box::pin(apply_windows_network_transaction(transaction))
+        Box::pin(apply_linux_network_transaction(transaction))
     }
 }
 
-impl ProcessLookup for WindowsPlatform {
+impl ProcessLookup for LinuxPlatform {
     fn lookup(
         &self,
         key: ConnectionKey,
@@ -75,9 +79,9 @@ impl ProcessLookup for WindowsPlatform {
     }
 }
 
-/// Windows 能力矩阵，用于向组合层或控制面声明当前支持状态。
+/// Linux 能力矩阵，用于组合层在启动前给出早期诊断。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WindowsCapabilityMatrix {
+pub struct LinuxCapabilityMatrix {
     pub tcp_udp: CapabilitySupport,
     pub packet_device: CapabilitySupport,
     pub route_control: CapabilitySupport,
@@ -93,9 +97,9 @@ pub enum CapabilitySupport {
     Unsupported,
 }
 
-#[cfg(target_os = "windows")]
-fn windows_capability_matrix() -> WindowsCapabilityMatrix {
-    WindowsCapabilityMatrix {
+#[cfg(target_os = "linux")]
+fn linux_capability_matrix() -> LinuxCapabilityMatrix {
+    LinuxCapabilityMatrix {
         tcp_udp: CapabilitySupport::Supported,
         packet_device: CapabilitySupport::Supported,
         route_control: CapabilitySupport::Limited,
@@ -104,9 +108,9 @@ fn windows_capability_matrix() -> WindowsCapabilityMatrix {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn windows_capability_matrix() -> WindowsCapabilityMatrix {
-    WindowsCapabilityMatrix {
+#[cfg(not(target_os = "linux"))]
+fn linux_capability_matrix() -> LinuxCapabilityMatrix {
+    LinuxCapabilityMatrix {
         tcp_udp: CapabilitySupport::Unsupported,
         packet_device: CapabilitySupport::Unsupported,
         route_control: CapabilitySupport::Unsupported,
@@ -115,32 +119,32 @@ fn windows_capability_matrix() -> WindowsCapabilityMatrix {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(target_os = "linux"))]
 fn packet_device_status_message() -> &'static str {
-    "Windows packet devices are unavailable on this target"
+    "Linux packet devices are unavailable on this target"
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(target_os = "linux"))]
 fn network_control_status_message() -> &'static str {
-    "Windows network control is unavailable on this target"
+    "Linux network control is unavailable on this target"
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn network_control_status_message() -> &'static str {
-    "Windows network control is limited to AddRoute through net-route"
+    "Linux network control is limited to AddRoute through net-route"
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn process_lookup_status_message() -> &'static str {
-    "Windows process lookup is not implemented yet"
+    "Linux process lookup is not implemented yet"
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(target_os = "linux"))]
 fn process_lookup_status_message() -> &'static str {
-    "Windows process lookup is unavailable on this target"
+    "Linux process lookup is unavailable on this target"
 }
 
-async fn apply_windows_network_transaction(
+async fn apply_linux_network_transaction(
     transaction: NetworkTransaction,
 ) -> Result<NetworkLease, NetworkControlError> {
     if transaction.operations.is_empty() {
@@ -151,12 +155,12 @@ async fn apply_windows_network_transaction(
         });
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     {
-        apply_windows_route_transaction(transaction).await
+        apply_linux_route_transaction(transaction).await
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(target_os = "linux"))]
     {
         Err(NetworkControlError::new(format!(
             "{}; reason={:?} operations={}",
@@ -167,11 +171,11 @@ async fn apply_windows_network_transaction(
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 static NEXT_NETWORK_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(target_os = "windows")]
-async fn apply_windows_route_transaction(
+#[cfg(target_os = "linux")]
+async fn apply_linux_route_transaction(
     transaction: NetworkTransaction,
 ) -> Result<NetworkLease, NetworkControlError> {
     let mut routes = Vec::with_capacity(transaction.operations.len());
@@ -218,7 +222,7 @@ async fn apply_windows_route_transaction(
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn route_from_add_route(
     destination: rustbox_types::IpCidr,
     gateway: Option<IpAddress>,
@@ -243,17 +247,17 @@ fn route_from_add_route(
     Ok(route)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError> {
     match interface {
         InterfaceRef::Index(index) => Ok(*index),
         InterfaceRef::Name(name) => Err(NetworkControlError::new(format!(
-            "net-route AddRoute requires interface index on Windows; got name `{name}`"
+            "net-route AddRoute requires interface index on Linux; got name `{name}`"
         ))),
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn std_ip_address(address: IpAddress) -> std::net::IpAddr {
     match address {
         IpAddress::V4(octets) => std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)),
@@ -261,14 +265,14 @@ fn std_ip_address(address: IpAddress) -> std::net::IpAddr {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 async fn rollback_routes(handle: &RouteHandle, routes: &[Route]) {
     for route in routes.iter().rev() {
         let _ = handle.delete(route).await;
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn unsupported_network_operation(
     reason: rustbox_host_api::NetworkControlReason,
     operation_count: usize,
@@ -280,25 +284,25 @@ fn unsupported_network_operation(
     ))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn network_control_io_error(action: &str, err: std::io::Error) -> NetworkControlError {
     NetworkControlError::new(format!("{action} failed: {err}"))
 }
 
-#[cfg(target_os = "windows")]
-fn open_windows_packet_device(
+#[cfg(target_os = "linux")]
+fn open_linux_packet_device(
     config: PacketDeviceConfig,
 ) -> Result<Box<dyn PacketDevice>, PacketDeviceError> {
     let device = build_tun_device(config).map_err(|err| {
         PacketDeviceError::new(format!(
-            "failed to open Windows TUN packet device through tun-rs/Wintun: {err}"
+            "failed to open Linux TUN packet device through tun-rs: {err}"
         ))
     })?;
     Ok(Box::new(TunPacketDevice::new(device)) as Box<dyn PacketDevice>)
 }
 
-#[cfg(not(target_os = "windows"))]
-fn open_windows_packet_device(
+#[cfg(not(target_os = "linux"))]
+fn open_linux_packet_device(
     config: PacketDeviceConfig,
 ) -> Result<Box<dyn PacketDevice>, PacketDeviceError> {
     Err(PacketDeviceError::new(format!(
@@ -309,7 +313,7 @@ fn open_windows_packet_device(
     )))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn build_tun_device(config: PacketDeviceConfig) -> std::io::Result<SyncDevice> {
     let mut builder = DeviceBuilder::new().layer(Layer::L3);
     if let Some(name) = config.name {
@@ -328,23 +332,26 @@ fn build_tun_device(config: PacketDeviceConfig) -> std::io::Result<SyncDevice> {
             }
         }
     }
-    builder.build_sync()
+
+    let device = builder.build_sync()?;
+    device.set_nonblocking(true)?;
+    Ok(device)
 }
 
-/// Thin RustBox `PacketDevice` wrapper over a Wintun-backed `tun-rs` device.
-#[cfg(target_os = "windows")]
+/// Thin RustBox `PacketDevice` wrapper over a real Linux TUN `tun-rs` device.
+#[cfg(target_os = "linux")]
 struct TunPacketDevice {
     device: SyncDevice,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 impl TunPacketDevice {
     fn new(device: SyncDevice) -> Self {
         Self { device }
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 impl PacketDevice for TunPacketDevice {
     fn poll_recv_packet(
         self: Pin<&mut Self>,
@@ -379,7 +386,7 @@ impl PacketDevice for TunPacketDevice {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "linux")]
 fn io_error(err: std::io::Error) -> IoError {
     let kind = match err.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
@@ -397,19 +404,19 @@ fn io_error(err: std::io::Error) -> IoError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     use rustbox_host_api::InterfaceRef;
     use rustbox_host_api::{
         NetworkControlReason, NetworkOperation, RollbackPolicy, SocketProtectionHandle,
     };
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     use rustbox_types::{IpAddress, IpCidr};
 
     #[test]
-    fn declares_windows_tun_and_route_capabilities_for_current_target() {
-        let matrix = WindowsPlatform::new().capability_matrix();
+    fn declares_linux_capabilities_for_current_target() {
+        let matrix = LinuxPlatform::new().capability_matrix();
 
-        #[cfg(target_os = "windows")]
+        #[cfg(target_os = "linux")]
         {
             assert_eq!(matrix.tcp_udp, CapabilitySupport::Supported);
             assert_eq!(matrix.packet_device, CapabilitySupport::Supported);
@@ -418,7 +425,7 @@ mod tests {
             assert_eq!(matrix.process_lookup, CapabilitySupport::Planned);
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(target_os = "linux"))]
         {
             assert_eq!(matrix.tcp_udp, CapabilitySupport::Unsupported);
             assert_eq!(matrix.packet_device, CapabilitySupport::Unsupported);
@@ -429,9 +436,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     fn accepts_empty_network_control_transaction_as_noop_lease() {
-        let platform = WindowsPlatform::new();
+        let platform = LinuxPlatform::new();
         let transaction = NetworkTransaction {
             reason: NetworkControlReason::TunInbound,
             operations: Vec::new(),
@@ -447,9 +454,9 @@ mod tests {
 
     #[test]
     fn reports_typed_network_control_request_in_error() {
-        let platform = WindowsPlatform::new();
+        let platform = LinuxPlatform::new();
         let transaction = NetworkTransaction {
-            reason: NetworkControlReason::TunInbound,
+            reason: NetworkControlReason::TransparentProxy,
             operations: vec![NetworkOperation::ProtectSocket {
                 handle: SocketProtectionHandle(7),
             }],
@@ -458,12 +465,12 @@ mod tests {
 
         let error = block_on_ready(platform.apply(transaction)).expect_err("planned error");
 
-        assert!(error.message.contains("reason=TunInbound"));
+        assert!(error.message.contains("reason=TransparentProxy"));
         assert!(error.message.contains("operations=1"));
     }
 
     #[test]
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     fn converts_add_route_operation_to_net_route() {
         let route = route_from_add_route(
             IpCidr::new(IpAddress::V4([10, 14, 0, 0]), 24).expect("cidr"),

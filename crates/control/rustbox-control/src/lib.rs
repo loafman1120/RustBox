@@ -110,6 +110,10 @@ impl ControlState {
         self.pending_reload.as_ref()
     }
 
+    pub fn replace_snapshot(&mut self, snapshot: EngineSnapshot) {
+        self.snapshot = snapshot;
+    }
+
     pub fn apply_command(&mut self, command: EngineCommand) {
         // 控制命令只更新控制状态；真正运行图替换由组合/运行时层执行。
         match command {

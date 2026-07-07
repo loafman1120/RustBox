@@ -35,6 +35,16 @@ pub enum IpAddress {
     V6([u8; 16]),
 }
 
+impl IpAddress {
+    /// CIDR 前缀长度依赖 IP 版本，放在基础层可避免平台层重复判断。
+    pub fn max_prefix_len(self) -> u8 {
+        match self {
+            Self::V4(_) => 32,
+            Self::V6(_) => 128,
+        }
+    }
+}
+
 impl fmt::Display for IpAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -66,6 +76,33 @@ impl fmt::Display for IpAddress {
                 )
             }
         }
+    }
+}
+
+/// 平台无关的 CIDR 表示，用于 TUN 地址、自动路由 include/exclude 和控制面快照。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct IpCidr {
+    pub address: IpAddress,
+    pub prefix_len: u8,
+}
+
+impl IpCidr {
+    /// 返回 `None` 而不是 panic，配置层可以把它转成带路径的诊断。
+    pub fn new(address: IpAddress, prefix_len: u8) -> Option<Self> {
+        if prefix_len <= address.max_prefix_len() {
+            Some(Self {
+                address,
+                prefix_len,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl fmt::Display for IpCidr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.address, self.prefix_len)
     }
 }
 

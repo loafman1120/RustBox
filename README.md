@@ -12,7 +12,9 @@ HTTP / mixed / SOCKS5 inbound -> RustBox kernel -> route table -> outbound -> To
 
 For the full target architecture, see `docs/architecture.md`. For what exists
 in code today, see `docs/current-architecture.md`. For the recommended
-configuration and FFI direction, see `docs/config-ffi-architecture.md`.
+configuration and FFI direction, see `docs/config-ffi-architecture.md`. For the
+TUN, transparent proxy, system routing, and process lookup design, see
+`docs/tun-transparent-proxy-architecture.md`.
 
 ## Requirements
 
@@ -87,8 +89,30 @@ when the file omits that setting.
 Add `file = "target/rustbox.log"` under `[observability]` to append the same
 structured event stream to a file. Metrics, connection statistics, bounded event
 queries, platform log bridges, and remote telemetry exporter bridges are
-implemented in `rustbox-observability`; a networked HTTP/gRPC control service is
-the next layer above those APIs.
+implemented in `rustbox-observability`; the gRPC control API reads from that
+same store.
+
+## Control gRPC API
+
+Start a local gRPC control service next to the proxy:
+
+```powershell
+cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 http-proxy
+```
+
+The service exposes native RustBox observation/control methods for metrics,
+connections, event queries, snapshots, and stop. It also serves a small V2Ray
+StatsService-compatible gRPC surface for global traffic counters.
+
+Loopback listeners may run without a token. Non-loopback listeners require a
+bearer token:
+
+```powershell
+cargo run -p rustbox-app -- --control-grpc 0.0.0.0:19090 --control-token secret http-proxy
+```
+
+Clients can pass `authorization: Bearer <token>` metadata, or
+`x-rustbox-token: <token>`.
 
 ## Config File
 
@@ -233,6 +257,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Structured observability through `ObservabilitySink`, with no-op, console,
   recording, metrics/query store, file, platform-bridge, and remote-telemetry
   bridge sinks.
+- Native gRPC control API over `ObservabilityStore` and `ControlState`, plus a
+  small V2Ray stats-compatible gRPC service for global traffic counters.
 - Tokio-backed host adapter for TCP, UDP binding, clock, entropy, and task
   spawning.
 - Test host, registry model, plugin manifest model, reload transaction model,
@@ -241,9 +267,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## Current Limits
 
 - SOCKS5 `BIND` is not implemented yet.
-- TUN, packet-to-flow stack, route control, transparent proxy, and process
-  lookup are planned extension points.
-- A networked HTTP/gRPC observability and control API is not implemented yet.
+- Windows/Linux TUN packet devices are available through `tun-rs`; basic
+  `AddRoute` network control uses `net-route`. TUN inbound, packet-to-flow
+  stack, transparent proxy, process lookup, and fuller route control remain
+  planned extension points.
+- HTTP and Clash REST control compatibility APIs are not implemented yet.
 - Concrete ETW, Android logcat, Apple unified logging, tracing, and OTLP
   exporter adapters are not implemented yet.
 
@@ -254,6 +282,7 @@ apps/rustbox                         application entrypoint
 crates/compose/rustbox-compose       composition root
 crates/control/rustbox-config        configuration pipeline
 crates/control/rustbox-control       control commands and snapshots
+crates/control/rustbox-control-api   gRPC control and stats API
 crates/ffi/rustbox-ffi               FFI handle boundary
 crates/foundation/rustbox-types      portable data types
 crates/foundation/rustbox-io         runtime-neutral IO traits

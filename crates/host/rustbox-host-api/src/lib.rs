@@ -6,7 +6,7 @@
 use core::future::Future;
 use core::pin::Pin;
 use rustbox_io::{ByteStream, DatagramSocket, PacketDevice};
-use rustbox_types::Endpoint;
+use rustbox_types::{Endpoint, IpAddress, IpCidr, Network};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type AcceptedStream = (Box<dyn ByteStream>, Endpoint);
@@ -125,17 +125,160 @@ pub struct TaskHandle {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PacketDeviceConfig {
-    pub name: String,
+    /// 平台可选择忽略名称，由系统分配真实 interface 名称。
+    pub name: Option<String>,
+    /// TUN 设备自身地址。路由 include/exclude 仍属于 `NetworkControl`。
+    pub addresses: Vec<IpCidr>,
+    /// 可选 MTU；为空时平台 adapter 使用系统默认值。
+    pub mtu: Option<u16>,
+    /// 自动路由策略只作为意图进入平台层，不在 portable core 操作系统路由表。
+    pub route_mode: RouteMode,
+    /// DNS 劫持/绑定策略需要和系统路由一起应用，因此也留在能力边界。
+    pub dns_mode: TunDnsMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkTransaction {
-    pub description: String,
+    pub reason: NetworkControlReason,
+    pub operations: Vec<NetworkOperation>,
+    pub rollback_policy: RollbackPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkLease {
     pub id: u64,
+    /// lease 记录已接收的操作，后续真实平台实现可据此做幂等回滚。
+    pub operations: Vec<NetworkOperation>,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouteMode {
+    Manual,
+    Auto,
+    Strict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TunDnsMode {
+    None,
+    Hijack,
+    Platform,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkControlReason {
+    TunInbound,
+    TransparentProxy,
+    LeakProtection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RollbackPolicy {
+    BestEffort,
+    Required,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum InterfaceRef {
+    Name(String),
+    Index(u32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct RouteTableId(pub u32);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteSelector {
+    pub mark: Option<u32>,
+    pub source: Option<IpCidr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransparentRedirectRule {
+    pub mode: TransparentRedirectMode,
+    pub listen: Endpoint,
+    pub mark: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransparentRedirectMode {
+    Redirect,
+    Tproxy,
+    WfpRedirect,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeakProtectionRule {
+    pub protected_routes: Vec<IpCidr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformProxyConfig {
+    pub listen: Endpoint,
+    pub bypass: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct SocketProtectionHandle(pub u64);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NetworkOperation {
+    AddInterfaceAddress {
+        interface: InterfaceRef,
+        address: IpCidr,
+    },
+    SetInterfaceMtu {
+        interface: InterfaceRef,
+        mtu: u16,
+    },
+    AddRoute {
+        destination: IpCidr,
+        gateway: Option<IpAddress>,
+        interface: InterfaceRef,
+        metric: Option<u32>,
+    },
+    AddRouteRule {
+        selector: RouteSelector,
+        table: RouteTableId,
+        priority: Option<u32>,
+    },
+    AddTransparentRedirectRule(TransparentRedirectRule),
+    AddLeakProtectionRule(LeakProtectionRule),
+    SetPlatformHttpProxy(PlatformProxyConfig),
+    ProtectSocket {
+        handle: SocketProtectionHandle,
+    },
+}
+
+/// 进程归属查询是路由前的元数据增强能力，不属于路由器本身。
+pub trait ProcessLookup: Send + Sync {
+    fn lookup(
+        &self,
+        key: ConnectionKey,
+    ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectionKey {
+    pub network: Network,
+    pub local: Endpoint,
+    pub remote: Endpoint,
+    pub direction: FlowDirection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FlowDirection {
+    Inbound,
+    Outbound,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessInfo {
+    pub pid: Option<u32>,
+    pub executable_path: Option<String>,
+    pub package_name: Option<String>,
+    pub user_id: Option<u32>,
 }
 
 /// 结构化事件是核心和模块跨观测边界传递的唯一载体。
@@ -262,3 +405,4 @@ capability_error!(EntropyError);
 capability_error!(SpawnError);
 capability_error!(PacketDeviceError);
 capability_error!(NetworkControlError);
+capability_error!(ProcessLookupError);
