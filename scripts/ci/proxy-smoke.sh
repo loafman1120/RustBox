@@ -15,6 +15,7 @@ MARKER="rustbox-ci-proxy-smoke-ok"
 RUSTBOX_PID=""
 HTTP_PID=""
 HTTPS_PID=""
+CURL_LOG_INDEX=0
 
 log() {
   printf '[rustbox-ci] %s\n' "$*"
@@ -25,7 +26,7 @@ dump_logs() {
     for log_file in "$WORK_DIR"/logs/*.log; do
       [[ -f "$log_file" ]] || continue
       printf '\n===== %s =====\n' "$log_file"
-      sed -n '1,240p' "$log_file" || true
+      cat "$log_file" || true
     done
   fi
 }
@@ -39,7 +40,7 @@ cleanup() {
     fi
   done
   wait "$RUSTBOX_PID" "$HTTP_PID" "$HTTPS_PID" 2>/dev/null
-  if [[ "$status" -ne 0 ]]; then
+  if [[ "$status" -ne 0 || "${RUSTBOX_CI_DUMP_LOGS:-0}" == "1" ]]; then
     dump_logs
   fi
   exit "$status"
@@ -75,8 +76,24 @@ assert_curl_body() {
   local label="$1"
   shift
   local body
+  local safe_label
+  local curl_log
+  local header_log
+  local body_file
+
+  CURL_LOG_INDEX=$((CURL_LOG_INDEX + 1))
+  safe_label="${label//[^A-Za-z0-9._-]/_}"
+  curl_log="$WORK_DIR/logs/curl-${CURL_LOG_INDEX}-${safe_label}.log"
+  header_log="$WORK_DIR/logs/curl-${CURL_LOG_INDEX}-${safe_label}.headers.log"
+  body_file="$WORK_DIR/logs/curl-${CURL_LOG_INDEX}-${safe_label}.body.log"
+
   log "curl check: $label"
-  body="$(curl --fail --silent --show-error --max-time 15 --retry 2 --retry-delay 1 --noproxy "" "$@")"
+  curl --fail --silent --show-error --verbose \
+    --max-time 15 --retry 2 --retry-delay 1 --noproxy "" \
+    --dump-header "$header_log" \
+    --output "$body_file" \
+    "$@" 2>"$curl_log"
+  body="$(cat "$body_file")"
   if [[ "$body" != *"$MARKER"* ]]; then
     printf '[rustbox-ci] unexpected response for %s\n' "$label" >&2
     printf '%s\n' "$body" >&2
@@ -228,9 +245,13 @@ main() {
 
   if [[ "${RUSTBOX_CI_EXTERNAL:-0}" == "1" ]]; then
     log "optional external egress check is enabled"
-    curl --fail --silent --show-error --max-time 20 --retry 2 --retry-delay 1 --noproxy "" \
+    curl --fail --silent --show-error --verbose \
+      --max-time 20 --retry 2 --retry-delay 1 --noproxy "" \
+      --dump-header "$WORK_DIR/logs/curl-external-egress.headers.log" \
       --proxy "http://127.0.0.1:$HTTP_PROXY_PORT" \
-      --head "https://example.com/" >/dev/null
+      --head "https://example.com/" \
+      >"$WORK_DIR/logs/curl-external-egress.body.log" \
+      2>"$WORK_DIR/logs/curl-external-egress.log"
   else
     log "optional external egress check is disabled; set RUSTBOX_CI_EXTERNAL=1 to enable it"
   fi

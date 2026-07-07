@@ -52,4 +52,13 @@ jobs:
       - name: Curl inbound and outbound proxy smoke test
         env:
           RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
+          RUSTBOX_CI_DUMP_LOGS: "1"
         run: bash scripts/ci/proxy-smoke.sh
+
+      - name: Upload proxy smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustbox-proxy-smoke-logs
+          path: target/ci-proxy-smoke/logs
+          if-no-files-found: ignore
