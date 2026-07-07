@@ -23,6 +23,9 @@ pub struct FileConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileObservabilityConfig {
     pub level: Option<String>,
+    pub file: Option<String>,
+    pub platform: Option<bool>,
+    pub remote_endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -102,6 +105,9 @@ impl TomlConfigDocument {
                 .observability
                 .map(|observability| FileObservabilityConfig {
                     level: observability.level,
+                    file: observability.file,
+                    platform: observability.platform,
+                    remote_endpoint: observability.remote_endpoint,
                 }),
         })
     }
@@ -111,6 +117,9 @@ impl TomlConfigDocument {
 #[serde(deny_unknown_fields)]
 struct TomlObservabilityConfig {
     level: Option<String>,
+    file: Option<String>,
+    platform: Option<bool>,
+    remote_endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -138,13 +147,70 @@ impl TomlInboundConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlOutboundConfig {
-    Direct { id: String },
+    Direct {
+        id: String,
+    },
+    Block {
+        id: String,
+    },
+    Socks5 {
+        id: String,
+        server: String,
+        username: Option<String>,
+        password: Option<String>,
+    },
+    Http {
+        id: String,
+        server: String,
+        username: Option<String>,
+        password: Option<String>,
+    },
+    Shadowsocks {
+        id: String,
+        server: String,
+        method: String,
+        password: String,
+    },
 }
 
 impl TomlOutboundConfig {
     fn into_source(self) -> Result<OutboundConfig, ConfigFileError> {
         match self {
             Self::Direct { id } => Ok(OutboundConfig::Direct { id }),
+            Self::Block { id } => Ok(OutboundConfig::Block { id }),
+            Self::Socks5 {
+                id,
+                server,
+                username,
+                password,
+            } => Ok(OutboundConfig::Socks5 {
+                id,
+                server: parse_endpoint(&server)?,
+                username,
+                password,
+            }),
+            Self::Http {
+                id,
+                server,
+                username,
+                password,
+            } => Ok(OutboundConfig::Http {
+                id,
+                server: parse_endpoint(&server)?,
+                username,
+                password,
+            }),
+            Self::Shadowsocks {
+                id,
+                server,
+                method,
+                password,
+            } => Ok(OutboundConfig::Shadowsocks {
+                id,
+                server: parse_endpoint(&server)?,
+                method,
+                password,
+            }),
         }
     }
 }
@@ -245,6 +311,29 @@ listen = "127.0.0.1:1080"
 id = "direct"
 type = "direct"
 
+[[outbounds]]
+id = "socks-out"
+type = "socks5"
+server = "127.0.0.1:1081"
+
+[[outbounds]]
+id = "block"
+type = "block"
+
+[[outbounds]]
+id = "http-out"
+type = "http"
+server = "proxy.example.test:8080"
+username = "alice"
+password = "secret"
+
+[[outbounds]]
+id = "ss-out"
+type = "shadowsocks"
+server = "ss.example.test:8388"
+method = "aes-128-gcm"
+password = "test-password"
+
 [[routes]]
 type = "default"
 outbound = "direct"
@@ -253,11 +342,52 @@ outbound = "direct"
         .expect("parse config");
 
         assert_eq!(config.source.inbounds.len(), 2);
-        assert_eq!(config.source.outbounds.len(), 1);
+        assert_eq!(config.source.outbounds.len(), 5);
         assert_eq!(config.source.routes.len(), 1);
+        assert!(matches!(
+            config.source.outbounds[2],
+            OutboundConfig::Block { .. }
+        ));
+        assert!(matches!(
+            config.source.outbounds[3],
+            OutboundConfig::Http { .. }
+        ));
+        assert!(matches!(
+            config.source.outbounds[4],
+            OutboundConfig::Shadowsocks { .. }
+        ));
         assert_eq!(
-            config.observability.and_then(|value| value.level),
-            Some("debug".to_string())
+            config.observability.map(|value| (
+                value.level,
+                value.file,
+                value.platform,
+                value.remote_endpoint
+            )),
+            Some((Some("debug".to_string()), None, None, None))
+        );
+    }
+
+    #[test]
+    fn parses_observability_outputs() {
+        let config = parse_toml_str(
+            r#"
+schema_version = 1
+
+[observability]
+level = "info"
+file = "target/rustbox.log"
+platform = true
+remote_endpoint = "https://telemetry.example.test/rustbox"
+"#,
+        )
+        .expect("parse config");
+
+        let observability = config.observability.expect("observability config");
+        assert_eq!(observability.file, Some("target/rustbox.log".to_string()));
+        assert_eq!(observability.platform, Some(true));
+        assert_eq!(
+            observability.remote_endpoint,
+            Some("https://telemetry.example.test/rustbox".to_string())
         );
     }
 

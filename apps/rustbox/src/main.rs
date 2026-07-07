@@ -1,7 +1,9 @@
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use rustbox_compose::TokioComposition;
 use rustbox_config_file::load_toml_file;
-use rustbox_observability::{ConsoleObservabilitySink, LevelFilter};
+use rustbox_observability::{
+    CompositeObservabilitySink, ConsoleObservabilitySink, FileObservabilitySink, LevelFilter,
+};
 use rustbox_types::Endpoint;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,7 +39,10 @@ async fn main() {
             let file_config = load_toml_file(&path).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", path.display(), err.message)
             });
-            let configured_observability = Arc::new(observability_from_file(&file_config));
+            let configured_observability = Arc::new(
+                observability_from_file(&file_config)
+                    .unwrap_or_else(|err| panic!("configure observability: {err}")),
+            );
             (
                 TokioComposition::with_observability(configured_observability)
                     .compose_source(file_config.source)
@@ -113,14 +118,29 @@ fn observability_from_cli(cli: &Cli) -> ConsoleObservabilitySink {
     ConsoleObservabilitySink::stderr_from_env()
 }
 
-fn observability_from_file(config: &rustbox_config_file::FileConfig) -> ConsoleObservabilitySink {
+fn observability_from_file(
+    config: &rustbox_config_file::FileConfig,
+) -> Result<CompositeObservabilitySink, String> {
     let level = config
         .observability
         .as_ref()
         .and_then(|observability| observability.level.as_deref())
         .and_then(LevelFilter::parse)
         .unwrap_or_else(LevelFilter::from_env);
-    ConsoleObservabilitySink::stderr(level)
+    let mut sink = CompositeObservabilitySink::new()
+        .with_sink(Arc::new(ConsoleObservabilitySink::stderr(level)));
+
+    if let Some(path) = config
+        .observability
+        .as_ref()
+        .and_then(|observability| observability.file.as_deref())
+    {
+        let file_sink = FileObservabilitySink::append(path, level)
+            .map_err(|err| format!("failed to open observability file `{path}`: {err}"))?;
+        sink = sink.with_sink(Arc::new(file_sink));
+    }
+
+    Ok(sink)
 }
 
 #[cfg(test)]

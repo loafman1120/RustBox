@@ -1,5 +1,5 @@
 [package]
-name = "rustbox-inbound-socks5"
+name = "rustbox-outbound-socks5"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,10 +10,11 @@ rustbox-host-api = { path = "../../../host/rustbox-host-api" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
-tokio = { version = "1", features = ["io-util"] }
+tokio = { version = "1", features = ["io-util", "net"] }
 
 [dev-dependencies]
-rustbox-outbound-direct = { path = "../../outbound/rustbox-outbound-direct" }
+rustbox-inbound-socks5 = { path = "../../inbound/rustbox-inbound-socks5" }
+rustbox-outbound-direct = { path = "../rustbox-outbound-direct" }
 rustbox-route = { path = "../../../kernel/rustbox-route" }
 rustbox-runtime-tokio = { path = "../../../runtime/rustbox-runtime-tokio" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }

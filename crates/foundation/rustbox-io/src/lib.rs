@@ -29,6 +29,10 @@ pub trait ByteStream: Send + Unpin {
 
 /// 面向 UDP 等无连接数据报的接口，和字节流保持独立。
 pub trait DatagramSocket: Send + Unpin {
+    fn local_endpoint(&self) -> Option<Endpoint> {
+        None
+    }
+
     fn poll_recv_from(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,

@@ -12,6 +12,9 @@ use rustbox_inbound_http::HttpProxyInbound;
 use rustbox_inbound_socks5::Socks5Inbound;
 use rustbox_kernel::{Engine, EngineError, FlowSink, Service, ServiceContext, ServiceError};
 use rustbox_outbound_direct::DirectOutbound;
+use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
+use rustbox_outbound_shadowsocks::ShadowsocksOutbound;
+use rustbox_outbound_socks5::{Socks5Credentials, Socks5Outbound};
 use rustbox_route::RouteTable;
 use rustbox_runtime_tokio::TokioHost;
 use rustbox_types::{Endpoint, RouteDecision};
@@ -98,6 +101,65 @@ impl TokioComposition {
                             DirectOutbound::new(*id, self.host.clone())
                                 .with_observability(self.observability.clone()),
                         ))
+                        .map_err(ComposeError::Engine)?;
+                }
+                CompiledOutbound::Socks5 {
+                    id,
+                    server,
+                    username,
+                    password,
+                    ..
+                } => {
+                    let mut outbound = Socks5Outbound::new(*id, server.clone(), self.host.clone())
+                        .with_observability(self.observability.clone());
+                    if let (Some(username), Some(password)) = (username.clone(), password.clone()) {
+                        outbound =
+                            outbound.with_credentials(Socks5Credentials { username, password });
+                    }
+                    builder = builder
+                        .register_outbound(Box::new(outbound))
+                        .map_err(ComposeError::Engine)?;
+                }
+                CompiledOutbound::Block { .. } => {
+                    // `block` outbound 在配置编译阶段会被路由规则转成 Reject 决策，
+                    // 组合根不需要为它注册会发起 I/O 的数据面组件。
+                }
+                CompiledOutbound::Http {
+                    id,
+                    server,
+                    username,
+                    password,
+                    ..
+                } => {
+                    let mut outbound =
+                        HttpProxyOutbound::new(*id, server.clone(), self.host.clone())
+                            .with_observability(self.observability.clone());
+                    if let (Some(username), Some(password)) = (username.clone(), password.clone()) {
+                        outbound =
+                            outbound.with_credentials(HttpProxyCredentials { username, password });
+                    }
+                    builder = builder
+                        .register_outbound(Box::new(outbound))
+                        .map_err(ComposeError::Engine)?;
+                }
+                CompiledOutbound::Shadowsocks {
+                    id,
+                    server,
+                    method,
+                    password,
+                    ..
+                } => {
+                    let outbound = ShadowsocksOutbound::new(
+                        *id,
+                        server.clone(),
+                        method,
+                        password,
+                        self.host.clone(),
+                    )
+                    .map_err(|err| ComposeError::Config(ConfigError::new(err.message)))?
+                    .with_observability(self.observability.clone());
+                    builder = builder
+                        .register_outbound(Box::new(outbound))
                         .map_err(ComposeError::Engine)?;
                 }
             }
@@ -208,6 +270,7 @@ fn route_table(compiled: &CompiledConfig) -> RouteTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustbox_config::{InboundConfig, OutboundConfig, RouteRuleConfig};
     use rustbox_types::Endpoint;
 
     #[test]
@@ -225,6 +288,52 @@ mod tests {
             TokioComposition::default_socks5_proxy(Endpoint::localhost_v4(0)).expect("compose");
 
         assert_eq!(runtime.engine().outbound_count(), 1);
+        assert_eq!(runtime.service_count(), 1);
+    }
+
+    #[test]
+    fn composes_first_batch_proxy_outbounds() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::HttpConnect {
+                id: "http".to_string(),
+                listen: Endpoint::localhost_v4(0),
+            }],
+            outbounds: vec![
+                OutboundConfig::Direct {
+                    id: "direct".to_string(),
+                },
+                OutboundConfig::Block {
+                    id: "block".to_string(),
+                },
+                OutboundConfig::Socks5 {
+                    id: "socks".to_string(),
+                    server: Endpoint::localhost_v4(1080),
+                    username: None,
+                    password: None,
+                },
+                OutboundConfig::Http {
+                    id: "http-out".to_string(),
+                    server: Endpoint::localhost_v4(8080),
+                    username: None,
+                    password: None,
+                },
+                OutboundConfig::Shadowsocks {
+                    id: "ss".to_string(),
+                    server: Endpoint::localhost_v4(8388),
+                    method: "aes-128-gcm".to_string(),
+                    password: "test-password".to_string(),
+                },
+            ],
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "direct".to_string(),
+            }],
+        };
+
+        let runtime = TokioComposition::new()
+            .compose_source(source)
+            .expect("compose proxy outbounds");
+
+        assert_eq!(runtime.engine().outbound_count(), 4);
         assert_eq!(runtime.service_count(), 1);
     }
 }

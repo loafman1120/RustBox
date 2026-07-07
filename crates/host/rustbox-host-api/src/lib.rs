@@ -230,6 +230,10 @@ pub enum EventKind {
     FlowCompleted {
         outcome: String,
     },
+    TrafficRecorded {
+        inbound_to_outbound_bytes: u64,
+        outbound_to_inbound_bytes: u64,
+    },
     FlowFailed {
         error: String,
     },

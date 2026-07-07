@@ -190,6 +190,10 @@ pub struct TokioUdpSocket {
 }
 
 impl DatagramSocket for TokioUdpSocket {
+    fn local_endpoint(&self) -> Option<Endpoint> {
+        self.inner.local_addr().ok().map(socket_addr_to_endpoint)
+    }
+
     fn poll_recv_from(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,

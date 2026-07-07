@@ -1,10 +1,11 @@
 # RustBox Current Architecture
 
 > **Document status:** Current implementation map  
-> **Last updated:** 2026-07-06  
+> **Last updated:** 2026-07-07
 > **Scope:** Code currently present in this repository  
 > **Reference architecture:** `docs/architecture.md`
 > **Configuration and FFI design:** `docs/config-ffi-architecture.md`
+> **Observability design:** `docs/observability-architecture.md`
 
 This document describes the architecture that exists in code today. It is not a replacement for the target architecture document. It maps the current Rust workspace to the intended RustBox layers and shows the implemented boundaries, planned adapters, and verified dependency direction.
 
@@ -25,15 +26,18 @@ Metadata enrichment pipeline
         ↓
 Route table / router
         ↓
-Direct outbound
+Direct, HTTP CONNECT, Shadowsocks, or SOCKS5 outbound
         ↓
 Tokio host network capability
         ↓
-Windows/default OS TCP stack
+Windows/default OS TCP/UDP stack
 ```
 
 The same graph now emits structured observability events at service,
-connection, flow, route, outbound, completion, and failure boundaries.
+connection, flow, route, outbound, traffic, completion, and failure boundaries.
+Those events can feed console/file logs, recording tests, in-process metrics,
+connection statistics, API queries, platform log bridges, and remote telemetry
+exporters.
 
 The core architectural constraint is currently preserved:
 
@@ -75,16 +79,18 @@ crates/
   kernel/rustbox-route/            L2 route decisions and route table
   kernel/rustbox-registry/         L2 construction-time registries
 
-  modules/codec/rustbox-codec-socks5/       Portable SOCKS5 codec
   modules/dns/rustbox-dns-core/             Portable DNS resolver contracts
   modules/inbound/rustbox-inbound-http/     HTTP CONNECT inbound
   modules/inbound/rustbox-inbound-socks5/   SOCKS5 CONNECT inbound
   modules/inspect/rustbox-inspect/          Metadata enrichers
   modules/outbound/rustbox-outbound-direct/ Direct outbound
+  modules/outbound/rustbox-outbound-http/   HTTP CONNECT outbound
+  modules/outbound/rustbox-outbound-shadowsocks/ Shadowsocks outbound
+  modules/outbound/rustbox-outbound-socks5/ SOCKS5 outbound
   modules/stack/rustbox-stack/              Packet-to-flow stack boundary
   modules/transport/rustbox-transport/      Transport contracts
 
-  observability/rustbox-observability/      Console and recording event sinks
+  observability/rustbox-observability/      Console, recording, file, metrics/query, platform, and telemetry sinks
 
   platform/rustbox-platform-windows/        Windows platform capability boundary
   plugin/rustbox-plugin/                    Future plugin manifest model
@@ -109,10 +115,12 @@ flowchart TB
     HTTP["L3 rustbox-inbound-http\nHTTP CONNECT inbound"]
     SOCKS["L3 rustbox-inbound-socks5\nSOCKS5 CONNECT inbound"]
     DIRECT["L3 rustbox-outbound-direct\ndirect outbound"]
+    OUTHTTP["L3 rustbox-outbound-http\nHTTP CONNECT outbound"]
+    OUTSS["L3 rustbox-outbound-shadowsocks\nShadowsocks outbound"]
+    OUTSOCKS["L3 rustbox-outbound-socks5\nSOCKS5 outbound"]
     TRANSPORT["L3 rustbox-transport\nstream transport contracts"]
     DNS["L3 rustbox-dns-core\nresolver contracts"]
     INSPECT["L3 rustbox-inspect\nmetadata enrichers"]
-    CODEC["L3 rustbox-codec-socks5\nportable codec"]
     STACK["L3 rustbox-stack\npacket-to-flow stack boundary"]
 
     KERNEL["L2 rustbox-kernel\nflow / relay / lifecycle / enrichment"]
@@ -142,6 +150,9 @@ flowchart TB
     COMPOSE --> HTTP
     COMPOSE --> SOCKS
     COMPOSE --> DIRECT
+    COMPOSE --> OUTHTTP
+    COMPOSE --> OUTSS
+    COMPOSE --> OUTSOCKS
     COMPOSE --> KERNEL
     COMPOSE --> ROUTE
     COMPOSE --> HOSTAPI
@@ -155,12 +166,23 @@ flowchart TB
     SOCKS --> HOSTAPI
     SOCKS --> IO
     SOCKS --> TYPES
-    SOCKS --> CODEC
 
     DIRECT --> KERNEL
     DIRECT --> HOSTAPI
     DIRECT --> IO
     DIRECT --> TYPES
+    OUTHTTP --> KERNEL
+    OUTHTTP --> HOSTAPI
+    OUTHTTP --> IO
+    OUTHTTP --> TYPES
+    OUTSS --> KERNEL
+    OUTSS --> HOSTAPI
+    OUTSS --> IO
+    OUTSS --> TYPES
+    OUTSOCKS --> KERNEL
+    OUTSOCKS --> HOSTAPI
+    OUTSOCKS --> IO
+    OUTSOCKS --> TYPES
 
     TRANSPORT --> HOSTAPI
     TRANSPORT --> IO
@@ -169,7 +191,6 @@ flowchart TB
     DNS --> TYPES
     INSPECT --> KERNEL
     INSPECT --> TYPES
-    CODEC --> TYPES
     STACK --> KERNEL
     STACK --> IO
 
@@ -285,6 +306,21 @@ TokioComposition::default_http_proxy_with_observability(
 )
 ```
 
+The `rustbox-app` CLI is parsed with `clap` derive at the application layer.
+The current commands are:
+
+```text
+rustbox-app
+rustbox-app http-proxy
+rustbox-app socks5-proxy
+rustbox-app --config examples/rustbox.toml
+rustbox-app run --config examples/rustbox.toml
+```
+
+`clap` handles help, version, missing values, and unknown subcommands. The
+application still owns semantic conflicts such as combining a default proxy
+command with `--config`.
+
 ---
 
 ## 6. Control And Reload
@@ -336,7 +372,7 @@ Current capabilities:
 | Task spawning | `TaskSpawner` | `TokioHost` |
 | Packet device | `PacketDeviceProvider` | Windows boundary returns explicit planned error |
 | Network control | `NetworkControl` | Windows boundary returns explicit planned error |
-| Observability | `ObservabilitySink` | `NoopObservabilitySink`, `ConsoleObservabilitySink`, `RecordingObservabilitySink` |
+| Observability | `ObservabilitySink` | `NoopObservabilitySink`, `ConsoleObservabilitySink`, `RecordingObservabilitySink`, `CompositeObservabilitySink`, `ObservabilityStore`, `FileObservabilitySink`, `PlatformLogSink`, `RemoteTelemetrySink` |
 
 ### 7.1 Observability Layer
 
@@ -349,12 +385,20 @@ flowchart LR
     API["ObservabilitySink\nhost-api contract"]
     NOOP["Noop sink\nlibrary default"]
     CONSOLE["Console sink\napp default"]
+    STORE["Store\nmetrics / connections / queries"]
+    FILE["File sink\nconfigured app output"]
     RECORD["Recording sink\ntests / embedding"]
+    PLATFORM["Platform log bridge\nETW / logcat / os_log adapter point"]
+    REMOTE["Remote telemetry bridge\nHTTP / gRPC / OTLP adapter point"]
 
     CORE --> API
     API --> NOOP
     API --> CONSOLE
+    API --> STORE
+    API --> FILE
     API --> RECORD
+    API --> PLATFORM
+    API --> REMOTE
 ```
 
 Current event coverage:
@@ -367,11 +411,33 @@ Current event coverage:
 | SOCKS5 inbound accept path | connection accepted, malformed greeting/request diagnostic |
 | Kernel flow path | flow accepted, route selected, flow completed, flow failed |
 | Direct outbound | outbound connecting, connected, failed |
+| Stream relay | traffic bytes after relay completion |
+
+Current metrics and query coverage:
+
+| Area | Current API |
+|---|---|
+| Counters | `ObservabilityStore::metrics()` returns service, connection, flow, route, outbound, byte, and diagnostic counters |
+| Connection stats | `ObservabilityStore::connections()` returns per-flow source, destination, state, byte totals, outcome, and error |
+| Bounded event queries | `ObservabilityStore::query_events(ObservabilityQuery)` filters by level, target prefix, flow id, and limit |
+| Whole snapshot | `ObservabilityStore::snapshot()` returns metrics, connection stats, and recent events |
 
 The `rustbox-app` binary uses `ConsoleObservabilitySink::stderr_from_env()`.
 `RUSTBOX_LOG` accepts `trace`, `debug`, `info`, `warn`, `error`, or `off`.
 Library composition defaults to `NoopObservabilitySink` unless the caller
 injects an observability sink.
+
+When `rustbox-app` starts from a config file, `[observability] file =
+"path/to/rustbox.log"` adds `FileObservabilitySink` through
+`CompositeObservabilitySink`. `platform` and `remote_endpoint` are parsed as
+configuration surface for host/product adapters; concrete platform and remote
+clients are intentionally outside the portable core.
+
+The docs use sing-box as a control-plane reference: sing-box exposes a native
+gRPC API service for observation/control, a V2Ray gRPC stats service, and a
+Clash REST control API. RustBox follows the same layer split by keeping local
+HTTP/gRPC compatibility APIs above `ObservabilityStore` and control commands,
+not inside the kernel.
 
 ---
 
@@ -409,6 +475,11 @@ Important current status:
 | Generic stream relay | Implemented |
 | Structured observability events | Implemented |
 | Console log adapter | Implemented |
+| Metrics and connection statistics | Implemented through `ObservabilityStore` |
+| Bounded observability query API | Implemented as in-process store queries |
+| File log adapter | Implemented |
+| Platform-native log bridge | Adapter implemented, concrete OS backend planned |
+| Remote telemetry bridge | Adapter implemented, concrete exporter planned |
 | SOCKS5 codec | Portable parser/encoder implemented |
 | SOCKS5 outbound module | Not implemented yet |
 | SOCKS5 BIND / UDP ASSOCIATE / username-password auth | Not implemented yet |
@@ -522,12 +593,15 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo tree -p rustbox-kernel
 cargo run -p rustbox-app
+cargo run -p rustbox-app -- --help
 ```
 
 Key tests:
 
 | Test | Purpose |
 |---|---|
+| `parses_default_http_proxy_command` | CLI maps `http-proxy` to the typed application command |
+| `parses_config_file_without_subcommand` | CLI accepts config-file startup without a subcommand |
 | `http_connect_tunnels_bytes_to_direct_outbound` | Full HTTP CONNECT -> kernel -> direct outbound tunnel |
 | `socks5_connect_tunnels_bytes_to_direct_outbound` | Full SOCKS5 CONNECT -> kernel -> direct outbound tunnel |
 | `forwards_stream_flow_to_selected_outbound` | Kernel route and outbound dispatch |
@@ -576,6 +650,7 @@ The following are intentionally not complete yet:
 - Linux, Apple, Android, and BSD platform adapters.
 - General FFI config-handle API for arbitrary user configuration.
 - Full controlled live reload integration into the running app.
-- File, tracing, ETW, Android logcat, Apple unified logging, and remote telemetry sinks.
+- Networked HTTP/gRPC control API over the current `ObservabilityStore`.
+- Concrete ETW, Android logcat, Apple unified logging, tracing, and OTLP/exporter adapters.
 
 These are now extension points, not missing architecture seams in the kernel.

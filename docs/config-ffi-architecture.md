@@ -2,7 +2,7 @@
 
 > **Document status:** Design recommendation  
 > **Scope:** Configuration files, typed configuration, reload, and FFI/mobile embedding  
-> **Related documents:** `docs/architecture.md`, `docs/current-architecture.md`
+> **Related documents:** `docs/architecture.md`, `docs/current-architecture.md`, `docs/observability-architecture.md`
 
 ---
 
@@ -113,6 +113,10 @@ pub struct SourceConfig {
 ```
 
 This layer should use stable logical IDs such as `"http"` and `"direct"`.
+Observability configuration belongs to the application/control layer unless it
+changes runtime graph construction. Sink choices such as console, file,
+platform-native logging, or remote telemetry should not be deserialized inside
+protocol modules.
 
 ### 3.3 NormalizedConfig
 
@@ -189,6 +193,7 @@ schema_version = 1
 
 [observability]
 level = "info"
+file = "target/rustbox.log"
 
 [[inbounds]]
 id = "http"
@@ -216,6 +221,19 @@ rustbox-config-file
 
 Do not let protocol modules deserialize themselves from TOML/JSON. Module
 runtime config should be constructed by the config compiler.
+
+Current file observability fields:
+
+| Field | Meaning | Current status |
+|---|---|---|
+| `level` | Console/file minimum level | Implemented |
+| `file` | Append formatted structured events to a host file | Implemented in `rustbox-app` |
+| `platform` | Request a platform-native log backend | Parsed, backend supplied by platform/product adapter |
+| `remote_endpoint` | Request remote telemetry export | Parsed, exporter supplied by product/integration adapter |
+
+HTTP/gRPC API configuration should be added as a control service, not as an
+inbound proxy module. The API service will consume control snapshots and
+`ObservabilityStore` data.
 
 ---
 
@@ -427,6 +445,9 @@ Current implementation:
 - Gap: FFI has no Rust-owned config handles.
 - Gap: reload through FFI currently restarts the owned runtime instead of
   preparing and swapping a replacement graph.
+- Gap: FFI does not yet expose observability snapshots, metrics, connection
+  stats, or event query DTOs.
 
-The best next architectural move is to introduce config handles and file
-adapters without changing the kernel or protocol modules.
+The best next architectural move is to introduce config handles and
+observability snapshot/query DTOs without changing the kernel or protocol
+modules.

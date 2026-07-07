@@ -2,6 +2,8 @@ schema_version = 1
 
 [observability]
 level = "info"
+# Optional: append structured runtime logs to a file.
+# file = "target/rustbox.log"
 
 [[inbounds]]
 id = "http"
@@ -16,6 +18,35 @@ listen = "127.0.0.1:1080"
 [[outbounds]]
 id = "direct"
 type = "direct"
+
+# Drop matched traffic with a policy rejection.
+[[outbounds]]
+id = "block"
+type = "block"
+
+# Forward through an upstream SOCKS5 proxy.
+[[outbounds]]
+id = "socks-out"
+type = "socks5"
+server = "127.0.0.1:1081"
+# username = "alice"
+# password = "secret"
+
+# Forward through an upstream HTTP CONNECT proxy.
+[[outbounds]]
+id = "http-out"
+type = "http"
+server = "proxy.example.test:8080"
+# username = "alice"
+# password = "secret"
+
+# Forward through an upstream Shadowsocks server.
+[[outbounds]]
+id = "ss-out"
+type = "shadowsocks"
+server = "ss.example.test:8388"
+method = "aes-128-gcm"
+password = "test-password"
 
 [[routes]]
 type = "default"

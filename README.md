@@ -7,7 +7,7 @@ adapters, protocol modules, and a composition root.
 The repository currently includes a runnable minimum proxy graph:
 
 ```text
-HTTP CONNECT / SOCKS5 inbound -> RustBox kernel -> route table -> direct outbound -> Tokio host
+HTTP CONNECT / SOCKS5 inbound -> RustBox kernel -> route table -> outbound -> Tokio host
 ```
 
 For the full target architecture, see `docs/architecture.md`. For what exists
@@ -77,12 +77,18 @@ trace, debug, info, warn, error, off
 ```
 
 The current log events cover service lifecycle, accepted TCP connections, flow
-submission, route decisions, direct outbound connection attempts, flow
-completion, and failures.
+submission, route decisions, direct outbound connection attempts, relay traffic
+bytes, flow completion, and failures.
 
 When starting with `--config`, `[observability] level = "info"` in the TOML
 file controls the console log level. `RUSTBOX_LOG` is still used as the fallback
 when the file omits that setting.
+
+Add `file = "target/rustbox.log"` under `[observability]` to append the same
+structured event stream to a file. Metrics, connection statistics, bounded event
+queries, platform log bridges, and remote telemetry exporter bridges are
+implemented in `rustbox-observability`; a networked HTTP/gRPC control service is
+the next layer above those APIs.
 
 ## Config File
 
@@ -94,6 +100,7 @@ schema_version = 1
 
 [observability]
 level = "info"
+# file = "target/rustbox.log"
 
 [[inbounds]]
 id = "http"
@@ -109,13 +116,44 @@ listen = "127.0.0.1:1080"
 id = "direct"
 type = "direct"
 
+# Drop matched traffic with a policy rejection.
+[[outbounds]]
+id = "block"
+type = "block"
+
+# Forward through an upstream SOCKS5 proxy.
+[[outbounds]]
+id = "socks-out"
+type = "socks5"
+server = "127.0.0.1:1081"
+# username = "alice"
+# password = "secret"
+
+# Forward through an upstream HTTP CONNECT proxy.
+[[outbounds]]
+id = "http-out"
+type = "http"
+server = "proxy.example.test:8080"
+# username = "alice"
+# password = "secret"
+
+# Forward through an upstream Shadowsocks server.
+[[outbounds]]
+id = "ss-out"
+type = "shadowsocks"
+server = "ss.example.test:8388"
+method = "aes-128-gcm"
+password = "test-password"
+
 [[routes]]
 type = "default"
 outbound = "direct"
 ```
 
 Supported inbound `type` values are `http-connect` and `socks5`. Supported
-outbound `type` is currently `direct`.
+outbound `type` values are `direct`, `block`, `socks5`, `http`, and
+`shadowsocks`. The current runtime can instantiate `direct`, `socks5`, `http`,
+and `shadowsocks`; `block` compiles to a policy rejection.
 
 ## FFI Compatibility
 
@@ -176,7 +214,8 @@ cargo clippy --workspace --all-targets -- -D warnings
   stream relay.
 - Staged configuration model: source, parsed, validated, compiled.
 - Structured observability through `ObservabilitySink`, with no-op, console,
-  and recording sinks.
+  recording, metrics/query store, file, platform-bridge, and remote-telemetry
+  bridge sinks.
 - Tokio-backed host adapter for TCP, UDP binding, clock, entropy, and task
   spawning.
 - Test host, registry model, plugin manifest model, reload transaction model,
@@ -189,8 +228,9 @@ cargo clippy --workspace --all-targets -- -D warnings
   implemented yet.
 - TUN, packet-to-flow stack, route control, transparent proxy, and process
   lookup are planned extension points.
-- File, tracing, platform-native, and remote telemetry log sinks are not
-  implemented yet.
+- A networked HTTP/gRPC observability and control API is not implemented yet.
+- Concrete ETW, Android logcat, Apple unified logging, tracing, and OTLP
+  exporter adapters are not implemented yet.
 
 ## Workspace Layout
 

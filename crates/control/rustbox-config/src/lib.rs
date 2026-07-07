@@ -70,14 +70,61 @@ pub struct CompiledConfig {
 /// inbound 的源配置，描述用户想暴露的入口类型和监听地址。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InboundConfig {
+    /// HTTP CONNECT 入口，监听本地 TCP 地址并把 CONNECT 目标提交给内核。
     HttpConnect { id: String, listen: Endpoint },
+    /// SOCKS5 入口，监听本地 TCP 地址并支持 CONNECT/UDP ASSOCIATE。
     Socks5 { id: String, listen: Endpoint },
 }
 
 /// outbound 的源配置，描述可被路由引用的出站能力。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboundConfig {
-    Direct { id: String },
+    /// 直连出站，对应 sing-box `direct` outbound。
+    Direct {
+        /// 用户配置里的逻辑 ID，路由规则通过它引用该 outbound。
+        id: String,
+    },
+    /// 阻断出站，对应 sing-box `block` outbound。
+    ///
+    /// 当前路由编译器会把指向该 ID 的默认路由转成 `Reject(Policy)`，
+    /// 避免数据面为“阻断”创建无意义的上游连接。
+    Block {
+        /// 用户配置里的逻辑 ID，路由规则通过它引用该 outbound。
+        id: String,
+    },
+    /// SOCKS5 上游代理，对应 sing-box `socks` outbound 的基础字段。
+    Socks5 {
+        /// 用户配置里的逻辑 ID，路由规则通过它引用该 outbound。
+        id: String,
+        /// SOCKS5 代理服务器地址和端口。
+        server: Endpoint,
+        /// SOCKS5 用户名；设置时必须同时设置 `password`。
+        username: Option<String>,
+        /// SOCKS5 密码；设置时必须同时设置 `username`。
+        password: Option<String>,
+    },
+    /// HTTP CONNECT 上游代理，对应 sing-box `http` outbound 的基础字段。
+    Http {
+        /// 用户配置里的逻辑 ID，路由规则通过它引用该 outbound。
+        id: String,
+        /// HTTP 代理服务器地址和端口。
+        server: Endpoint,
+        /// HTTP 代理认证用户名；设置时必须同时设置 `password`。
+        username: Option<String>,
+        /// HTTP 代理认证密码；设置时必须同时设置 `username`。
+        password: Option<String>,
+    },
+    /// Shadowsocks 上游代理，对应 sing-box `shadowsocks` outbound 的基础字段。
+    Shadowsocks {
+        /// 用户配置里的逻辑 ID，路由规则通过它引用该 outbound。
+        id: String,
+        /// Shadowsocks 服务器地址和端口。
+        server: Endpoint,
+        /// Shadowsocks 加密方法名称，例如 `aes-128-gcm`。
+        method: String,
+        /// Shadowsocks 密码；部分 2022 方法要求这里是 base64 密钥材料。
+        password: String,
+    },
 }
 
 /// 路由源规则，使用逻辑 ID，尚不直接持有内部 `OutboundId`。
@@ -103,7 +150,34 @@ pub enum CompiledInbound {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompiledOutbound {
+    /// 已分配内部 ID 的直连出站，组合根会实例化 direct 数据面模块。
     Direct { id: OutboundId, logical_id: String },
+    /// 已分配内部 ID 的阻断出站，路由引用它时会编译成策略拒绝。
+    Block { id: OutboundId, logical_id: String },
+    /// 已分配内部 ID 的 SOCKS5 上游代理，当前组合根已有运行时模块。
+    Socks5 {
+        id: OutboundId,
+        logical_id: String,
+        server: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
+    },
+    /// 已分配内部 ID 的 HTTP CONNECT 上游代理，组合根会实例化 HTTP outbound 模块。
+    Http {
+        id: OutboundId,
+        logical_id: String,
+        server: Endpoint,
+        username: Option<String>,
+        password: Option<String>,
+    },
+    /// 已分配内部 ID 的 Shadowsocks 上游代理，组合根会实例化 Shadowsocks 模块。
+    Shadowsocks {
+        id: OutboundId,
+        logical_id: String,
+        server: Endpoint,
+        method: String,
+        password: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,6 +225,29 @@ impl ConfigCompiler {
                 return Err(ConfigError::new(format!(
                     "duplicate outbound id `{logical_id}`"
                 )));
+            }
+            match outbound {
+                OutboundConfig::Socks5 {
+                    username, password, ..
+                } => validate_optional_credentials("socks5", logical_id, username, password)?,
+                OutboundConfig::Http {
+                    username, password, ..
+                } => validate_optional_credentials("http", logical_id, username, password)?,
+                OutboundConfig::Shadowsocks {
+                    method, password, ..
+                } => {
+                    if method.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "shadowsocks outbound `{logical_id}` method must not be empty"
+                        )));
+                    }
+                    if password.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "shadowsocks outbound `{logical_id}` password must not be empty"
+                        )));
+                    }
+                }
+                OutboundConfig::Direct { .. } | OutboundConfig::Block { .. } => {}
             }
         }
 
@@ -213,6 +310,46 @@ impl ConfigCompiler {
                     id: OutboundId::new(non_zero_id(index)),
                     logical_id: id.clone(),
                 }),
+                OutboundConfig::Block { id } => Ok(CompiledOutbound::Block {
+                    id: OutboundId::new(non_zero_id(index)),
+                    logical_id: id.clone(),
+                }),
+                OutboundConfig::Socks5 {
+                    id,
+                    server,
+                    username,
+                    password,
+                } => Ok(CompiledOutbound::Socks5 {
+                    id: OutboundId::new(non_zero_id(index)),
+                    logical_id: id.clone(),
+                    server: server.clone(),
+                    username: username.clone(),
+                    password: password.clone(),
+                }),
+                OutboundConfig::Http {
+                    id,
+                    server,
+                    username,
+                    password,
+                } => Ok(CompiledOutbound::Http {
+                    id: OutboundId::new(non_zero_id(index)),
+                    logical_id: id.clone(),
+                    server: server.clone(),
+                    username: username.clone(),
+                    password: password.clone(),
+                }),
+                OutboundConfig::Shadowsocks {
+                    id,
+                    server,
+                    method,
+                    password,
+                } => Ok(CompiledOutbound::Shadowsocks {
+                    id: OutboundId::new(non_zero_id(index)),
+                    logical_id: id.clone(),
+                    server: server.clone(),
+                    method: method.clone(),
+                    password: password.clone(),
+                }),
             })
             .collect::<Result<Vec<_>, ConfigError>>()?;
 
@@ -224,20 +361,11 @@ impl ConfigCompiler {
                 RouteRuleConfig::Default { outbound } => {
                     let outbound_id = outbounds
                         .iter()
-                        .find_map(|compiled| match compiled {
-                            CompiledOutbound::Direct { id, logical_id }
-                                if logical_id == outbound =>
-                            {
-                                Some(*id)
-                            }
-                            CompiledOutbound::Direct { .. } => None,
-                        })
+                        .find(|compiled| compiled.logical_id() == outbound)
                         .ok_or_else(|| {
                             ConfigError::new(format!("unknown outbound `{outbound}`"))
                         })?;
-                    Ok(CompiledRouteRule::Default(RouteDecision::Forward(
-                        outbound_id,
-                    )))
+                    Ok(CompiledRouteRule::Default(outbound_id.route_decision()))
                 }
                 RouteRuleConfig::RejectDefault { reason } => Ok(CompiledRouteRule::Default(
                     RouteDecision::Reject(reason.clone()),
@@ -266,8 +394,49 @@ impl OutboundConfig {
     pub fn logical_id(&self) -> &str {
         match self {
             Self::Direct { id } => id,
+            Self::Block { id } => id,
+            Self::Socks5 { id, .. } => id,
+            Self::Http { id, .. } => id,
+            Self::Shadowsocks { id, .. } => id,
         }
     }
+}
+
+impl CompiledOutbound {
+    fn logical_id(&self) -> &str {
+        match self {
+            Self::Direct { logical_id, .. } => logical_id,
+            Self::Block { logical_id, .. } => logical_id,
+            Self::Socks5 { logical_id, .. } => logical_id,
+            Self::Http { logical_id, .. } => logical_id,
+            Self::Shadowsocks { logical_id, .. } => logical_id,
+        }
+    }
+
+    fn route_decision(&self) -> RouteDecision {
+        match self {
+            Self::Direct { id, .. }
+            | Self::Socks5 { id, .. }
+            | Self::Http { id, .. }
+            | Self::Shadowsocks { id, .. } => RouteDecision::Forward(*id),
+            Self::Block { .. } => RouteDecision::Reject(RejectReason::Policy),
+        }
+    }
+}
+
+fn validate_optional_credentials(
+    protocol: &str,
+    logical_id: &str,
+    username: &Option<String>,
+    password: &Option<String>,
+) -> Result<(), ConfigError> {
+    // 代理认证字段成对出现，避免运行时猜测“空用户名”或“空密码”的含义。
+    if username.is_some() != password.is_some() {
+        return Err(ConfigError::new(format!(
+            "{protocol} outbound `{logical_id}` must set username and password together"
+        )));
+    }
+    Ok(())
 }
 
 fn non_zero_id(index: usize) -> NonZeroU64 {
@@ -305,5 +474,102 @@ mod tests {
         ));
         assert_eq!(compiled.outbounds.len(), 1);
         assert_eq!(compiled.route_rules.len(), 1);
+    }
+
+    #[test]
+    fn compiles_first_batch_sing_box_style_outbounds() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::HttpConnect {
+                id: "http".to_string(),
+                listen: Endpoint::localhost_v4(18080),
+            }],
+            outbounds: vec![
+                OutboundConfig::Direct {
+                    id: "direct".to_string(),
+                },
+                OutboundConfig::Block {
+                    id: "block".to_string(),
+                },
+                OutboundConfig::Socks5 {
+                    id: "socks".to_string(),
+                    server: Endpoint::localhost_v4(1080),
+                    username: Some("user".to_string()),
+                    password: Some("pass".to_string()),
+                },
+                OutboundConfig::Http {
+                    id: "http-out".to_string(),
+                    server: Endpoint::localhost_v4(8080),
+                    username: None,
+                    password: None,
+                },
+                OutboundConfig::Shadowsocks {
+                    id: "ss".to_string(),
+                    server: Endpoint::localhost_v4(8388),
+                    method: "aes-128-gcm".to_string(),
+                    password: "test-password".to_string(),
+                },
+            ],
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "block".to_string(),
+            }],
+        };
+
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let validated = ConfigCompiler::validate(parsed).expect("validate");
+        let compiled = ConfigCompiler::compile(validated).expect("compile");
+
+        assert_eq!(compiled.outbounds.len(), 5);
+        assert!(matches!(
+            compiled.route_rules[0],
+            CompiledRouteRule::Default(RouteDecision::Reject(RejectReason::Policy))
+        ));
+    }
+
+    #[test]
+    fn rejects_incomplete_http_outbound_credentials() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::HttpConnect {
+                id: "http".to_string(),
+                listen: Endpoint::localhost_v4(18080),
+            }],
+            outbounds: vec![OutboundConfig::Http {
+                id: "http-out".to_string(),
+                server: Endpoint::localhost_v4(8080),
+                username: Some("user".to_string()),
+                password: None,
+            }],
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "http-out".to_string(),
+            }],
+        };
+
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let error = ConfigCompiler::validate(parsed).expect_err("reject credentials");
+
+        assert!(error.message.contains("username and password together"));
+    }
+
+    #[test]
+    fn rejects_empty_shadowsocks_method() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::HttpConnect {
+                id: "http".to_string(),
+                listen: Endpoint::localhost_v4(18080),
+            }],
+            outbounds: vec![OutboundConfig::Shadowsocks {
+                id: "ss".to_string(),
+                server: Endpoint::localhost_v4(8388),
+                method: String::new(),
+                password: "secret".to_string(),
+            }],
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "ss".to_string(),
+            }],
+        };
+
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let error = ConfigCompiler::validate(parsed).expect_err("reject method");
+
+        assert!(error.message.contains("method must not be empty"));
     }
 }

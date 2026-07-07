@@ -136,6 +136,21 @@ impl Engine {
         let result = self.execute_flow_inner(flow).await;
         match &result {
             Ok(outcome) => {
+                if let FlowOutcome::Forwarded {
+                    relay: Some(relay), ..
+                } = outcome
+                {
+                    self.emit(
+                        EventLevel::Debug,
+                        "rustbox.kernel.traffic",
+                        Some(flow_id),
+                        EventKind::TrafficRecorded {
+                            inbound_to_outbound_bytes: relay.inbound_to_outbound_bytes,
+                            outbound_to_inbound_bytes: relay.outbound_to_inbound_bytes,
+                        },
+                    )
+                    .await;
+                }
                 self.emit(
                     EventLevel::Info,
                     "rustbox.kernel.flow",
@@ -215,15 +230,18 @@ impl Engine {
                             relay: Some(relay),
                         })
                     }
-                    FlowPayload::Datagram(_socket) => {
-                        let _outbound_socket = outbound
+                    FlowPayload::Datagram(inbound_socket) => {
+                        let outbound_socket = outbound
                             .open_datagram(ctx, target)
                             .await
                             .map_err(FlowError::Outbound)?;
+                        let relay = relay_datagram(inbound_socket, outbound_socket)
+                            .await
+                            .map_err(FlowError::Relay)?;
                         Ok(FlowOutcome::Forwarded {
                             outbound: outbound_id,
                             network: Network::Udp,
-                            relay: None,
+                            relay: Some(relay),
                         })
                     }
                 }
@@ -414,6 +432,131 @@ pub async fn relay_stream(
     let _ = stream_close(&mut *inbound).await;
     let _ = stream_close(&mut *outbound).await;
     result
+}
+
+/// 通用双向数据报转发原语，保留每个 UDP 包的目标/来源 Endpoint。
+pub async fn relay_datagram(
+    mut inbound: Box<dyn DatagramSocket>,
+    mut outbound: Box<dyn DatagramSocket>,
+) -> Result<RelayStats, RelayError> {
+    let mut inbound_to_outbound = DatagramDirection::new();
+    let mut outbound_to_inbound = DatagramDirection::new();
+
+    poll_fn(|cx| {
+        loop {
+            let first = poll_datagram_direction(
+                cx,
+                &mut *inbound,
+                &mut *outbound,
+                &mut inbound_to_outbound,
+            );
+            let first_progress = match first {
+                Poll::Ready(Ok(DatagramPoll::Finished)) => {
+                    return Poll::Ready(Ok(RelayStats {
+                        inbound_to_outbound_bytes: inbound_to_outbound.bytes,
+                        outbound_to_inbound_bytes: outbound_to_inbound.bytes,
+                    }));
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Ready(Ok(DatagramPoll::Progress)) => true,
+                _ => false,
+            };
+
+            let second = poll_datagram_direction(
+                cx,
+                &mut *outbound,
+                &mut *inbound,
+                &mut outbound_to_inbound,
+            );
+            let second_progress = match second {
+                Poll::Ready(Ok(DatagramPoll::Finished)) => {
+                    return Poll::Ready(Ok(RelayStats {
+                        inbound_to_outbound_bytes: inbound_to_outbound.bytes,
+                        outbound_to_inbound_bytes: outbound_to_inbound.bytes,
+                    }));
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Ready(Ok(DatagramPoll::Progress)) => true,
+                _ => false,
+            };
+
+            if first_progress || second_progress {
+                continue;
+            }
+
+            return Poll::Pending;
+        }
+    })
+    .await
+}
+
+struct DatagramDirection {
+    buf: Vec<u8>,
+    len: usize,
+    target: Option<Endpoint>,
+    bytes: u64,
+}
+
+impl DatagramDirection {
+    fn new() -> Self {
+        Self {
+            buf: vec![0; 65_535],
+            len: 0,
+            target: None,
+            bytes: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DatagramPoll {
+    Pending,
+    Progress,
+    Finished,
+}
+
+fn poll_datagram_direction(
+    cx: &mut Context<'_>,
+    reader: &mut dyn DatagramSocket,
+    writer: &mut dyn DatagramSocket,
+    state: &mut DatagramDirection,
+) -> Poll<Result<DatagramPoll, RelayError>> {
+    loop {
+        if let Some(target) = &state.target {
+            match Pin::new(&mut *writer).poll_send_to(cx, &state.buf[..state.len], target) {
+                Poll::Ready(Ok(written)) if written == state.len => {
+                    state.bytes = state.bytes.saturating_add(written as u64);
+                    state.target = None;
+                    state.len = 0;
+                    return Poll::Ready(Ok(DatagramPoll::Progress));
+                }
+                Poll::Ready(Ok(written)) => {
+                    return Poll::Ready(Err(RelayError::new(format!(
+                        "datagram relay wrote {written} of {} bytes",
+                        state.len
+                    ))));
+                }
+                Poll::Ready(Err(err)) if err.kind == IoErrorKind::Closed => {
+                    return Poll::Ready(Ok(DatagramPoll::Finished));
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(RelayError::new(err.message))),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        match Pin::new(&mut *reader).poll_recv_from(cx, &mut state.buf) {
+            Poll::Ready(Ok((len, target))) => {
+                state.len = len;
+                state.target = Some(target);
+                continue;
+            }
+            Poll::Ready(Err(err)) if err.kind == IoErrorKind::Closed => {
+                return Poll::Ready(Ok(DatagramPoll::Finished));
+            }
+            Poll::Ready(Err(err)) => return Poll::Ready(Err(RelayError::new(err.message))),
+            Poll::Pending => return Poll::Ready(Ok(DatagramPoll::Pending)),
+        }
+    }
 }
 
 struct CopyDirection {

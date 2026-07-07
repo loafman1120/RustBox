@@ -1,24 +1,31 @@
-//! SOCKS5 CONNECT inbound。
+//! SOCKS5 inbound。
 //!
-//! 本模块复用 runtime-neutral SOCKS5 codec 完成握手，并把 CONNECT 请求转换为
-//! 内核 `Flow`。BIND、UDP ASSOCIATE 和认证扩展仍保留为后续边界。
+//! 本模块把 `fast-socks5` 的协议状态机适配到 RustBox 的 Flow 边界：
+//! 握手、命令解析、reply 和 UDP header 由第三方库负责，路由和出站仍交给内核。
 
+use core::future::Future;
 use core::num::NonZeroU64;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use rustbox_codec_socks5::{
-    AuthMethod, Command, ReplyCode, encode_method_selection, encode_reply, parse_connect_request,
-    parse_greeting,
-};
+use core::task::{Context, Poll, Waker};
+use fast_socks5::server::Socks5ServerProtocol;
+use fast_socks5::util::target_addr::TargetAddr;
+use fast_socks5::{ReplyError, Socks5Command, new_udp_header, parse_udp_request};
 use rustbox_host_api::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
-    ObservabilitySink, StreamListener, TaskName, TaskSpawner, TcpBind,
+    ObservabilitySink, StreamListener, TaskName, TaskSpawner, TcpBind, UdpBind,
 };
-use rustbox_io::{ByteStream, stream_close, stream_read, stream_write_all};
+use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind, stream_read};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
-use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network, ProtocolHint};
+use rustbox_types::{
+    Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network, ProtocolHint,
+};
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-/// SOCKS5 入口服务，当前支持无认证 CONNECT 隧道。
+/// SOCKS5 入口服务，当前支持无认证 CONNECT 隧道和 UDP ASSOCIATE。
 pub struct Socks5Inbound {
     id: InboundId,
     listen: Endpoint,
@@ -106,6 +113,7 @@ impl Service for Socks5Inbound {
                 .expect("socks5 inbound endpoint lock") = Some(local_endpoint);
 
             let id = self.id;
+            let network = Arc::clone(&self.network);
             let sink = Arc::clone(&self.sink);
             let spawner = Arc::clone(&self.spawner);
             let observability = Arc::clone(&self.observability);
@@ -114,7 +122,16 @@ impl Service for Socks5Inbound {
                 .spawn(
                     TaskName("socks5-inbound-accept".to_string()),
                     Box::pin(async move {
-                        accept_loop(id, listener, sink, spawner, observability, next_flow_id).await;
+                        accept_loop(
+                            id,
+                            listener,
+                            network,
+                            sink,
+                            spawner,
+                            observability,
+                            next_flow_id,
+                        )
+                        .await;
                     }),
                 )
                 .map_err(|err| ServiceError::new(err.message))?;
@@ -163,12 +180,12 @@ impl Service for Socks5Inbound {
 async fn accept_loop(
     inbound_id: InboundId,
     mut listener: Box<dyn StreamListener>,
+    network: Arc<dyn NetworkProvider>,
     sink: Arc<dyn FlowSink>,
     spawner: Arc<dyn TaskSpawner>,
     observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
 ) {
-    // accept loop 不解析协议，只把每个连接交给独立连接任务处理。
     let listener_endpoint = listener
         .local_endpoint()
         .map(|endpoint| endpoint.to_string())
@@ -191,187 +208,496 @@ async fn accept_loop(
             ))
             .await;
 
+        let network = Arc::clone(&network);
         let sink = Arc::clone(&sink);
-        let observability = Arc::clone(&observability);
-        let next_flow_id = Arc::clone(&next_flow_id);
+        let spawner = Arc::clone(&spawner);
+        let ctx = ConnectionContext {
+            inbound_id,
+            network,
+            sink,
+            spawner: Arc::clone(&spawner),
+            observability: Arc::clone(&observability),
+            next_flow_id: Arc::clone(&next_flow_id),
+        };
         let _ = spawner.spawn(
             TaskName("socks5-inbound-connection".to_string()),
             Box::pin(async move {
-                let _ =
-                    handle_connection(inbound_id, peer, stream, sink, observability, next_flow_id)
-                        .await;
+                let _ = handle_connection(ctx, peer, stream).await;
             }),
         );
     }
 }
 
-async fn handle_connection(
+type CommandProtocol = fast_socks5::server::Socks5ServerProtocol<
+    RustBoxAsyncStream,
+    fast_socks5::server::states::CommandRead,
+>;
+
+#[derive(Clone)]
+struct ConnectionContext {
     inbound_id: InboundId,
-    peer: Endpoint,
-    mut stream: Box<dyn ByteStream>,
+    network: Arc<dyn NetworkProvider>,
     sink: Arc<dyn FlowSink>,
+    spawner: Arc<dyn TaskSpawner>,
     observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
+}
+
+async fn handle_connection(
+    ctx: ConnectionContext,
+    peer: Endpoint,
+    stream: Box<dyn ByteStream>,
 ) -> Result<(), ServiceError> {
-    // 关键转换点：SOCKS5 CONNECT target -> FlowMeta.destination + FlowPayload::Stream。
-    let target = match read_connect_target(&mut *stream).await {
-        Ok(target) => target,
+    let async_stream = RustBoxAsyncStream::new(stream);
+    let proto = match Socks5ServerProtocol::accept_no_auth(async_stream).await {
+        Ok(proto) => proto,
         Err(err) => {
-            observability
+            ctx.observability
                 .emit(Event::new(
                     EventLevel::Warn,
                     "rustbox.inbound.socks5",
                     None,
-                    EventKind::Diagnostic(format!(
-                        "invalid SOCKS5 request from {peer}: {}",
-                        err.message
-                    )),
+                    EventKind::Diagnostic(format!("invalid SOCKS5 request from {peer}: {err}")),
                 ))
                 .await;
-            let _ = stream_close(&mut *stream).await;
-            return Err(err);
+            return Err(ServiceError::new(err.to_string()));
         }
     };
-
-    let reply = encode_reply(ReplyCode::Succeeded, &Endpoint::localhost_v4(0))
-        .map_err(|err| ServiceError::new(err.message))?;
-    stream_write_all(&mut *stream, &reply)
+    let (proto, command, target) = proto
+        .read_command()
         .await
-        .map_err(|err| ServiceError::new(err.message))?;
+        .map_err(|err| ServiceError::new(err.to_string()))?;
+    let target = target_addr_to_endpoint(target);
 
-    let flow_id_raw = next_flow_id.fetch_add(1, Ordering::Relaxed);
-    let flow_id = FlowId::new(NonZeroU64::new(flow_id_raw.max(1)).expect("non-zero flow id"));
-    let meta = FlowMeta {
-        id: flow_id,
-        network: Network::Tcp,
-        source: peer,
-        destination: target.clone(),
-        inbound: inbound_id,
-        domain: Some(target.host.clone()),
-        protocol_hint: Some(ProtocolHint::Socks5),
-    };
+    match command {
+        Socks5Command::TCPConnect => handle_connect(ctx, peer, proto, target).await,
+        Socks5Command::UDPAssociate => handle_udp_associate(ctx, peer, proto, target).await,
+        Socks5Command::TCPBind => {
+            proto
+                .reply_error(&ReplyError::CommandNotSupported)
+                .await
+                .map_err(|err| ServiceError::new(err.to_string()))?;
+            Err(ServiceError::new("SOCKS5 BIND is not supported"))
+        }
+    }
+}
+
+async fn handle_connect(
+    ctx: ConnectionContext,
+    peer: Endpoint,
+    proto: CommandProtocol,
+    target: Endpoint,
+) -> Result<(), ServiceError> {
+    let stream = proto
+        .reply_success(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+        .await
+        .map_err(|err| ServiceError::new(err.to_string()))?
+        .into_inner();
+
     let flow = Flow {
-        meta,
+        meta: flow_meta(ctx.inbound_id, peer, target, ctx.next_flow_id, Network::Tcp),
         payload: FlowPayload::Stream(stream),
     };
 
-    sink.submit(flow)
+    ctx.sink
+        .submit(flow)
         .await
         .map(|_| ())
         .map_err(|err| ServiceError::new(format!("{err:?}")))
 }
 
-async fn read_connect_target(stream: &mut dyn ByteStream) -> Result<Endpoint, ServiceError> {
-    // SOCKS5 协议字节由 codec 解析，inbound 只负责按流式 I/O 收集完整握手。
-    let mut greeting_header = [0_u8; 2];
-    stream_read_exact(stream, &mut greeting_header).await?;
-    let mut greeting = Vec::with_capacity(greeting_header[1] as usize + 2);
-    greeting.extend_from_slice(&greeting_header);
-    let mut methods = vec![0_u8; greeting_header[1] as usize];
-    stream_read_exact(stream, &mut methods).await?;
-    greeting.extend_from_slice(&methods);
+async fn handle_udp_associate(
+    ctx: ConnectionContext,
+    peer: Endpoint,
+    proto: CommandProtocol,
+    association_target: Endpoint,
+) -> Result<(), ServiceError> {
+    let bind_endpoint = udp_relay_bind_endpoint(&association_target, &peer);
+    let relay_socket = ctx
+        .network
+        .bind_udp(UdpBind {
+            listen: bind_endpoint,
+        })
+        .await
+        .map_err(|err| ServiceError::new(err.message))?;
+    let relay_endpoint = relay_socket
+        .local_endpoint()
+        .ok_or_else(|| ServiceError::new("UDP relay socket did not report local endpoint"))?;
+    let relay_addr = endpoint_to_socket_addr(&relay_endpoint)?;
 
-    let parsed_greeting =
-        parse_greeting(&greeting).map_err(|err| ServiceError::new(err.message))?;
-    if !parsed_greeting
-        .methods
-        .contains(&AuthMethod::NoAuthentication)
-    {
-        stream_write_all(
-            stream,
-            &encode_method_selection(AuthMethod::NoAcceptableMethods),
+    let stream = proto
+        .reply_success(relay_addr)
+        .await
+        .map_err(|err| ServiceError::new(err.to_string()))?
+        .into_inner();
+
+    let state = Arc::new(UdpAssociationState::new());
+    spawn_udp_control_watcher(Arc::clone(&ctx.spawner), stream, Arc::clone(&state))?;
+
+    let socket = Socks5UdpRelaySocket::new(relay_socket, peer.host.clone(), state);
+    let flow = Flow {
+        meta: flow_meta(
+            ctx.inbound_id,
+            peer,
+            association_target,
+            ctx.next_flow_id,
+            Network::Udp,
+        ),
+        payload: FlowPayload::Datagram(Box::new(socket)),
+    };
+
+    ctx.sink
+        .submit(flow)
+        .await
+        .map(|_| ())
+        .map_err(|err| ServiceError::new(format!("{err:?}")))
+}
+
+fn flow_meta(
+    inbound_id: InboundId,
+    source: Endpoint,
+    destination: Endpoint,
+    next_flow_id: Arc<AtomicU64>,
+    network: Network,
+) -> FlowMeta {
+    let flow_id_raw = next_flow_id.fetch_add(1, Ordering::Relaxed);
+    let flow_id = FlowId::new(NonZeroU64::new(flow_id_raw.max(1)).expect("non-zero flow id"));
+    FlowMeta {
+        id: flow_id,
+        network,
+        source,
+        destination: destination.clone(),
+        inbound: inbound_id,
+        domain: Some(destination.host.clone()),
+        protocol_hint: Some(ProtocolHint::Socks5),
+    }
+}
+
+fn udp_relay_bind_endpoint(association_target: &Endpoint, peer: &Endpoint) -> Endpoint {
+    match &association_target.host {
+        Host::Ip(IpAddress::V4([0, 0, 0, 0])) => Endpoint::new(peer.host.clone(), 0),
+        Host::Ip(IpAddress::V6(octets)) if octets.iter().all(|byte| *byte == 0) => {
+            Endpoint::new(peer.host.clone(), 0)
+        }
+        Host::Ip(_) => Endpoint::new(association_target.host.clone(), 0),
+        Host::Domain(_) => Endpoint::new(peer.host.clone(), 0),
+    }
+}
+
+fn spawn_udp_control_watcher(
+    spawner: Arc<dyn TaskSpawner>,
+    mut stream: Box<dyn ByteStream>,
+    state: Arc<UdpAssociationState>,
+) -> Result<(), ServiceError> {
+    spawner
+        .spawn(
+            TaskName("socks5-udp-control".to_string()),
+            Box::pin(async move {
+                let mut buf = [0_u8; 1];
+                loop {
+                    match stream_read(&mut *stream, &mut buf).await {
+                        Ok(0) | Err(_) => {
+                            state.close();
+                            break;
+                        }
+                        Ok(_) => {}
+                    }
+                }
+            }),
         )
-        .await
-        .map_err(|err| ServiceError::new(err.message))?;
-        return Err(ServiceError::new(
-            "SOCKS5 client did not offer no-authentication method",
-        ));
-    }
-    stream_write_all(
-        stream,
-        &encode_method_selection(AuthMethod::NoAuthentication),
-    )
-    .await
-    .map_err(|err| ServiceError::new(err.message))?;
-
-    let mut request_header = [0_u8; 4];
-    stream_read_exact(stream, &mut request_header).await?;
-    let mut request = Vec::from(request_header);
-    match request_header[3] {
-        0x01 => read_request_tail(stream, &mut request, 6).await?,
-        0x03 => {
-            let mut len = [0_u8; 1];
-            stream_read_exact(stream, &mut len).await?;
-            request.push(len[0]);
-            read_request_tail(stream, &mut request, len[0] as usize + 2).await?;
-        }
-        0x04 => read_request_tail(stream, &mut request, 18).await?,
-        _ => {
-            write_failure_reply(stream, ReplyCode::AddressTypeNotSupported).await?;
-            return Err(ServiceError::new("unsupported SOCKS5 address type"));
-        }
-    }
-
-    let parsed = parse_connect_request(&request).map_err(|err| ServiceError::new(err.message))?;
-    if parsed.command != Command::Connect {
-        write_failure_reply(stream, ReplyCode::CommandNotSupported).await?;
-        return Err(ServiceError::new("only SOCKS5 CONNECT is supported"));
-    }
-
-    Ok(parsed.target)
-}
-
-async fn read_request_tail(
-    stream: &mut dyn ByteStream,
-    request: &mut Vec<u8>,
-    len: usize,
-) -> Result<(), ServiceError> {
-    let mut tail = vec![0_u8; len];
-    stream_read_exact(stream, &mut tail).await?;
-    request.extend_from_slice(&tail);
-    Ok(())
-}
-
-async fn write_failure_reply(
-    stream: &mut dyn ByteStream,
-    code: ReplyCode,
-) -> Result<(), ServiceError> {
-    let reply = encode_reply(code, &Endpoint::localhost_v4(0))
-        .map_err(|err| ServiceError::new(err.message))?;
-    stream_write_all(stream, &reply)
-        .await
+        .map(|_| ())
         .map_err(|err| ServiceError::new(err.message))
 }
 
-async fn stream_read_exact(
-    stream: &mut dyn ByteStream,
-    mut buf: &mut [u8],
-) -> Result<(), ServiceError> {
-    while !buf.is_empty() {
-        let read = stream_read(stream, buf)
-            .await
-            .map_err(|err| ServiceError::new(err.message))?;
-        if read == 0 {
-            return Err(ServiceError::new(
-                "connection closed during SOCKS5 handshake",
-            ));
+struct UdpAssociationState {
+    closed: AtomicBool,
+    recv_waker: Mutex<Option<Waker>>,
+}
+
+impl UdpAssociationState {
+    fn new() -> Self {
+        Self {
+            closed: AtomicBool::new(false),
+            recv_waker: Mutex::new(None),
         }
-        buf = &mut buf[read..];
     }
-    Ok(())
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        if let Some(waker) = self
+            .recv_waker
+            .lock()
+            .expect("udp association waker lock")
+            .take()
+        {
+            waker.wake();
+        }
+    }
+
+    fn remember_waker(&self, waker: &Waker) {
+        *self.recv_waker.lock().expect("udp association waker lock") = Some(waker.clone());
+    }
+}
+
+struct Socks5UdpRelaySocket {
+    inner: Box<dyn DatagramSocket>,
+    expected_client_host: Host,
+    client_endpoint: Arc<Mutex<Option<Endpoint>>>,
+    state: Arc<UdpAssociationState>,
+    recv_buf: Vec<u8>,
+}
+
+impl Socks5UdpRelaySocket {
+    fn new(
+        inner: Box<dyn DatagramSocket>,
+        expected_client_host: Host,
+        state: Arc<UdpAssociationState>,
+    ) -> Self {
+        Self {
+            inner,
+            expected_client_host,
+            client_endpoint: Arc::new(Mutex::new(None)),
+            state,
+            recv_buf: vec![0; 65_535],
+        }
+    }
+}
+
+impl DatagramSocket for Socks5UdpRelaySocket {
+    fn local_endpoint(&self) -> Option<Endpoint> {
+        self.inner.local_endpoint()
+    }
+
+    fn poll_recv_from(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<(usize, Endpoint), IoError>> {
+        if self.state.is_closed() {
+            return Poll::Ready(Err(IoError::new(
+                IoErrorKind::Closed,
+                "SOCKS5 UDP association is closed",
+            )));
+        }
+
+        loop {
+            let this = &mut *self;
+            match Pin::new(&mut *this.inner).poll_recv_from(cx, &mut this.recv_buf) {
+                Poll::Ready(Ok((len, client))) => {
+                    if client.host != this.expected_client_host {
+                        continue;
+                    }
+                    let mut parsed = Box::pin(parse_udp_request(&this.recv_buf[..len]));
+                    let Ok((frag, target, data)) = ready_or_error(parsed.as_mut().poll(cx)) else {
+                        continue;
+                    };
+                    if frag != 0 {
+                        continue;
+                    }
+                    if data.len() > buf.len() {
+                        return Poll::Ready(Err(IoError::new(
+                            IoErrorKind::InvalidInput,
+                            "SOCKS5 UDP payload exceeds relay buffer",
+                        )));
+                    }
+
+                    *this
+                        .client_endpoint
+                        .lock()
+                        .expect("socks5 udp client endpoint lock") = Some(client);
+                    buf[..data.len()].copy_from_slice(data);
+                    return Poll::Ready(Ok((data.len(), target_addr_to_endpoint(target))));
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => {
+                    if this.state.is_closed() {
+                        return Poll::Ready(Err(IoError::new(
+                            IoErrorKind::Closed,
+                            "SOCKS5 UDP association is closed",
+                        )));
+                    }
+                    this.state.remember_waker(cx.waker());
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+
+    fn poll_send_to(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        target: &Endpoint,
+    ) -> Poll<Result<usize, IoError>> {
+        if self.state.is_closed() {
+            return Poll::Ready(Err(IoError::new(
+                IoErrorKind::Closed,
+                "SOCKS5 UDP association is closed",
+            )));
+        }
+
+        let client = match self
+            .client_endpoint
+            .lock()
+            .expect("socks5 udp client endpoint lock")
+            .clone()
+        {
+            Some(client) => client,
+            None => {
+                return Poll::Ready(Err(IoError::new(
+                    IoErrorKind::Closed,
+                    "SOCKS5 UDP client endpoint is not known yet",
+                )));
+            }
+        };
+        let mut encoded = match new_udp_header(endpoint_to_target_addr(target)) {
+            Ok(encoded) => encoded,
+            Err(err) => return Poll::Ready(Err(io_error(io::Error::other(err.to_string())))),
+        };
+        encoded.extend_from_slice(buf);
+
+        let this = self.get_mut();
+        match Pin::new(&mut *this.inner).poll_send_to(cx, &encoded, &client) {
+            Poll::Ready(Ok(_)) => Poll::Ready(Ok(buf.len())),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+fn ready_or_error<T, E>(poll: Poll<Result<T, E>>) -> Result<T, E> {
+    match poll {
+        Poll::Ready(result) => result,
+        Poll::Pending => panic!("fast-socks5 slice UDP parser unexpectedly returned Pending"),
+    }
+}
+
+struct RustBoxAsyncStream {
+    inner: Box<dyn ByteStream>,
+}
+
+impl RustBoxAsyncStream {
+    fn new(inner: Box<dyn ByteStream>) -> Self {
+        Self { inner }
+    }
+
+    fn into_inner(self) -> Box<dyn ByteStream> {
+        self.inner
+    }
+}
+
+impl AsyncRead for RustBoxAsyncStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let dst = buf.initialize_unfilled();
+        match Pin::new(&mut *self.inner).poll_read(cx, dst) {
+            Poll::Ready(Ok(read)) => {
+                buf.set_filled(before + read);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error_to_std(err))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncWrite for RustBoxAsyncStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut *self.inner)
+            .poll_write(cx, buf)
+            .map_err(io_error_to_std)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut *self.inner)
+            .poll_flush(cx)
+            .map_err(io_error_to_std)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut *self.inner)
+            .poll_close(cx)
+            .map_err(io_error_to_std)
+    }
+}
+
+fn endpoint_to_target_addr(endpoint: &Endpoint) -> TargetAddr {
+    match &endpoint.host {
+        Host::Domain(domain) => TargetAddr::Domain(domain.clone(), endpoint.port),
+        Host::Ip(ip) => TargetAddr::Ip(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
+    }
+}
+
+fn target_addr_to_endpoint(target: TargetAddr) -> Endpoint {
+    match target {
+        TargetAddr::Domain(domain, port) => Endpoint::new(Host::Domain(domain), port),
+        TargetAddr::Ip(addr) => socket_addr_to_endpoint(addr),
+    }
+}
+
+fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, ServiceError> {
+    match &endpoint.host {
+        Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
+        Host::Domain(domain) => Err(ServiceError::new(format!(
+            "cannot use domain endpoint {domain} as SOCKS reply bind address"
+        ))),
+    }
+}
+
+fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
+    let host = match addr.ip() {
+        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
+        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
+    };
+    Endpoint::new(host, addr.port())
+}
+
+fn ip_to_std(ip: IpAddress) -> IpAddr {
+    match ip {
+        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
+        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
+    }
+}
+
+fn io_error(err: io::Error) -> IoError {
+    IoError::new(IoErrorKind::Other, err.to_string())
+}
+
+fn io_error_to_std(err: IoError) -> io::Error {
+    let kind = match err.kind {
+        IoErrorKind::Closed => io::ErrorKind::UnexpectedEof,
+        IoErrorKind::Interrupted => io::ErrorKind::Interrupted,
+        IoErrorKind::InvalidInput => io::ErrorKind::InvalidInput,
+        IoErrorKind::Unsupported => io::ErrorKind::Unsupported,
+        IoErrorKind::Other => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, err.message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
+    use fast_socks5::{new_udp_header, parse_udp_request};
     use rustbox_kernel::{Engine, Service};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
     use rustbox_runtime_tokio::TokioHost;
-    use rustbox_types::{Host, IpAddress, OutboundId};
+    use rustbox_types::OutboundId;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
+    use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
     #[tokio::test]
     async fn socks5_connect_tunnels_bytes_to_direct_outbound() {
@@ -410,10 +736,7 @@ mod tests {
             .expect("start socks5 inbound");
 
         let proxy = inbound.local_endpoint().expect("proxy local endpoint");
-        let proxy_addr = match proxy.host {
-            Host::Ip(IpAddress::V4(octets)) => std::net::SocketAddr::from((octets, proxy.port)),
-            _ => panic!("expected IPv4 proxy endpoint"),
-        };
+        let proxy_addr = endpoint_to_socket_addr(&proxy).expect("proxy socket addr");
 
         let mut client = TcpStream::connect(proxy_addr)
             .await
@@ -455,5 +778,87 @@ mod tests {
             .await
             .expect("read tunneled data");
         assert_eq!(&tunnel_response, b"pong");
+    }
+
+    #[tokio::test]
+    async fn socks5_udp_associate_relays_datagrams_to_direct_outbound() {
+        let echo_socket = UdpSocket::bind("127.0.0.1:0").await.expect("echo bind");
+        let echo_addr = echo_socket.local_addr().expect("echo local addr");
+        tokio::spawn(async move {
+            let mut buf = [0_u8; 64];
+            let (len, peer) = echo_socket.recv_from(&mut buf).await.expect("echo recv");
+            assert_eq!(&buf[..len], b"ping");
+            echo_socket.send_to(b"pong", peer).await.expect("echo send");
+        });
+
+        let host = Arc::new(TokioHost::new());
+        let outbound_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
+        let engine = Arc::new(
+            Engine::builder(Box::new(StaticRouter::new(outbound_id)))
+                .register_outbound(Box::new(DirectOutbound::new(outbound_id, host.clone())))
+                .expect("register direct outbound")
+                .build()
+                .expect("build engine"),
+        );
+        let sink: Arc<dyn FlowSink> = engine;
+        let mut inbound = Socks5Inbound::new(
+            InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
+            Endpoint::localhost_v4(0),
+            host.clone(),
+            host,
+            sink,
+        );
+        inbound
+            .start(ServiceContext {
+                engine_name: "test",
+            })
+            .await
+            .expect("start socks5 inbound");
+
+        let proxy = inbound.local_endpoint().expect("proxy local endpoint");
+        let proxy_addr = endpoint_to_socket_addr(&proxy).expect("proxy socket addr");
+
+        let mut control = TcpStream::connect(proxy_addr)
+            .await
+            .expect("client connect");
+        control
+            .write_all(&[0x05, 0x01, 0x00])
+            .await
+            .expect("write greeting");
+        let mut method = [0_u8; 2];
+        control.read_exact(&mut method).await.expect("read method");
+        assert_eq!(method, [0x05, 0x00]);
+
+        control
+            .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .expect("write udp associate");
+        let mut reply = [0_u8; 10];
+        control.read_exact(&mut reply).await.expect("read reply");
+        assert_eq!(&reply[..4], &[0x05, 0x00, 0x00, 0x01]);
+        let relay_addr = SocketAddr::from((
+            [reply[4], reply[5], reply[6], reply[7]],
+            u16::from_be_bytes([reply[8], reply[9]]),
+        ));
+
+        let udp_client = UdpSocket::bind("127.0.0.1:0").await.expect("udp bind");
+        let mut packet = new_udp_header(TargetAddr::Ip(echo_addr)).expect("encode udp header");
+        packet.extend_from_slice(b"ping");
+        udp_client
+            .send_to(&packet, relay_addr)
+            .await
+            .expect("send udp packet");
+
+        let mut response = [0_u8; 64];
+        let (len, _) = udp_client
+            .recv_from(&mut response)
+            .await
+            .expect("recv udp response");
+        let (frag, target, data) = parse_udp_request(&response[..len])
+            .await
+            .expect("parse udp response");
+        assert_eq!(frag, 0);
+        assert_eq!(target, TargetAddr::Ip(echo_addr));
+        assert_eq!(data, b"pong");
     }
 }

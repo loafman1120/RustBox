@@ -5,11 +5,11 @@
 
 use rustbox_host_api::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
-    ObservabilitySink, TcpConnect,
+    ObservabilitySink, TcpConnect, UdpBind,
 };
 use rustbox_io::{ByteStream, DatagramSocket};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
-use rustbox_types::{Endpoint, OutboundId};
+use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use std::sync::Arc;
 
 /// 直连出站实现，依赖注入的网络能力负责真正的 TCP 连接。
@@ -104,9 +104,75 @@ impl Outbound for DirectOutbound {
 
     fn open_datagram(
         &self,
-        _ctx: OutboundContext<'_>,
-        _target: Endpoint,
+        ctx: OutboundContext<'_>,
+        target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, OutboundError>> {
-        Box::pin(async { Err(OutboundError::new("direct UDP is not implemented yet")) })
+        let outbound = self.id.to_string();
+        let flow_id = Some(ctx.flow.id);
+        let target_text = target.to_string();
+
+        Box::pin(async move {
+            self.observability
+                .emit(Event::new(
+                    EventLevel::Debug,
+                    "rustbox.outbound.direct",
+                    flow_id,
+                    EventKind::OutboundConnecting {
+                        outbound: outbound.clone(),
+                        target: target_text.clone(),
+                    },
+                ))
+                .await;
+
+            let bind = udp_bind_endpoint_for_target(&target);
+            let result = self
+                .network
+                .bind_udp(UdpBind { listen: bind })
+                .await
+                .map_err(|err| OutboundError::new(err.message));
+
+            match &result {
+                Ok(_) => {
+                    self.observability
+                        .emit(Event::new(
+                            EventLevel::Info,
+                            "rustbox.outbound.direct",
+                            flow_id,
+                            EventKind::OutboundConnected {
+                                outbound,
+                                target: target_text,
+                            },
+                        ))
+                        .await;
+                }
+                Err(err) => {
+                    self.observability
+                        .emit(Event::new(
+                            EventLevel::Error,
+                            "rustbox.outbound.direct",
+                            flow_id,
+                            EventKind::OutboundFailed {
+                                outbound,
+                                target: target_text,
+                                error: err.message.clone(),
+                            },
+                        ))
+                        .await;
+                }
+            }
+
+            result
+        })
     }
+}
+
+fn udp_bind_endpoint_for_target(target: &Endpoint) -> Endpoint {
+    let host = match &target.host {
+        Host::Ip(IpAddress::V6(octets)) if octets.iter().all(|byte| *byte == 0) => {
+            Host::Ip(IpAddress::V4([0, 0, 0, 0]))
+        }
+        Host::Ip(IpAddress::V6(_)) => Host::Ip(IpAddress::V6([0; 16])),
+        _ => Host::Ip(IpAddress::V4([0, 0, 0, 0])),
+    };
+    Endpoint::new(host, 0)
 }
