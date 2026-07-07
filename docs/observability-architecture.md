@@ -48,7 +48,7 @@ The current code implements the following pieces:
 | File sink | `FileObservabilitySink` | Append structured text events to a host file |
 | Platform bridge | `PlatformLogSink` + `PlatformLogBackend` | Adapter point for ETW/logcat/os_log/syslog-like backends |
 | Remote bridge | `RemoteTelemetrySink` + `TelemetryExporter` | Adapter point for HTTP/gRPC/OTLP/custom telemetry exporters |
-| Control API | `rustbox-control-api` | gRPC snapshots, event queries, stop command, and V2Ray stats compatibility |
+| Control API | `rustbox-control-api` | Native gRPC snapshots, event queries, and stop command |
 
 `rustbox-app --config` currently wires console output and optional file output
 from TOML:
@@ -177,10 +177,9 @@ RustBoxControl/GetEngineSnapshot         -> EngineSnapshot
 RustBoxControl/Stop                      -> EngineCommand::Stop
 ```
 
-The implemented protobuf transport lives in `rustbox-control-api`. The same
-crate also exposes a small V2Ray StatsService-compatible surface that maps the
-process-wide RustBox byte counters to global `Stat` values. HTTP and Clash REST
-compatibility layers should translate to the same store and command model later.
+The implemented protobuf transport lives in `rustbox-control-api`. Future HTTP
+or compatibility layers should translate to the same store and command model
+later.
 
 ---
 
@@ -192,8 +191,6 @@ than in protocol modules:
 - The current sing-box API service is documented as a gRPC server for observing
   and controlling a running instance, with bearer-token gRPC metadata
   authentication.
-- Its V2Ray API compatibility service exposes a gRPC listen address and a
-  traffic statistics service configurable by inbound, outbound, and user lists.
 - Its Clash API compatibility service exposes a RESTful `external_controller`
   with an optional secret and dashboard-related settings.
 
@@ -211,7 +208,6 @@ must not get privileged access to kernel internals.
 References:
 
 - https://sing-box.sagernet.org/configuration/service/api/
-- https://sing-box.sagernet.org/configuration/experimental/v2ray-api/
 - https://sing-box.sagernet.org/configuration/experimental/clash-api/
 
 ---
@@ -227,7 +223,7 @@ References:
 | File | Implemented | Host file append sink |
 | Platform native | Adapter implemented | Concrete backend belongs to platform/product crates |
 | Remote telemetry | Adapter implemented | Concrete exporter belongs to product/integration crates |
-| gRPC control API | Implemented | Native RustBox service plus V2Ray stats compatibility |
+| gRPC control API | Implemented | Native RustBox service |
 
 Multiple sinks should be combined with `CompositeObservabilitySink`. A slow or
 remote sink should use buffering in its own adapter; the portable event

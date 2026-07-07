@@ -101,8 +101,7 @@ cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 http-proxy
 ```
 
 The service exposes native RustBox observation/control methods for metrics,
-connections, event queries, snapshots, and stop. It also serves a small V2Ray
-StatsService-compatible gRPC surface for global traffic counters.
+connections, event queries, snapshots, and stop.
 
 Loopback listeners may run without a token. Non-loopback listeners require a
 bearer token:
@@ -257,8 +256,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Structured observability through `ObservabilitySink`, with no-op, console,
   recording, metrics/query store, file, platform-bridge, and remote-telemetry
   bridge sinks.
-- Native gRPC control API over `ObservabilityStore` and `ControlState`, plus a
-  small V2Ray stats-compatible gRPC service for global traffic counters.
+- Native gRPC control API over `ObservabilityStore` and `ControlState`.
 - Tokio-backed host adapter for TCP, UDP binding, clock, entropy, and task
   spawning.
 - Test host, registry model, plugin manifest model, reload transaction model,

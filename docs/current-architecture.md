@@ -340,7 +340,7 @@ flowchart TB
     SNAP["EngineSnapshot\nstate / generation / counts"]
     PLAN["ReloadPlan\nPrepare"]
     TX["ReloadTransaction\nPrepare -> Commit -> Drain\nor Rollback"]
-    API["rustbox-control-api\nnative gRPC + V2Ray stats"]
+    API["rustbox-control-api\nnative gRPC"]
 
     CMD --> SNAP
     CMD --> PLAN
@@ -432,7 +432,7 @@ Current metrics and query coverage:
 | Connection stats | `ObservabilityStore::connections()` returns per-flow source, destination, state, byte totals, outcome, and error |
 | Bounded event queries | `ObservabilityStore::query_events(ObservabilityQuery)` filters by level, target prefix, flow id, and limit |
 | Whole snapshot | `ObservabilityStore::snapshot()` returns metrics, connection stats, and recent events |
-| gRPC API | `rustbox-control-api` exposes native RustBox protobuf APIs plus V2Ray global traffic stats |
+| gRPC API | `rustbox-control-api` exposes native RustBox protobuf APIs |
 
 The `rustbox-app` binary uses `ConsoleObservabilitySink::stderr_from_env()`.
 `RUSTBOX_LOG` accepts `trace`, `debug`, `info`, `warn`, `error`, or `off`.
@@ -446,17 +446,15 @@ configuration surface for host/product adapters; concrete platform and remote
 clients are intentionally outside the portable core.
 
 The docs use sing-box as a control-plane reference: sing-box exposes a native
-gRPC API service for observation/control, a V2Ray gRPC stats service, and a
-Clash REST control API. RustBox follows the same layer split by keeping local
-HTTP/gRPC compatibility APIs above `ObservabilityStore` and control commands,
-not inside the kernel.
+gRPC API service for observation/control and a Clash REST control API. RustBox
+follows the same layer split by keeping local HTTP/gRPC compatibility APIs above
+`ObservabilityStore` and control commands, not inside the kernel.
 
 The implemented `rustbox-control-api` crate currently serves:
 
 | Service | Current methods |
 |---|---|
 | `rustbox.control.v1.RustBoxControl` | metrics, connections, event query, observability snapshot, engine snapshot, stop |
-| `v2ray.core.app.stats.command.StatsService` | `GetStats`, `QueryStats` over process-wide traffic counters |
 
 The app starts this API only when `--control-grpc <ADDR>` is supplied. Loopback
 listeners may run without a token; non-loopback listeners require a bearer token
@@ -507,7 +505,6 @@ Important current status:
 | Metrics and connection statistics | Implemented through `ObservabilityStore` |
 | Bounded observability query API | Implemented as in-process store queries |
 | Native gRPC control API | Implemented through `rustbox-control-api` |
-| V2Ray stats gRPC compatibility | Implemented for global byte counters |
 | File log adapter | Implemented |
 | Platform-native log bridge | Adapter implemented, concrete OS backend planned |
 | Remote telemetry bridge | Adapter implemented, concrete exporter planned |

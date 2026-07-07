@@ -66,6 +66,10 @@ jobs:
       - name: Build CLI
         run: cargo build --locked -p rustbox-app
 
+      - name: Control gRPC smoke test
+        if: matrix.os == 'ubuntu-latest'
+        run: bash scripts/ci/control-grpc-smoke.sh
+
       - name: Curl inbound and outbound proxy smoke test
         if: matrix.os == 'ubuntu-latest'
         env:
