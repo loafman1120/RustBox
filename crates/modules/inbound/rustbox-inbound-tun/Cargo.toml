@@ -1,16 +1,15 @@
 [package]
-name = "rustbox-stack"
+name = "rustbox-inbound-tun"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ipstack = "1.0.0"
 rustbox-host-api = { path = "../../../host/rustbox-host-api" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-stack = { path = "../../stack/rustbox-stack" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
-tokio = { version = "1", features = ["io-util", "macros", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

@@ -16,6 +16,7 @@ use rustbox_inbound_socks5::{
 use rustbox_inbound_transparent::{
     TransparentInboundConfig as RuntimeTransparentInboundConfig, TransparentProxyInbound,
 };
+use rustbox_inbound_tun::{TunInbound, TunInboundConfig as RuntimeTunInboundConfig};
 use rustbox_kernel::{Engine, EngineError, FlowSink, Service, ServiceContext, ServiceError};
 use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
@@ -275,11 +276,35 @@ impl TokioComposition {
                     .with_observability(self.observability.clone());
                     services.push(Box::new(inbound));
                 }
-                CompiledInboundKind::Tun(_config) => {
-                    return Err(ComposeError::Config(ConfigError::new(format!(
-                        "tun inbound `{}` is parsed but packet-to-flow stack composition is not implemented yet",
-                        inbound.logical_id
-                    ))));
+                CompiledInboundKind::Tun(config) => {
+                    let (packet_devices, network_control) = tun_platform_capabilities()?;
+                    let mtu = config.mtu.unwrap_or(1500) as usize;
+                    let stack = rustbox_stack::PacketFlowStack::new(inbound.id)
+                        .with_mtu(mtu)
+                        .with_observability(self.observability.clone());
+                    let inbound = TunInbound::new(
+                        inbound.id,
+                        packet_devices,
+                        network_control,
+                        self.host.clone(),
+                        Box::new(stack),
+                        sink.clone(),
+                        RuntimeTunInboundConfig {
+                            interface_name: config.interface_name,
+                            addresses: config.addresses,
+                            mtu: config.mtu,
+                            route_mode: config.route_mode,
+                            dns_mode: config.dns_mode,
+                            auto_route: config.auto_route,
+                            strict_route: config.strict_route,
+                            route_includes: config.route_includes,
+                            route_excludes: config.route_excludes,
+                            platform_http_proxy: config.platform_http_proxy,
+                            auto_redirect: config.auto_redirect,
+                        },
+                    )
+                    .with_observability(self.observability.clone());
+                    services.push(Box::new(inbound));
                 }
             }
         }
@@ -401,6 +426,36 @@ fn logical_mode(mode: &LogicalModeConfig) -> LogicalMode {
     match mode {
         LogicalModeConfig::And => LogicalMode::And,
         LogicalModeConfig::Or => LogicalMode::Or,
+    }
+}
+
+fn transparent_proxy_provider() -> Result<Arc<dyn TransparentProxyProvider>, ComposeError> {
+    Ok(Arc::new(rustbox_platform_linux::LinuxPlatform::new()))
+}
+
+type TunPlatformCapabilities = (
+    Arc<dyn rustbox_host_api::PacketDeviceProvider>,
+    Arc<dyn rustbox_host_api::NetworkControl>,
+);
+
+fn tun_platform_capabilities() -> Result<TunPlatformCapabilities, ComposeError> {
+    #[cfg(target_os = "linux")]
+    {
+        let platform = Arc::new(rustbox_platform_linux::LinuxPlatform::new());
+        Ok((platform.clone(), platform))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let platform = Arc::new(rustbox_platform_windows::WindowsPlatform::new());
+        Ok((platform.clone(), platform))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Err(ComposeError::Config(ConfigError::new(
+            "tun inbound requires Linux or Windows packet-device platform capabilities",
+        )))
     }
 }
 
@@ -585,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_tun_inbound_until_packet_stack_is_composed() {
+    fn composes_tun_inbound_runtime_graph_on_supported_platforms() {
         let source = SourceConfig {
             inbounds: vec![InboundConfig {
                 id: "tun".to_string(),
@@ -599,9 +654,9 @@ mod tests {
                         .expect("cidr"),
                     ],
                     mtu: Some(1500),
-                    route_mode: rustbox_config::RouteMode::Auto,
+                    route_mode: rustbox_config::RouteMode::Manual,
                     dns_mode: rustbox_config::TunDnsMode::None,
-                    auto_route: true,
+                    auto_route: false,
                     strict_route: false,
                     route_includes: Vec::new(),
                     route_excludes: Vec::new(),
@@ -618,18 +673,22 @@ mod tests {
             }],
         };
 
-        let error = match TokioComposition::new().compose_source(source) {
-            Ok(_) => panic!("expected tun inbound to be rejected"),
-            Err(error) => error,
-        };
+        let result = TokioComposition::new().compose_source(source);
 
-        assert!(matches!(
-            error,
-            ComposeError::Config(ConfigError { message }) if message.contains("packet-to-flow stack")
-        ));
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            let runtime = result.expect("compose tun inbound");
+            assert_eq!(runtime.engine().outbound_count(), 1);
+            assert_eq!(runtime.service_count(), 1);
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            let error = result.expect_err("unsupported tun platform");
+            assert!(matches!(
+                error,
+                ComposeError::Config(ConfigError { message }) if message.contains("tun inbound")
+            ));
+        }
     }
-}
-
-fn transparent_proxy_provider() -> Result<Arc<dyn TransparentProxyProvider>, ComposeError> {
-    Ok(Arc::new(rustbox_platform_linux::LinuxPlatform::new()))
 }

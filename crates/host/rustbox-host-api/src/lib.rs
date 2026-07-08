@@ -59,7 +59,7 @@ pub trait PacketDeviceProvider: Send + Sync {
     fn open(
         &self,
         config: PacketDeviceConfig,
-    ) -> BoxFuture<'_, Result<Box<dyn PacketDevice>, PacketDeviceError>>;
+    ) -> BoxFuture<'_, Result<PacketDeviceLease, PacketDeviceError>>;
 }
 
 /// 网络控制能力端口，承载路由、透明代理、策略路由等平台状态变更。
@@ -164,6 +164,18 @@ pub struct PacketDeviceConfig {
     pub route_mode: RouteMode,
     /// DNS 劫持/绑定策略需要和系统路由一起应用，因此也留在能力边界。
     pub dns_mode: TunDnsMode,
+}
+
+pub struct PacketDeviceInfo {
+    pub name: String,
+    pub index: Option<u32>,
+    pub addresses: Vec<IpCidr>,
+    pub mtu: Option<u16>,
+}
+
+pub struct PacketDeviceLease {
+    pub device: Box<dyn PacketDevice>,
+    pub info: PacketDeviceInfo,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

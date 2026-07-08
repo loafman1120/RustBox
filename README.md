@@ -305,6 +305,8 @@ when running the smoke script locally.
   username/password authentication.
 - mixed inbound over TCP that accepts HTTP proxy and SOCKS5 connections on one
   listener.
+- TUN inbound composition through platform packet-device capabilities and a
+  packet-to-flow stack boundary.
 - Direct TCP and UDP outbound through the host network capability.
 - Portable kernel flow submission, ordered rule routing, metadata enrichment
   pipeline, and stream relay.
@@ -322,9 +324,10 @@ when running the smoke script locally.
 
 - SOCKS5 `BIND` is not implemented yet.
 - Windows/Linux TUN packet devices are available through `tun-rs`; basic
-  `AddRoute` network control uses `net-route`. TUN inbound, packet-to-flow
-  stack, transparent proxy, process lookup, and fuller route control remain
-  planned extension points.
+  `AddRoute` network control uses `net-route`. TUN inbound now composes and
+  starts through the open-source `ipstack` packet-to-flow backend, including
+  TCP/UDP state and response packet writing. Process lookup, route exclusions,
+  and fuller route control remain planned extension points.
 - HTTP and Clash REST control compatibility APIs are not implemented yet.
 - Concrete ETW, Android logcat, Apple unified logging, tracing, and OTLP
   exporter adapters are not implemented yet.

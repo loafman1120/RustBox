@@ -20,6 +20,7 @@ members = [
     "crates/modules/inbound/rustbox-inbound-http",
     "crates/modules/inbound/rustbox-inbound-socks5",
     "crates/modules/inbound/rustbox-inbound-transparent",
+    "crates/modules/inbound/rustbox-inbound-tun",
     "crates/modules/outbound/rustbox-outbound-direct",
     "crates/modules/outbound/rustbox-outbound-http",
     "crates/modules/outbound/rustbox-outbound-shadowsocks",

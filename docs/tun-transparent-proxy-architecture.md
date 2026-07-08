@@ -1,7 +1,7 @@
 # RustBox TUN, Transparent Proxy, And System Routing Architecture
 
 > **Document status:** Design recommendation
-> **Last updated:** 2026-07-07
+> **Last updated:** 2026-07-09
 > **Scope:** TUN inbound, transparent proxy inbound, packet-to-flow stack,
 > platform route control, automatic routing, and process lookup
 > **Reference architecture:** `docs/architecture.md`
@@ -118,9 +118,11 @@ Current MVP status:
 - Operators must install redirect rules externally for now
   (`auto_rules = false`). Automatic nftables/iptables rule installation and
   TPROXY socket marks remain planned platform-control work.
-- `type = "tun"` is parsed and compiled, but composition rejects it until the
-  packet-to-flow stack exists. A TUN packet device alone is not a usable proxy
-  inbound.
+- `type = "tun"` is parsed, compiled, and composed as a real inbound service on
+  Linux and Windows platform capability providers. The packet-to-flow boundary
+  uses the open-source `ipstack` crate for IPv4/IPv6 TCP and UDP session state,
+  retransmission, expiry, and response packet writing while keeping the concrete
+  stack outside the portable kernel.
 
 ---
 
@@ -131,14 +133,15 @@ Recommended crate additions after the first Windows/Linux boundary step:
 ```text
 crates/modules/inbound/rustbox-inbound-tun
 crates/modules/inbound/rustbox-inbound-transparent
-crates/modules/stack/rustbox-stack-smoltcp
+crates/modules/stack/rustbox-stack
 
 crates/platform/rustbox-platform-apple
 crates/platform/rustbox-platform-android
 ```
 
-`rustbox-stack` should remain the platform-independent contract crate. A
-concrete stack implementation can be introduced as `rustbox-stack-smoltcp`.
+`rustbox-stack` remains the platform-independent contract crate and currently
+contains the `ipstack` adapter. It can be split into backend-specific crates if
+multiple concrete stacks are supported later.
 
 Platform crates may use target-specific dependencies behind
 `[target.'cfg(...)'.dependencies]`. They should still compile as explicit
@@ -273,7 +276,6 @@ type = "tun"
 interface_name = "rustbox0"
 addresses = ["172.18.0.1/30", "fdfe:dcba:9876::1/126"]
 mtu = 9000
-stack = "smoltcp"
 auto_route = true
 strict_route = true
 route_includes = ["0.0.0.0/0", "::/0"]
@@ -384,12 +386,12 @@ Validation rules:
 
 ## 8. Packet-To-Flow Stack
 
-`rustbox-stack-smoltcp` should be the first portable stack adapter:
+The first portable adapter wraps `ipstack` behind `NetworkStack`:
 
 ```text
 PacketDevice read loop
     -> parse IP packet
-    -> feed smoltcp interface
+    -> feed ipstack
     -> accepted TCP socket becomes FlowPayload::Stream
     -> UDP endpoint map becomes FlowPayload::Datagram
     -> outbound responses are written back as IP packets
@@ -409,9 +411,9 @@ Crate options discovered with `cargo search`:
 
 | Crate | Search result | Recommended role |
 |---|---|---|
-| `smoltcp` | `0.13.1`, TCP/IP stack | Preferred low-level userspace stack building block |
+| `smoltcp` | `0.13.1`, TCP/IP stack | Alternative low-level stack if finer protocol control is needed |
 | `netstack-smoltcp` | `0.2.3`, TUN packets to TCP streams/UDP packets | Evaluate as a higher-level adapter; do not couple kernel APIs to it |
-| `ipstack` | `1.0.0`, async lightweight TUN stack | Evaluate only after checking API maturity and maintenance |
+| `ipstack` | `1.0.0`, async lightweight TUN stack | Selected first backend; adapted only inside `rustbox-stack` |
 | `tun2proxy` | `0.8.2`, tunnel interface to proxy | Reference implementation only; RustBox should keep its own Flow boundary |
 | `etherparse` | `0.20.3`, packet parser/writer | Useful for lightweight IP/TCP/UDP parsing tests |
 | `pnet_packet` | `0.35.0`, packet parsing/manipulation | Alternative packet parser if its API fits better |
@@ -615,8 +617,7 @@ Recommended order:
 3. Add config variants for `tun` and `transparent`, with validation but planned
    composition errors.
 4. Add `rustbox-inbound-tun` service with fake providers and no real OS code.
-5. Implement `rustbox-stack-smoltcp` behind the existing `NetworkStack`
-   boundary.
+5. Implement the `ipstack` adapter behind the existing `NetworkStack` boundary.
 6. Add Linux TUN MVP: packet device and basic route additions first, then
    address/MTU/rule leases through rtnetlink/nftables.
 7. Add Windows Wintun MVP: packet device and basic route additions first, then
@@ -633,10 +634,10 @@ contracts.
 
 ## 14. Open Decisions
 
-These should be decided before implementation:
+Remaining decisions:
 
-- Whether the first stack adapter should wrap `smoltcp` directly or evaluate
-  `netstack-smoltcp` first.
+- Whether a future second stack adapter should wrap `smoltcp` directly or use
+  `netstack-smoltcp`.
 - Whether `tun-rs` is sufficient for all desktop TUN needs or Windows should
   use a direct Wintun wrapper for finer control.
 - Whether route control should use higher-level crates such as `net-route` or

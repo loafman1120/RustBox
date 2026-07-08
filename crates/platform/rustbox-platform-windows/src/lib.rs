@@ -7,8 +7,8 @@
 use net_route::{Handle as RouteHandle, Route};
 use rustbox_host_api::{
     BoxFuture, ConnectionKey, NetworkControl, NetworkControlError, NetworkLease,
-    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceProvider, ProcessInfo,
-    ProcessLookup, ProcessLookupError,
+    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
+    PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError,
 };
 #[cfg(target_os = "windows")]
 use rustbox_host_api::{InterfaceRef, NetworkOperation, RollbackPolicy};
@@ -44,7 +44,7 @@ impl PacketDeviceProvider for WindowsPlatform {
     fn open(
         &self,
         config: PacketDeviceConfig,
-    ) -> BoxFuture<'_, Result<Box<dyn PacketDevice>, PacketDeviceError>> {
+    ) -> BoxFuture<'_, Result<PacketDeviceLease, PacketDeviceError>> {
         Box::pin(async move { open_windows_packet_device(config) })
     }
 }
@@ -288,19 +288,33 @@ fn network_control_io_error(action: &str, err: std::io::Error) -> NetworkControl
 #[cfg(target_os = "windows")]
 fn open_windows_packet_device(
     config: PacketDeviceConfig,
-) -> Result<Box<dyn PacketDevice>, PacketDeviceError> {
+) -> Result<PacketDeviceLease, PacketDeviceError> {
+    let requested = config.clone();
     let device = build_tun_device(config).map_err(|err| {
         PacketDeviceError::new(format!(
             "failed to open Windows TUN packet device through tun-rs/Wintun: {err}"
         ))
     })?;
-    Ok(Box::new(TunPacketDevice::new(device)) as Box<dyn PacketDevice>)
+    let name = device.name().map_err(|err| {
+        PacketDeviceError::new(format!("failed to read Windows TUN interface name: {err}"))
+    })?;
+    let index = device.if_index().ok();
+    let mtu = device.mtu().ok().or(requested.mtu);
+    Ok(PacketDeviceLease {
+        device: Box::new(TunPacketDevice::new(device)) as Box<dyn PacketDevice>,
+        info: PacketDeviceInfo {
+            name,
+            index,
+            addresses: requested.addresses,
+            mtu,
+        },
+    })
 }
 
 #[cfg(not(target_os = "windows"))]
 fn open_windows_packet_device(
     config: PacketDeviceConfig,
-) -> Result<Box<dyn PacketDevice>, PacketDeviceError> {
+) -> Result<PacketDeviceLease, PacketDeviceError> {
     Err(PacketDeviceError::new(format!(
         "{}; requested name={:?} addresses={}",
         packet_device_status_message(),

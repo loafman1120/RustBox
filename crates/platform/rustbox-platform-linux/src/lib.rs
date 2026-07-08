@@ -10,12 +10,13 @@ use net_route::{Handle as RouteHandle, Route};
 use rustbox_host_api::{AcceptedTransparentStream, TransparentRedirectMode};
 use rustbox_host_api::{
     BoxFuture, ConnectionKey, NetworkControl, NetworkControlError, NetworkLease,
-    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceProvider, ProcessInfo,
-    ProcessLookup, ProcessLookupError, TransparentProxyError, TransparentProxyProvider,
-    TransparentStreamListener, TransparentTcpBind,
+    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceLease,
+    PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError, TransparentProxyError,
+    TransparentProxyProvider, TransparentStreamListener, TransparentTcpBind,
 };
 #[cfg(target_os = "linux")]
-use rustbox_host_api::{InterfaceRef, NetworkOperation, RollbackPolicy};
+use rustbox_host_api::{InterfaceRef, NetworkOperation, PacketDeviceInfo, RollbackPolicy};
+#[cfg(target_os = "linux")]
 use rustbox_io::PacketDevice;
 #[cfg(target_os = "linux")]
 use rustbox_io::{IoError, IoErrorKind};
@@ -59,7 +60,7 @@ impl PacketDeviceProvider for LinuxPlatform {
     fn open(
         &self,
         config: PacketDeviceConfig,
-    ) -> BoxFuture<'_, Result<Box<dyn PacketDevice>, PacketDeviceError>> {
+    ) -> BoxFuture<'_, Result<PacketDeviceLease, PacketDeviceError>> {
         Box::pin(async move { open_linux_packet_device(config) })
     }
 }
@@ -475,19 +476,33 @@ fn ip_to_std(ip: IpAddress) -> IpAddr {
 #[cfg(target_os = "linux")]
 fn open_linux_packet_device(
     config: PacketDeviceConfig,
-) -> Result<Box<dyn PacketDevice>, PacketDeviceError> {
+) -> Result<PacketDeviceLease, PacketDeviceError> {
+    let requested = config.clone();
     let device = build_tun_device(config).map_err(|err| {
         PacketDeviceError::new(format!(
             "failed to open Linux TUN packet device through tun-rs: {err}"
         ))
     })?;
-    Ok(Box::new(TunPacketDevice::new(device)) as Box<dyn PacketDevice>)
+    let name = device.name().map_err(|err| {
+        PacketDeviceError::new(format!("failed to read Linux TUN interface name: {err}"))
+    })?;
+    let index = device.if_index().ok();
+    let mtu = device.mtu().ok().or(requested.mtu);
+    Ok(PacketDeviceLease {
+        device: Box::new(TunPacketDevice::new(device)) as Box<dyn PacketDevice>,
+        info: PacketDeviceInfo {
+            name,
+            index,
+            addresses: requested.addresses,
+            mtu,
+        },
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
 fn open_linux_packet_device(
     config: PacketDeviceConfig,
-) -> Result<Box<dyn PacketDevice>, PacketDeviceError> {
+) -> Result<PacketDeviceLease, PacketDeviceError> {
     Err(PacketDeviceError::new(format!(
         "{}; requested name={:?} addresses={}",
         packet_device_status_message(),

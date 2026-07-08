@@ -230,8 +230,8 @@ mod tests {
 
     #[test]
     fn starts_with_transparent_provider() {
-        let provider = Arc::new(FakeTransparentProvider::default());
-        let spawner = Arc::new(FakeSpawner::default());
+        let provider = Arc::new(FakeTransparentProvider);
+        let spawner = Arc::new(FakeSpawner);
         let sink = Arc::new(RecordingSink::default());
         let mut inbound = TransparentProxyInbound::new(
             InboundId::new(NonZeroU64::new(1).expect("id")),

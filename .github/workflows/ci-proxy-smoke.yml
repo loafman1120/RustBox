@@ -84,6 +84,10 @@ jobs:
       - name: Check CLI help
         run: cargo run --locked -p rustbox-app -- --help
 
+      - name: Check TUN transparent config composition
+        if: matrix.os != 'macos-latest'
+        run: cargo run --locked -p rustbox-app -- check-config --config examples/tun-transparent.toml
+
       - name: Control gRPC smoke test
         run: bash scripts/ci/control-grpc-smoke.sh
 

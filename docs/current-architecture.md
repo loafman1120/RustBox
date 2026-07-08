@@ -86,6 +86,8 @@ crates/
   modules/dns/rustbox-dns-core/             Portable DNS resolver contracts
   modules/inbound/rustbox-inbound-http/     HTTP CONNECT and ordinary HTTP proxy inbound
   modules/inbound/rustbox-inbound-socks5/   SOCKS5 and mixed inbound
+  modules/inbound/rustbox-inbound-transparent/ Linux TCP redirect transparent inbound
+  modules/inbound/rustbox-inbound-tun/      TUN packet-device inbound lifecycle
   modules/inspect/rustbox-inspect/          Metadata enrichers
   modules/outbound/rustbox-outbound-direct/ Direct outbound
   modules/outbound/rustbox-outbound-http/   HTTP CONNECT outbound
@@ -532,8 +534,8 @@ Important current status:
 | DNS resolver contract | Implemented |
 | DNS config, DNS rules, cache, FakeIP, and hijack config model | Implemented as portable contracts and config pipeline |
 | DNS UDP/TCP/DoH/DoT/DoQ network transports | Adapter contracts exist; concrete network transports are not implemented yet |
-| Packet-to-flow stack | Boundary implemented, concrete stack planned |
-| TUN inbound | Not implemented yet |
+| Packet-to-flow stack | Implemented with the open-source `ipstack` backend: IPv4/IPv6 TCP and UDP sessions become kernel flows, with TCP state and response packet writing handled by the stack |
+| TUN inbound | Implemented as a lifecycle service that opens a platform packet-device lease, applies a network transaction, and attaches the packet-to-flow stack |
 
 ---
 
@@ -707,8 +709,8 @@ The following are intentionally not complete yet:
 - Active selector switching and urltest latency probing.
 - Data-plane modules for VMess, VLESS, Trojan, and AnyTLS.
 - Concrete DNS UDP/TCP/TLS/HTTPS/QUIC transport adapters.
-- Concrete TUN inbound.
-- Concrete packet-to-flow network stack.
+- Privileged end-to-end TUN smoke tests on real Linux and Windows devices.
+- Optional alternative stack adapters behind the existing `rustbox-stack` boundary.
 - Transparent proxy inbound.
 - Windows WFP transparent proxy implementation.
 - Linux tproxy/redirect transparent proxy implementation.
