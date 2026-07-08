@@ -95,26 +95,52 @@ function New-CiTlsCertificate {
 
 function Start-LoggedProcess {
     param(
+        [string]$Label,
         [string]$FilePath,
         [string[]]$ArgumentList,
         [string]$StdoutPath,
         [string]$StderrPath
     )
 
-    $Params = @{
-        FilePath = $FilePath
-        ArgumentList = $ArgumentList
-        RedirectStandardOutput = $StdoutPath
-        RedirectStandardError = $StderrPath
-        PassThru = $true
-        WorkingDirectory = $RootDir
-    }
     if ($IsWindows) {
-        $Params.WindowStyle = "Hidden"
+        $Params = @{
+            FilePath = $FilePath
+            ArgumentList = $ArgumentList
+            RedirectStandardOutput = $StdoutPath
+            RedirectStandardError = $StderrPath
+            PassThru = $true
+            WorkingDirectory = $RootDir
+            WindowStyle = "Hidden"
+        }
+
+        Write-CiLog "start $Label`: $FilePath $($ArgumentList -join ' ')"
+        $Process = Start-Process @Params
+    } else {
+        $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $StartInfo.FileName = "/bin/sh"
+        $StartInfo.WorkingDirectory = $RootDir
+        $StartInfo.UseShellExecute = $false
+        $StartInfo.RedirectStandardOutput = $false
+        $StartInfo.RedirectStandardError = $false
+        $StartInfo.CreateNoWindow = $true
+        $StartInfo.ArgumentList.Add("-c")
+        $StartInfo.ArgumentList.Add("exec `"$FilePath`" $($ArgumentList -join ' ') > `"$StdoutPath`" 2> `"$StderrPath`"")
+
+        $Process = [System.Diagnostics.Process]::new()
+        $Process.StartInfo = $StartInfo
+        $Process.EnableRaisingEvents = $true
+
+        Write-CiLog "start $Label`: $FilePath $($ArgumentList -join ' ')"
+        if (-not $Process.Start()) {
+            throw "failed to start $Label"
+        }
     }
 
-    $Process = Start-Process @Params
     $Processes.Add($Process)
+    Start-Sleep -Milliseconds 250
+    if ($Process.HasExited) {
+        throw "$Label exited before becoming ready with code $($Process.ExitCode); command=$FilePath $($ArgumentList -join ' ')"
+    }
     return $Process
 }
 
@@ -216,6 +242,7 @@ try {
     Set-Content -Path (Join-Path $WwwDir "rustbox-ci.txt") -Value $Marker -Encoding ascii
 
     Start-LoggedProcess `
+        -Label "http target" `
         -FilePath $PythonExe `
         -ArgumentList @("-m", "http.server", "$HttpTargetPort", "--bind", "127.0.0.1", "--directory", $WwwDir) `
         -StdoutPath (Join-Path $LogsDir "http-target.log") `
@@ -242,6 +269,7 @@ httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
 httpd.serve_forever()
 "@
     Start-LoggedProcess `
+        -Label "https target" `
         -FilePath $PythonExe `
         -ArgumentList @($HttpsTargetScript, $WwwDir, "$HttpsTargetPort", $CertPath, $KeyPath) `
         -StdoutPath (Join-Path $LogsDir "https-target.log") `
@@ -282,6 +310,7 @@ outbound = "direct"
 "@
 
     Start-LoggedProcess `
+        -Label "rustbox" `
         -FilePath $BinPath `
         -ArgumentList @("--config", $ConfigPath) `
         -StdoutPath (Join-Path $LogsDir "rustbox-stdout.log") `
