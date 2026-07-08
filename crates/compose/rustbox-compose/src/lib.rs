@@ -4,8 +4,9 @@
 //! 只有组合根知道 TokioHost、inbound、outbound、内核和观测 sink 的装配关系。
 
 use rustbox_config::{
-    CompiledConfig, CompiledInbound, CompiledOutbound, CompiledRouteRule, ConfigCompiler,
-    ConfigError, SourceConfig,
+    CompiledConfig, CompiledInbound, CompiledOutbound, CompiledRouteConditions,
+    CompiledRouteMatcher, CompiledRouteRule, ConfigCompiler, ConfigError, LogicalModeConfig,
+    SourceConfig,
 };
 use rustbox_host_api::{NoopObservabilitySink, ObservabilitySink};
 use rustbox_inbound_http::{HttpInboundCredentials, HttpProxyInbound};
@@ -17,7 +18,9 @@ use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
 use rustbox_outbound_shadowsocks::ShadowsocksOutbound;
 use rustbox_outbound_socks5::{Socks5Credentials, Socks5Outbound};
-use rustbox_route::RouteTable;
+use rustbox_route::{
+    LogicalMode, RouteConditions, RouteMatcher, RouteRule, RouteRuleSet, RouteTable,
+};
 use rustbox_runtime_tokio::TokioHost;
 use rustbox_types::{Endpoint, RouteDecision};
 use std::sync::Arc;
@@ -298,13 +301,64 @@ fn route_table(compiled: &CompiledConfig) -> RouteTable {
             CompiledRouteRule::Default(decision) => {
                 table = table.with_default(decision.clone());
             }
+            CompiledRouteRule::Rule { matcher, decision } => {
+                table.push_rule(RouteRule::new(route_matcher(matcher), decision.clone()));
+            }
         }
+    }
+
+    for rule_set in &compiled.route_rule_sets {
+        table.insert_rule_set(
+            rule_set.id.clone(),
+            RouteRuleSet::new(rule_set.rules.iter().map(route_matcher).collect()),
+        );
     }
 
     if compiled.route_rules.is_empty() {
         table.with_default(RouteDecision::Reject(rustbox_types::RejectReason::NoRoute))
     } else {
         table
+    }
+}
+
+fn route_matcher(matcher: &CompiledRouteMatcher) -> RouteMatcher {
+    match matcher {
+        CompiledRouteMatcher::Conditions(conditions) => {
+            RouteMatcher::Conditions(Box::new(route_conditions(conditions)))
+        }
+        CompiledRouteMatcher::Logical {
+            mode,
+            rules,
+            invert,
+        } => RouteMatcher::Logical {
+            mode: logical_mode(mode),
+            rules: rules.iter().map(route_matcher).collect(),
+            invert: *invert,
+        },
+    }
+}
+
+fn route_conditions(conditions: &CompiledRouteConditions) -> RouteConditions {
+    RouteConditions {
+        inbounds: conditions.inbounds.clone(),
+        networks: conditions.networks.clone(),
+        domains: conditions.domains.clone(),
+        domain_suffixes: conditions.domain_suffixes.clone(),
+        domain_keywords: conditions.domain_keywords.clone(),
+        domain_regexes: conditions.domain_regexes.clone(),
+        ip_cidrs: conditions.ip_cidrs.clone(),
+        source_ip_cidrs: conditions.source_ip_cidrs.clone(),
+        ports: conditions.ports.clone(),
+        source_ports: conditions.source_ports.clone(),
+        rule_sets: conditions.rule_sets.clone(),
+        invert: conditions.invert,
+    }
+}
+
+fn logical_mode(mode: &LogicalModeConfig) -> LogicalMode {
+    match mode {
+        LogicalModeConfig::And => LogicalMode::And,
+        LogicalModeConfig::Or => LogicalMode::Or,
     }
 }
 
@@ -367,6 +421,7 @@ mod tests {
                     password: "test-password".to_string(),
                 },
             ],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
             }],
@@ -392,6 +447,7 @@ mod tests {
             outbounds: vec![OutboundConfig::Direct {
                 id: "direct".to_string(),
             }],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
             }],

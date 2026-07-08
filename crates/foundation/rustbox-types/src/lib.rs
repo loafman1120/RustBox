@@ -43,6 +43,13 @@ impl IpAddress {
             Self::V6(_) => 128,
         }
     }
+
+    pub fn version(self) -> u8 {
+        match self {
+            Self::V4(_) => 4,
+            Self::V6(_) => 6,
+        }
+    }
 }
 
 impl fmt::Display for IpAddress {
@@ -103,6 +110,40 @@ impl IpCidr {
 impl fmt::Display for IpCidr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.address, self.prefix_len)
+    }
+}
+
+/// Inclusive port range used by route rules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct PortRange {
+    pub start: u16,
+    pub end: u16,
+}
+
+impl PortRange {
+    pub fn single(port: u16) -> Self {
+        Self {
+            start: port,
+            end: port,
+        }
+    }
+
+    pub fn new(start: u16, end: u16) -> Option<Self> {
+        (start <= end).then_some(Self { start, end })
+    }
+
+    pub fn contains(self, port: u16) -> bool {
+        self.start <= port && port <= self.end
+    }
+}
+
+impl fmt::Display for PortRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.start == self.end {
+            write!(f, "{}", self.start)
+        } else {
+            write!(f, "{}-{}", self.start, self.end)
+        }
     }
 }
 

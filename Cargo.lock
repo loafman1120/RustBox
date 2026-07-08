@@ -2128,6 +2128,7 @@ dependencies = [
 name = "rustbox-config"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "rustbox-types",
 ]
 
@@ -2358,6 +2359,8 @@ dependencies = [
 name = "rustbox-route"
 version = "0.1.0"
 dependencies = [
+ "ipnet",
+ "regex",
  "rustbox-types",
 ]
 

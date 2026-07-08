@@ -4,14 +4,18 @@
 //! 再进入解析、验证和编译阶段。运行时模块只接收编译后的类型化配置。
 
 use core::num::NonZeroU64;
-use rustbox_types::{Endpoint, InboundId, OutboundId, RejectReason, RouteDecision};
-use std::collections::HashSet;
+use regex::Regex;
+use rustbox_types::{
+    Endpoint, InboundId, IpCidr, Network, OutboundId, PortRange, RejectReason, RouteDecision,
+};
+use std::collections::{HashMap, HashSet};
 
 /// 格式无关的语义配置，是所有输入前端汇合后的统一模型。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceConfig {
     pub inbounds: Vec<InboundConfig>,
     pub outbounds: Vec<OutboundConfig>,
+    pub route_rule_sets: Vec<RouteRuleSetConfig>,
     pub routes: Vec<RouteRuleConfig>,
 }
 
@@ -27,6 +31,7 @@ impl SourceConfig {
             outbounds: vec![OutboundConfig::Direct {
                 id: "direct".to_string(),
             }],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
             }],
@@ -44,6 +49,7 @@ impl SourceConfig {
             outbounds: vec![OutboundConfig::Direct {
                 id: "direct".to_string(),
             }],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
             }],
@@ -68,6 +74,7 @@ pub struct ValidatedConfig {
 pub struct CompiledConfig {
     pub inbounds: Vec<CompiledInbound>,
     pub outbounds: Vec<CompiledOutbound>,
+    pub route_rule_sets: Vec<CompiledRouteRuleSet>,
     pub route_rules: Vec<CompiledRouteRule>,
 }
 
@@ -151,8 +158,66 @@ pub enum OutboundConfig {
 /// 路由源规则，使用逻辑 ID，尚不直接持有内部 `OutboundId`。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RouteRuleConfig {
-    Default { outbound: String },
-    RejectDefault { reason: RejectReason },
+    Default {
+        outbound: String,
+    },
+    RejectDefault {
+        reason: RejectReason,
+    },
+    Rule {
+        matcher: RouteMatcherConfig,
+        action: RouteActionConfig,
+    },
+    Logical {
+        mode: LogicalModeConfig,
+        rules: Vec<RouteMatcherConfig>,
+        invert: bool,
+        action: RouteActionConfig,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteRuleSetConfig {
+    pub id: String,
+    pub rules: Vec<RouteMatcherConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RouteActionConfig {
+    Outbound(String),
+    Reject(RejectReason),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LogicalModeConfig {
+    And,
+    Or,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RouteMatcherConfig {
+    Conditions(Box<RouteMatchConfig>),
+    Logical {
+        mode: LogicalModeConfig,
+        rules: Vec<RouteMatcherConfig>,
+        invert: bool,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RouteMatchConfig {
+    pub inbound: Vec<String>,
+    pub network: Vec<Network>,
+    pub domain: Vec<String>,
+    pub domain_suffix: Vec<String>,
+    pub domain_keyword: Vec<String>,
+    pub domain_regex: Vec<String>,
+    pub ip_cidr: Vec<IpCidr>,
+    pub source_ip_cidr: Vec<IpCidr>,
+    pub port: Vec<PortRange>,
+    pub source_port: Vec<PortRange>,
+    pub rule_set: Vec<String>,
+    pub invert: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,6 +280,42 @@ pub enum CompiledOutbound {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompiledRouteRule {
     Default(RouteDecision),
+    Rule {
+        matcher: CompiledRouteMatcher,
+        decision: RouteDecision,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledRouteRuleSet {
+    pub id: String,
+    pub rules: Vec<CompiledRouteMatcher>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompiledRouteMatcher {
+    Conditions(Box<CompiledRouteConditions>),
+    Logical {
+        mode: LogicalModeConfig,
+        rules: Vec<CompiledRouteMatcher>,
+        invert: bool,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CompiledRouteConditions {
+    pub inbounds: Vec<InboundId>,
+    pub networks: Vec<Network>,
+    pub domains: Vec<String>,
+    pub domain_suffixes: Vec<String>,
+    pub domain_keywords: Vec<String>,
+    pub domain_regexes: Vec<String>,
+    pub ip_cidrs: Vec<IpCidr>,
+    pub source_ip_cidrs: Vec<IpCidr>,
+    pub ports: Vec<PortRange>,
+    pub source_ports: Vec<PortRange>,
+    pub rule_sets: Vec<String>,
+    pub invert: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -311,13 +412,54 @@ impl ConfigCompiler {
             }
         }
 
-        for rule in &parsed.source.routes {
-            if let RouteRuleConfig::Default { outbound } = rule
-                && !outbound_ids.contains(outbound.as_str())
-            {
+        let mut rule_set_ids = HashSet::new();
+        for rule_set in &parsed.source.route_rule_sets {
+            if rule_set.id.is_empty() {
+                return Err(ConfigError::new("route rule-set id must not be empty"));
+            }
+            if !rule_set_ids.insert(rule_set.id.clone()) {
                 return Err(ConfigError::new(format!(
-                    "route references unknown outbound `{outbound}`"
+                    "duplicate route rule-set id `{}`",
+                    rule_set.id
                 )));
+            }
+            if rule_set.rules.is_empty() {
+                return Err(ConfigError::new(format!(
+                    "route rule-set `{}` must contain at least one rule",
+                    rule_set.id
+                )));
+            }
+        }
+
+        for rule_set in &parsed.source.route_rule_sets {
+            for matcher in &rule_set.rules {
+                validate_route_matcher(matcher, &inbound_ids, &rule_set_ids)?;
+            }
+        }
+
+        for rule in &parsed.source.routes {
+            match rule {
+                RouteRuleConfig::Default { outbound } => {
+                    if !outbound_ids.contains(outbound.as_str()) {
+                        return Err(ConfigError::new(format!(
+                            "route references unknown outbound `{outbound}`"
+                        )));
+                    }
+                }
+                RouteRuleConfig::RejectDefault { .. } => {}
+                RouteRuleConfig::Rule { matcher, action } => {
+                    validate_route_matcher(matcher, &inbound_ids, &rule_set_ids)?;
+                    validate_route_action(action, &outbound_ids)?;
+                }
+                RouteRuleConfig::Logical { rules, action, .. } => {
+                    if rules.is_empty() {
+                        return Err(ConfigError::new("logical route must include rules"));
+                    }
+                    for matcher in rules {
+                        validate_route_matcher(matcher, &inbound_ids, &rule_set_ids)?;
+                    }
+                    validate_route_action(action, &outbound_ids)?;
+                }
             }
         }
 
@@ -426,6 +568,28 @@ impl ConfigCompiler {
             })
             .collect::<Result<Vec<_>, ConfigError>>()?;
 
+        let inbound_by_logical_id = inbounds
+            .iter()
+            .map(|inbound| (inbound.logical_id().to_string(), inbound.internal_id()))
+            .collect::<HashMap<_, _>>();
+
+        let route_rule_sets = validated
+            .source
+            .route_rule_sets
+            .iter()
+            .map(|rule_set| {
+                let rules = rule_set
+                    .rules
+                    .iter()
+                    .map(|matcher| compile_route_matcher(matcher, &inbound_by_logical_id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(CompiledRouteRuleSet {
+                    id: rule_set.id.clone(),
+                    rules,
+                })
+            })
+            .collect::<Result<Vec<_>, ConfigError>>()?;
+
         let route_rules = validated
             .source
             .routes
@@ -443,12 +607,33 @@ impl ConfigCompiler {
                 RouteRuleConfig::RejectDefault { reason } => Ok(CompiledRouteRule::Default(
                     RouteDecision::Reject(reason.clone()),
                 )),
+                RouteRuleConfig::Rule { matcher, action } => Ok(CompiledRouteRule::Rule {
+                    matcher: compile_route_matcher(matcher, &inbound_by_logical_id)?,
+                    decision: route_action_decision(action, &outbounds)?,
+                }),
+                RouteRuleConfig::Logical {
+                    mode,
+                    rules,
+                    invert,
+                    action,
+                } => Ok(CompiledRouteRule::Rule {
+                    matcher: CompiledRouteMatcher::Logical {
+                        mode: mode.clone(),
+                        rules: rules
+                            .iter()
+                            .map(|matcher| compile_route_matcher(matcher, &inbound_by_logical_id))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        invert: *invert,
+                    },
+                    decision: route_action_decision(action, &outbounds)?,
+                }),
             })
             .collect::<Result<Vec<_>, ConfigError>>()?;
 
         Ok(CompiledConfig {
             inbounds,
             outbounds,
+            route_rule_sets,
             route_rules,
         })
     }
@@ -460,6 +645,24 @@ impl InboundConfig {
             Self::Mixed { id, .. } => id,
             Self::HttpConnect { id, .. } => id,
             Self::Socks5 { id, .. } => id,
+        }
+    }
+}
+
+impl CompiledInbound {
+    fn logical_id(&self) -> &str {
+        match self {
+            Self::Mixed { logical_id, .. } => logical_id,
+            Self::HttpConnect { logical_id, .. } => logical_id,
+            Self::Socks5 { logical_id, .. } => logical_id,
+        }
+    }
+
+    fn internal_id(&self) -> InboundId {
+        match self {
+            Self::Mixed { id, .. } => *id,
+            Self::HttpConnect { id, .. } => *id,
+            Self::Socks5 { id, .. } => *id,
         }
     }
 }
@@ -516,6 +719,127 @@ fn validate_optional_credentials(
         )));
     }
     Ok(())
+}
+
+fn validate_route_action(
+    action: &RouteActionConfig,
+    outbound_ids: &HashSet<String>,
+) -> Result<(), ConfigError> {
+    match action {
+        RouteActionConfig::Outbound(outbound) => {
+            if outbound_ids.contains(outbound.as_str()) {
+                Ok(())
+            } else {
+                Err(ConfigError::new(format!(
+                    "route references unknown outbound `{outbound}`"
+                )))
+            }
+        }
+        RouteActionConfig::Reject(_) => Ok(()),
+    }
+}
+
+fn validate_route_matcher(
+    matcher: &RouteMatcherConfig,
+    inbound_ids: &HashSet<String>,
+    rule_set_ids: &HashSet<String>,
+) -> Result<(), ConfigError> {
+    match matcher {
+        RouteMatcherConfig::Conditions(conditions) => {
+            for inbound in &conditions.inbound {
+                if !inbound_ids.contains(inbound.as_str()) {
+                    return Err(ConfigError::new(format!(
+                        "route references unknown inbound `{inbound}`"
+                    )));
+                }
+            }
+            for rule_set in &conditions.rule_set {
+                if !rule_set_ids.contains(rule_set.as_str()) {
+                    return Err(ConfigError::new(format!(
+                        "route references unknown rule-set `{rule_set}`"
+                    )));
+                }
+            }
+            for pattern in &conditions.domain_regex {
+                Regex::new(pattern).map_err(|err| {
+                    ConfigError::new(format!("route domain_regex `{pattern}` is invalid: {err}"))
+                })?;
+            }
+            Ok(())
+        }
+        RouteMatcherConfig::Logical { rules, .. } => {
+            if rules.is_empty() {
+                return Err(ConfigError::new("logical route matcher must include rules"));
+            }
+            for rule in rules {
+                validate_route_matcher(rule, inbound_ids, rule_set_ids)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn compile_route_matcher(
+    matcher: &RouteMatcherConfig,
+    inbound_by_logical_id: &HashMap<String, InboundId>,
+) -> Result<CompiledRouteMatcher, ConfigError> {
+    match matcher {
+        RouteMatcherConfig::Conditions(conditions) => {
+            let inbounds = conditions
+                .inbound
+                .iter()
+                .map(|logical_id| {
+                    inbound_by_logical_id
+                        .get(logical_id)
+                        .copied()
+                        .ok_or_else(|| ConfigError::new(format!("unknown inbound `{logical_id}`")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(CompiledRouteMatcher::Conditions(Box::new(
+                CompiledRouteConditions {
+                    inbounds,
+                    networks: conditions.network.clone(),
+                    domains: conditions.domain.clone(),
+                    domain_suffixes: conditions.domain_suffix.clone(),
+                    domain_keywords: conditions.domain_keyword.clone(),
+                    domain_regexes: conditions.domain_regex.clone(),
+                    ip_cidrs: conditions.ip_cidr.clone(),
+                    source_ip_cidrs: conditions.source_ip_cidr.clone(),
+                    ports: conditions.port.clone(),
+                    source_ports: conditions.source_port.clone(),
+                    rule_sets: conditions.rule_set.clone(),
+                    invert: conditions.invert,
+                },
+            )))
+        }
+        RouteMatcherConfig::Logical {
+            mode,
+            rules,
+            invert,
+        } => Ok(CompiledRouteMatcher::Logical {
+            mode: mode.clone(),
+            rules: rules
+                .iter()
+                .map(|rule| compile_route_matcher(rule, inbound_by_logical_id))
+                .collect::<Result<Vec<_>, _>>()?,
+            invert: *invert,
+        }),
+    }
+}
+
+fn route_action_decision(
+    action: &RouteActionConfig,
+    outbounds: &[CompiledOutbound],
+) -> Result<RouteDecision, ConfigError> {
+    match action {
+        RouteActionConfig::Outbound(outbound) => outbounds
+            .iter()
+            .find(|compiled| compiled.logical_id() == outbound)
+            .ok_or_else(|| ConfigError::new(format!("unknown outbound `{outbound}`")))
+            .map(CompiledOutbound::route_decision),
+        RouteActionConfig::Reject(reason) => Ok(RouteDecision::Reject(reason.clone())),
+    }
 }
 
 fn non_zero_id(index: usize) -> NonZeroU64 {
@@ -590,6 +914,7 @@ mod tests {
                     password: "test-password".to_string(),
                 },
             ],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "block".to_string(),
             }],
@@ -618,6 +943,7 @@ mod tests {
             outbounds: vec![OutboundConfig::Direct {
                 id: "direct".to_string(),
             }],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
             }],
@@ -638,6 +964,62 @@ mod tests {
     }
 
     #[test]
+    fn compiles_ordered_route_rules_and_rule_sets() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig::HttpConnect {
+                id: "http".to_string(),
+                listen: Endpoint::localhost_v4(18080),
+                username: None,
+                password: None,
+            }],
+            outbounds: vec![
+                OutboundConfig::Direct {
+                    id: "direct".to_string(),
+                },
+                OutboundConfig::Block {
+                    id: "block".to_string(),
+                },
+            ],
+            route_rule_sets: vec![RouteRuleSetConfig {
+                id: "ads".to_string(),
+                rules: vec![RouteMatcherConfig::Conditions(Box::new(RouteMatchConfig {
+                    domain_keyword: vec!["ads".to_string()],
+                    ..RouteMatchConfig::default()
+                }))],
+            }],
+            routes: vec![
+                RouteRuleConfig::Rule {
+                    matcher: RouteMatcherConfig::Conditions(Box::new(RouteMatchConfig {
+                        inbound: vec!["http".to_string()],
+                        network: vec![Network::Tcp],
+                        domain_suffix: vec!["example.test".to_string()],
+                        port: vec![PortRange::single(443)],
+                        rule_set: vec!["ads".to_string()],
+                        ..RouteMatchConfig::default()
+                    })),
+                    action: RouteActionConfig::Outbound("block".to_string()),
+                },
+                RouteRuleConfig::Default {
+                    outbound: "direct".to_string(),
+                },
+            ],
+        };
+
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let validated = ConfigCompiler::validate(parsed).expect("validate");
+        let compiled = ConfigCompiler::compile(validated).expect("compile");
+
+        assert_eq!(compiled.route_rule_sets.len(), 1);
+        assert!(matches!(
+            compiled.route_rules[0],
+            CompiledRouteRule::Rule {
+                decision: RouteDecision::Reject(RejectReason::Policy),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn rejects_incomplete_inbound_credentials() {
         let source = SourceConfig {
             inbounds: vec![InboundConfig::Socks5 {
@@ -649,6 +1031,7 @@ mod tests {
             outbounds: vec![OutboundConfig::Direct {
                 id: "direct".to_string(),
             }],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
             }],
@@ -675,6 +1058,7 @@ mod tests {
                 username: Some("user".to_string()),
                 password: None,
             }],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "http-out".to_string(),
             }],
@@ -701,6 +1085,7 @@ mod tests {
                 method: String::new(),
                 password: "secret".to_string(),
             }],
+            route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "ss".to_string(),
             }],

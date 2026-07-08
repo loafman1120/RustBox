@@ -59,6 +59,23 @@ server = "ss.example.test:8388"
 method = "aes-128-gcm"
 password = "test-password"
 
+# Inline rule-sets can be referenced by ordered route rules.
+# [[rule_sets]]
+# id = "ads"
+# type = "inline"
+# rules = [
+#   { type = "rule", domain_keyword = ["ads", "tracker"] },
+# ]
+#
+# [[routes]]
+# type = "rule"
+# inbound = ["http", "mixed"]
+# network = ["tcp"]
+# domain_suffix = ["example.test"]
+# port = [443]
+# rule_set = ["ads"]
+# outbound = "block"
+
 [[routes]]
 type = "default"
 outbound = "direct"

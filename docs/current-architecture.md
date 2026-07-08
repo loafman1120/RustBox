@@ -301,7 +301,8 @@ Current config-file source:
 schema_version = 1
 [[inbounds]] type = "http-connect", "socks5", or "mixed"
 [[outbounds]] type = "direct"
-[[routes]] type = "default"
+[[routes]] type = "rule", "logical", "default", or "reject-default"
+[[rule_sets]] type = "inline" or "local"
 ```
 
 The application does not manually wire module internals. It calls:
@@ -510,6 +511,8 @@ Important current status:
 | Remote telemetry bridge | Adapter implemented, concrete exporter planned |
 | SOCKS5 codec | Portable parser/encoder implemented |
 | SOCKS5 outbound module | Implemented |
+| Ordered route rules | Implemented for inbound, network, domain exact/suffix/keyword/regex, destination/source IP CIDR, destination/source port ranges, rule-set references, invert, and logical and/or rules |
+| Route rule-set loading | Implemented for inline and local TOML rule-sets |
 | SOCKS5 BIND | Not implemented yet |
 | DNS resolver contract | Implemented |
 | DNS UDP/TCP/DoH/DoQ transports | Not implemented yet |
@@ -642,6 +645,10 @@ Key tests:
 | `socks5_connect_accepts_username_password_auth` | SOCKS5 inbound username-password authentication |
 | `socks5_udp_associate_relays_datagrams_to_direct_outbound` | SOCKS5 UDP ASSOCIATE -> kernel -> direct UDP relay |
 | `forwards_stream_flow_to_selected_outbound` | Kernel route and outbound dispatch |
+| `routes_first_matching_rule_before_default` | Ordered route rule evaluation |
+| `matches_rule_set_from_outer_rule` | Route rule-set matching |
+| `compiles_ordered_route_rules_and_rule_sets` | Config route DSL compilation |
+| `parses_route_rules_and_inline_rule_sets` | TOML route DSL parsing |
 | `compiles_default_http_proxy_to_typed_runtime_plan` | Config pipeline |
 | `compiles_default_socks5_proxy_to_typed_runtime_plan` | SOCKS5 config pipeline |
 | `rustbox-config-file::tests::parses_http_and_socks5_proxy_config` | TOML file adapter |
@@ -662,7 +669,7 @@ The current implementation satisfies these architecture invariants:
 | Portable core does not depend on platform adapters | Satisfied |
 | Tokio types are not exposed by kernel APIs | Satisfied |
 | Inbound creates flows and does not choose outbound | Satisfied |
-| Router consumes metadata and returns decisions | Satisfied |
+| Router consumes metadata and returns decisions | Satisfied; route rules are evaluated purely from `FlowMeta` and compiled rule-sets |
 | Metadata enrichment is outside router logic | Satisfied |
 | TUN creation is outside kernel | Satisfied |
 | Stream, datagram, and packet abstractions are distinct | Satisfied |

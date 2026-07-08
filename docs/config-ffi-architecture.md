@@ -212,6 +212,22 @@ listen = "127.0.0.1:2080"
 id = "direct"
 type = "direct"
 
+[[rule_sets]]
+id = "ads"
+type = "inline"
+rules = [
+  { type = "rule", domain_keyword = ["ads", "tracker"] },
+]
+
+[[routes]]
+type = "rule"
+inbound = ["http"]
+network = ["tcp"]
+domain_suffix = ["example.test"]
+port = [443]
+rule_set = ["ads"]
+outbound = "direct"
+
 [[routes]]
 type = "default"
 outbound = "direct"
@@ -242,6 +258,14 @@ Current file observability fields:
 HTTP/gRPC API configuration should be added as a control service, not as an
 inbound proxy module. The API service will consume control snapshots and
 `ObservabilityStore` data.
+
+Current route file fields support ordered default, reject-default, rule, and
+logical route rules. Implemented matchers cover inbound IDs, TCP/UDP network,
+domain exact/suffix/keyword/regex, destination/source IP CIDR,
+destination/source ports and ranges, local or inline rule-set references,
+invert, and logical and/or composition. GeoIP/Geosite compatibility should be
+implemented through rule-set importers rather than hard-wiring those deprecated
+sing-box fields into the kernel router.
 
 ---
 

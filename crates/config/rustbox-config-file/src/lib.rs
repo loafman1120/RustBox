@@ -3,12 +3,15 @@
 //! 本 crate 负责把用户编写的 TOML 等文件形态转换为格式无关的
 //! `rustbox-config` 模型。运行时模块和内核不依赖文件解析。
 
-use rustbox_config::{InboundConfig, OutboundConfig, RouteRuleConfig, SourceConfig};
-use rustbox_types::{Endpoint, Host, IpAddress, RejectReason};
+use rustbox_config::{
+    InboundConfig, LogicalModeConfig, OutboundConfig, RouteActionConfig, RouteMatchConfig,
+    RouteMatcherConfig, RouteRuleConfig, RouteRuleSetConfig, SourceConfig,
+};
+use rustbox_types::{Endpoint, Host, IpAddress, IpCidr, Network, PortRange, RejectReason};
 use serde::Deserialize;
 use std::fs;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
@@ -46,14 +49,21 @@ pub fn load_toml_file(path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileEr
     let path = path.as_ref();
     let text = fs::read_to_string(path)
         .map_err(|err| ConfigFileError::new(format!("failed to read config file: {err}")))?;
-    parse_toml_str(&text)
+    parse_toml_str_with_base_dir(&text, path.parent())
 }
 
 /// 从 TOML 文本解析配置，供 CLI、测试和 FFI 文本入口复用。
 pub fn parse_toml_str(input: &str) -> Result<FileConfig, ConfigFileError> {
+    parse_toml_str_with_base_dir(input, None)
+}
+
+fn parse_toml_str_with_base_dir(
+    input: &str,
+    base_dir: Option<&Path>,
+) -> Result<FileConfig, ConfigFileError> {
     let document = toml::from_str::<TomlConfigDocument>(input)
         .map_err(|err| ConfigFileError::new(format!("failed to parse TOML config: {err}")))?;
-    document.into_file_config()
+    document.into_file_config(base_dir)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -66,11 +76,13 @@ struct TomlConfigDocument {
     #[serde(default)]
     outbounds: Vec<TomlOutboundConfig>,
     #[serde(default)]
+    rule_sets: Vec<TomlRouteRuleSetConfig>,
+    #[serde(default)]
     routes: Vec<TomlRouteRuleConfig>,
 }
 
 impl TomlConfigDocument {
-    fn into_file_config(self) -> Result<FileConfig, ConfigFileError> {
+    fn into_file_config(self, base_dir: Option<&Path>) -> Result<FileConfig, ConfigFileError> {
         // 文件格式版本在进入 SourceConfig 前校验，避免运行时理解历史格式。
         if self.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(ConfigFileError::new(format!(
@@ -94,11 +106,17 @@ impl TomlConfigDocument {
             .into_iter()
             .map(TomlRouteRuleConfig::into_source)
             .collect::<Result<Vec<_>, _>>()?;
+        let route_rule_sets = self
+            .rule_sets
+            .into_iter()
+            .map(|rule_set| rule_set.into_source(base_dir))
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(FileConfig {
             source: SourceConfig {
                 inbounds,
                 outbounds,
+                route_rule_sets,
                 routes,
             },
             observability: self
@@ -259,8 +277,26 @@ impl TomlOutboundConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlRouteRuleConfig {
-    Default { outbound: String },
-    RejectDefault { reason: TomlRejectReason },
+    Default {
+        outbound: String,
+    },
+    RejectDefault {
+        reason: TomlRejectReason,
+    },
+    Rule {
+        outbound: Option<String>,
+        reject: Option<TomlRejectReason>,
+        #[serde(flatten)]
+        matcher: Box<TomlRouteMatchFields>,
+    },
+    Logical {
+        mode: TomlLogicalMode,
+        rules: Vec<TomlRouteMatcherConfig>,
+        outbound: Option<String>,
+        reject: Option<TomlRejectReason>,
+        #[serde(default)]
+        invert: bool,
+    },
 }
 
 impl TomlRouteRuleConfig {
@@ -270,7 +306,213 @@ impl TomlRouteRuleConfig {
             Self::RejectDefault { reason } => Ok(RouteRuleConfig::RejectDefault {
                 reason: reason.into(),
             }),
+            Self::Rule {
+                outbound,
+                reject,
+                matcher,
+            } => Ok(RouteRuleConfig::Rule {
+                matcher: RouteMatcherConfig::Conditions(Box::new((*matcher).into_source()?)),
+                action: route_action(outbound, reject)?,
+            }),
+            Self::Logical {
+                mode,
+                rules,
+                outbound,
+                reject,
+                invert,
+            } => Ok(RouteRuleConfig::Logical {
+                mode: mode.into(),
+                rules: rules
+                    .into_iter()
+                    .map(TomlRouteMatcherConfig::into_source)
+                    .collect::<Result<Vec<_>, _>>()?,
+                invert,
+                action: route_action(outbound, reject)?,
+            }),
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+enum TomlRouteMatcherConfig {
+    Rule {
+        #[serde(flatten)]
+        matcher: Box<TomlRouteMatchFields>,
+    },
+    Logical {
+        mode: TomlLogicalMode,
+        rules: Vec<TomlRouteMatcherConfig>,
+        #[serde(default)]
+        invert: bool,
+    },
+}
+
+impl TomlRouteMatcherConfig {
+    fn into_source(self) -> Result<RouteMatcherConfig, ConfigFileError> {
+        match self {
+            Self::Rule { matcher } => Ok(RouteMatcherConfig::Conditions(Box::new(
+                (*matcher).into_source()?,
+            ))),
+            Self::Logical {
+                mode,
+                rules,
+                invert,
+            } => Ok(RouteMatcherConfig::Logical {
+                mode: mode.into(),
+                rules: rules
+                    .into_iter()
+                    .map(TomlRouteMatcherConfig::into_source)
+                    .collect::<Result<Vec<_>, _>>()?,
+                invert,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlRouteMatchFields {
+    #[serde(default)]
+    inbound: Vec<String>,
+    #[serde(default)]
+    network: Vec<TomlNetwork>,
+    #[serde(default)]
+    domain: Vec<String>,
+    #[serde(default)]
+    domain_suffix: Vec<String>,
+    #[serde(default)]
+    domain_keyword: Vec<String>,
+    #[serde(default)]
+    domain_regex: Vec<String>,
+    #[serde(default)]
+    ip_cidr: Vec<String>,
+    #[serde(default)]
+    source_ip_cidr: Vec<String>,
+    #[serde(default)]
+    port: Vec<u16>,
+    #[serde(default)]
+    port_range: Vec<String>,
+    #[serde(default)]
+    source_port: Vec<u16>,
+    #[serde(default)]
+    source_port_range: Vec<String>,
+    #[serde(default)]
+    rule_set: Vec<String>,
+    #[serde(default)]
+    invert: bool,
+}
+
+impl TomlRouteMatchFields {
+    fn into_source(self) -> Result<RouteMatchConfig, ConfigFileError> {
+        Ok(RouteMatchConfig {
+            inbound: self.inbound,
+            network: self.network.into_iter().map(Into::into).collect(),
+            domain: self.domain,
+            domain_suffix: self.domain_suffix,
+            domain_keyword: self.domain_keyword,
+            domain_regex: self.domain_regex,
+            ip_cidr: parse_cidrs(self.ip_cidr)?,
+            source_ip_cidr: parse_cidrs(self.source_ip_cidr)?,
+            port: parse_port_ranges(self.port, self.port_range)?,
+            source_port: parse_port_ranges(self.source_port, self.source_port_range)?,
+            rule_set: self.rule_set,
+            invert: self.invert,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlNetwork {
+    Tcp,
+    Udp,
+}
+
+impl From<TomlNetwork> for Network {
+    fn from(value: TomlNetwork) -> Self {
+        match value {
+            TomlNetwork::Tcp => Self::Tcp,
+            TomlNetwork::Udp => Self::Udp,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlLogicalMode {
+    And,
+    Or,
+}
+
+impl From<TomlLogicalMode> for LogicalModeConfig {
+    fn from(value: TomlLogicalMode) -> Self {
+        match value {
+            TomlLogicalMode::And => Self::And,
+            TomlLogicalMode::Or => Self::Or,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+enum TomlRouteRuleSetConfig {
+    Local {
+        id: String,
+        path: String,
+    },
+    Inline {
+        id: String,
+        rules: Vec<TomlRouteMatcherConfig>,
+    },
+}
+
+impl TomlRouteRuleSetConfig {
+    fn into_source(self, base_dir: Option<&Path>) -> Result<RouteRuleSetConfig, ConfigFileError> {
+        match self {
+            Self::Local { id, path } => {
+                let path = resolve_config_path(base_dir, &path);
+                let text = fs::read_to_string(&path).map_err(|err| {
+                    ConfigFileError::new(format!(
+                        "failed to read route rule-set `{}`: {err}",
+                        path.display()
+                    ))
+                })?;
+                let document =
+                    toml::from_str::<TomlRouteRuleSetDocument>(&text).map_err(|err| {
+                        ConfigFileError::new(format!(
+                            "failed to parse route rule-set `{}`: {err}",
+                            path.display()
+                        ))
+                    })?;
+                Ok(RouteRuleSetConfig {
+                    id,
+                    rules: document.into_rules()?,
+                })
+            }
+            Self::Inline { id, rules } => Ok(RouteRuleSetConfig {
+                id,
+                rules: rules
+                    .into_iter()
+                    .map(TomlRouteMatcherConfig::into_source)
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlRouteRuleSetDocument {
+    rules: Vec<TomlRouteMatcherConfig>,
+}
+
+impl TomlRouteRuleSetDocument {
+    fn into_rules(self) -> Result<Vec<RouteMatcherConfig>, ConfigFileError> {
+        self.rules
+            .into_iter()
+            .map(TomlRouteMatcherConfig::into_source)
+            .collect()
     }
 }
 
@@ -289,6 +531,83 @@ impl From<TomlRejectReason> for RejectReason {
             TomlRejectReason::NoRoute => Self::NoRoute,
             TomlRejectReason::UnsupportedNetwork => Self::UnsupportedNetwork,
         }
+    }
+}
+
+fn route_action(
+    outbound: Option<String>,
+    reject: Option<TomlRejectReason>,
+) -> Result<RouteActionConfig, ConfigFileError> {
+    match (outbound, reject) {
+        (Some(outbound), None) => Ok(RouteActionConfig::Outbound(outbound)),
+        (None, Some(reason)) => Ok(RouteActionConfig::Reject(reason.into())),
+        (None, None) => Err(ConfigFileError::new(
+            "route rule must set either outbound or reject",
+        )),
+        (Some(_), Some(_)) => Err(ConfigFileError::new(
+            "route rule must not set outbound and reject together",
+        )),
+    }
+}
+
+fn parse_cidrs(values: Vec<String>) -> Result<Vec<IpCidr>, ConfigFileError> {
+    values
+        .into_iter()
+        .map(|value| parse_cidr(&value))
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn parse_cidr(value: &str) -> Result<IpCidr, ConfigFileError> {
+    let (address, prefix_len) = value.split_once('/').ok_or_else(|| {
+        ConfigFileError::new(format!("CIDR `{value}` must include prefix length"))
+    })?;
+    let prefix_len = prefix_len
+        .parse::<u8>()
+        .map_err(|_| ConfigFileError::new(format!("CIDR `{value}` has invalid prefix length")))?;
+    let address = match address.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => IpAddress::V4(ip.octets()),
+        Ok(IpAddr::V6(ip)) => IpAddress::V6(ip.octets()),
+        Err(_) => {
+            return Err(ConfigFileError::new(format!(
+                "CIDR `{value}` has invalid IP address"
+            )));
+        }
+    };
+    IpCidr::new(address, prefix_len)
+        .ok_or_else(|| ConfigFileError::new(format!("CIDR `{value}` has invalid prefix length")))
+}
+
+fn parse_port_ranges(
+    ports: Vec<u16>,
+    ranges: Vec<String>,
+) -> Result<Vec<PortRange>, ConfigFileError> {
+    let mut parsed = ports.into_iter().map(PortRange::single).collect::<Vec<_>>();
+    for range in ranges {
+        parsed.push(parse_port_range(&range)?);
+    }
+    Ok(parsed)
+}
+
+fn parse_port_range(value: &str) -> Result<PortRange, ConfigFileError> {
+    let (start, end) = value
+        .split_once('-')
+        .ok_or_else(|| ConfigFileError::new(format!("port range `{value}` must use start-end")))?;
+    let start = start
+        .parse::<u16>()
+        .map_err(|_| ConfigFileError::new(format!("port range `{value}` has invalid start")))?;
+    let end = end
+        .parse::<u16>()
+        .map_err(|_| ConfigFileError::new(format!("port range `{value}` has invalid end")))?;
+    PortRange::new(start, end)
+        .ok_or_else(|| ConfigFileError::new(format!("port range `{value}` has start after end")))
+}
+
+fn resolve_config_path(base_dir: Option<&Path>, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        base_dir.unwrap_or_else(|| Path::new(".")).join(path)
     }
 }
 
@@ -445,6 +764,73 @@ remote_endpoint = "https://telemetry.example.test/rustbox"
             observability.remote_endpoint,
             Some("https://telemetry.example.test/rustbox".to_string())
         );
+    }
+
+    #[test]
+    fn parses_route_rules_and_inline_rule_sets() {
+        let config = parse_toml_str(
+            r#"
+schema_version = 1
+
+[[inbounds]]
+id = "http"
+type = "http-connect"
+listen = "127.0.0.1:18080"
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[outbounds]]
+id = "block"
+type = "block"
+
+[[rule_sets]]
+id = "ads"
+type = "inline"
+rules = [
+  { type = "rule", domain_keyword = ["ads"] },
+]
+
+[[routes]]
+type = "rule"
+inbound = ["http"]
+network = ["tcp"]
+domain_suffix = ["example.test"]
+ip_cidr = ["10.0.0.0/8"]
+port = [443]
+port_range = ["10000-10010"]
+rule_set = ["ads"]
+outbound = "block"
+
+[[routes]]
+type = "logical"
+mode = "or"
+outbound = "direct"
+rules = [
+  { type = "rule", domain = ["example.org"] },
+  { type = "rule", source_ip_cidr = ["127.0.0.0/8"] },
+]
+"#,
+        )
+        .expect("parse route config");
+
+        assert_eq!(config.source.route_rule_sets.len(), 1);
+        assert_eq!(config.source.routes.len(), 2);
+        assert!(matches!(
+            &config.source.routes[0],
+            RouteRuleConfig::Rule {
+                action: RouteActionConfig::Outbound(outbound),
+                ..
+            } if outbound == "block"
+        ));
+        assert!(matches!(
+            &config.source.routes[1],
+            RouteRuleConfig::Logical {
+                mode: LogicalModeConfig::Or,
+                ..
+            }
+        ));
     }
 
     #[test]

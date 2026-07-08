@@ -182,6 +182,23 @@ server = "ss.example.test:8388"
 method = "aes-128-gcm"
 password = "test-password"
 
+# Optional inline rule-set, referenced by ordered route rules.
+[[rule_sets]]
+id = "ads"
+type = "inline"
+rules = [
+  { type = "rule", domain_keyword = ["ads", "tracker"] },
+]
+
+[[routes]]
+type = "rule"
+inbound = ["http", "mixed"]
+network = ["tcp"]
+domain_suffix = ["example.test"]
+port = [443]
+rule_set = ["ads"]
+outbound = "block"
+
 [[routes]]
 type = "default"
 outbound = "direct"
@@ -191,6 +208,14 @@ Supported inbound `type` values are `http-connect`, `socks5`, and `mixed`. Suppo
 outbound `type` values are `direct`, `block`, `socks5`, `http`, and
 `shadowsocks`. The current runtime can instantiate `direct`, `socks5`, `http`,
 and `shadowsocks`; `block` compiles to a policy rejection.
+
+Route rules are evaluated in file order before the default route. Supported
+match fields are `inbound`, `network`, `domain`, `domain_suffix`,
+`domain_keyword`, `domain_regex`, `ip_cidr`, `source_ip_cidr`, `port`,
+`port_range`, `source_port`, `source_port_range`, `rule_set`, and `invert`.
+Rules can use `outbound = "..."` or `reject = "policy"`. `type = "logical"`
+supports `mode = "and"` / `"or"` with nested rules. Rule-sets can be inline or
+loaded from local TOML files with `[[rule_sets]] type = "local"`.
 
 ## FFI Compatibility
 
@@ -250,8 +275,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - mixed inbound over TCP that accepts HTTP proxy and SOCKS5 connections on one
   listener.
 - Direct TCP and UDP outbound through the host network capability.
-- Portable kernel flow submission, routing, metadata enrichment pipeline, and
-  stream relay.
+- Portable kernel flow submission, ordered rule routing, metadata enrichment
+  pipeline, and stream relay.
 - Staged configuration model: source, parsed, validated, compiled.
 - Structured observability through `ObservabilitySink`, with no-op, console,
   recording, metrics/query store, file, platform-bridge, and remote-telemetry
