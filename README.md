@@ -117,6 +117,9 @@ Clients can pass `authorization: Bearer <token>` metadata, or
 
 The app accepts TOML config files that are parsed by `rustbox-config-file` into
 the same format-neutral `SourceConfig` used by FFI and built-in defaults.
+The config pipeline is staged as Source -> Parsed -> Normalized -> Validated ->
+Compiled; endpoints, CIDRs, and port ranges are parsed into shared
+`rustbox-types` before validation.
 
 ```toml
 schema_version = 1

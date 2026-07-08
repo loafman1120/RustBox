@@ -12,6 +12,7 @@ rustbox-control = { path = "../../crates/control/rustbox-control" }
 rustbox-control-api = { path = "../../crates/control/rustbox-control-api" }
 rustbox-kernel = { path = "../../crates/kernel/rustbox-kernel" }
 rustbox-observability = { path = "../../crates/observability/rustbox-observability" }
+rustbox-platform-linux = { path = "../../crates/platform/rustbox-platform-linux" }
 rustbox-types = { path = "../../crates/foundation/rustbox-types" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
 

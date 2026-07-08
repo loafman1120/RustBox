@@ -59,6 +59,88 @@ server = "ss.example.test:8388"
 method = "aes-128-gcm"
 password = "test-password"
 
+# Group outbounds are parsed and compiled today. The current runtime uses the
+# configured default/first child as a static choice; active switching and
+# latency probing are future control-plane work.
+# [[outbounds]]
+# id = "select"
+# type = "selector"
+# outbounds = ["direct", "ss-out", "block"]
+# default = "direct"
+#
+# [[outbounds]]
+# id = "auto"
+# type = "urltest"
+# outbounds = ["direct", "ss-out"]
+# url = "https://www.gstatic.com/generate_204"
+# interval_seconds = 300
+# tolerance_ms = 50
+
+# VMess/VLESS/Trojan/AnyTLS are accepted by the config pipeline so GUI/FFI/file
+# frontends can converge on the shape before their data-plane modules land.
+# Starting a runtime with these outbounds currently returns a clear
+# "data plane is not implemented yet" composition error.
+# [[outbounds]]
+# id = "vmess-out"
+# type = "vmess"
+# server = "vmess.example.test:443"
+# uuid = "00000000-0000-0000-0000-000000000001"
+# security = "auto"
+# alter_id = 0
+# transport = "tcp"
+# tls = { enabled = true, server_name = "vmess.example.test", alpn = ["h2"] }
+#
+# [[outbounds]]
+# id = "vless-out"
+# type = "vless"
+# server = "vless.example.test:443"
+# uuid = "00000000-0000-0000-0000-000000000002"
+# transport = "tcp"
+# tls = { enabled = true, server_name = "vless.example.test" }
+#
+# [[outbounds]]
+# id = "trojan-out"
+# type = "trojan"
+# server = "trojan.example.test:443"
+# password = "test-password"
+# transport = "tcp"
+# tls = { enabled = true, server_name = "trojan.example.test" }
+#
+# [[outbounds]]
+# id = "anytls-out"
+# type = "anytls"
+# server = "anytls.example.test:443"
+# password = "test-password"
+# tls = { enabled = true, server_name = "anytls.example.test" }
+
+# Optional DNS plan. This is parsed and validated today; concrete DNS network
+# transports are the next adapter step.
+# [dns.cache]
+# enabled = true
+# max_entries = 1024
+# min_ttl_seconds = 0
+# max_ttl_seconds = 3600
+#
+# [dns.fake_ip]
+# enabled = true
+# ipv4_pool = "198.18.0.0/15"
+# ttl_seconds = 60
+#
+# [[dns.servers]]
+# id = "cf-doh"
+# protocol = "https"
+# endpoint = "cloudflare-dns.com:443"
+# outbound = "direct"
+#
+# [[dns.rules]]
+# action = "fake-ip"
+# domain_suffix = ["example.test"]
+# record_type = ["a"]
+#
+# [[dns.hijack]]
+# network = "udp"
+# endpoint = "127.0.0.1:53"
+
 # Inline rule-sets can be referenced by ordered route rules.
 # [[rule_sets]]
 # id = "ads"

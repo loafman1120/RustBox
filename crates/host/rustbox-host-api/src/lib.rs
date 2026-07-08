@@ -70,6 +70,22 @@ pub trait NetworkControl: Send + Sync {
     ) -> BoxFuture<'_, Result<NetworkLease, NetworkControlError>>;
 }
 
+/// 透明代理能力端口。平台适配器负责监听被 redirect/TPROXY/WFP 送来的连接，
+/// 并把连接的 original destination 一起交给 portable inbound。
+pub trait TransparentProxyProvider: Send + Sync {
+    fn bind_tcp(
+        &self,
+        request: TransparentTcpBind,
+    ) -> BoxFuture<'_, Result<Box<dyn TransparentStreamListener>, TransparentProxyError>>;
+}
+
+pub trait TransparentStreamListener: Send {
+    fn local_endpoint(&self) -> Option<Endpoint>;
+
+    fn accept(&mut self)
+    -> BoxFuture<'_, Result<AcceptedTransparentStream, TransparentProxyError>>;
+}
+
 /// 观测能力端口，核心只发结构化事件，不选择最终日志后端。
 pub trait ObservabilitySink: Send + Sync {
     fn emit(&self, event: Event) -> BoxFuture<'_, ()>;
@@ -98,6 +114,19 @@ pub struct TcpBind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UdpBind {
     pub listen: Endpoint,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransparentTcpBind {
+    pub listen: Endpoint,
+    pub mode: TransparentRedirectMode,
+    pub mark: Option<u32>,
+}
+
+pub struct AcceptedTransparentStream {
+    pub stream: Box<dyn ByteStream>,
+    pub peer: Endpoint,
+    pub original_destination: Endpoint,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -406,3 +435,4 @@ capability_error!(SpawnError);
 capability_error!(PacketDeviceError);
 capability_error!(NetworkControlError);
 capability_error!(ProcessLookupError);
+capability_error!(TransparentProxyError);

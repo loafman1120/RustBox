@@ -5,6 +5,8 @@
 
 use core::fmt;
 use core::num::NonZeroU64;
+use core::str::FromStr;
+use std::net::IpAddr;
 
 /// 可路由的主机标识，可以是域名，也可以是已经解析出的 IP。
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -24,6 +26,18 @@ impl fmt::Display for Host {
         match self {
             Self::Domain(domain) => f.write_str(domain),
             Self::Ip(ip) => write!(f, "{ip}"),
+        }
+    }
+}
+
+impl FromStr for Host {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.parse::<IpAddr>() {
+            Ok(IpAddr::V4(ip)) => Ok(Self::Ip(IpAddress::V4(ip.octets()))),
+            Ok(IpAddr::V6(ip)) => Ok(Self::Ip(IpAddress::V6(ip.octets()))),
+            Err(_) => Ok(Self::Domain(value.to_string())),
         }
     }
 }
@@ -113,6 +127,26 @@ impl fmt::Display for IpCidr {
     }
 }
 
+impl FromStr for IpCidr {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (address, prefix_len) = value
+            .split_once('/')
+            .ok_or_else(|| format!("CIDR `{value}` must include prefix length"))?;
+        let prefix_len = prefix_len
+            .parse::<u8>()
+            .map_err(|_| format!("CIDR `{value}` has invalid prefix length"))?;
+        let address = match address.parse::<IpAddr>() {
+            Ok(IpAddr::V4(ip)) => IpAddress::V4(ip.octets()),
+            Ok(IpAddr::V6(ip)) => IpAddress::V6(ip.octets()),
+            Err(_) => return Err(format!("CIDR `{value}` has invalid IP address")),
+        };
+        Self::new(address, prefix_len)
+            .ok_or_else(|| format!("CIDR `{value}` has invalid prefix length"))
+    }
+}
+
 /// Inclusive port range used by route rules.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct PortRange {
@@ -147,6 +181,27 @@ impl fmt::Display for PortRange {
     }
 }
 
+impl FromStr for PortRange {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if let Some((start, end)) = value.split_once('-') {
+            let start = start
+                .parse::<u16>()
+                .map_err(|_| format!("port range `{value}` has invalid start"))?;
+            let end = end
+                .parse::<u16>()
+                .map_err(|_| format!("port range `{value}` has invalid end"))?;
+            Self::new(start, end).ok_or_else(|| format!("port range `{value}` has start after end"))
+        } else {
+            value
+                .parse::<u16>()
+                .map(Self::single)
+                .map_err(|_| format!("port `{value}` is invalid"))
+        }
+    }
+}
+
 /// 网络端点，由主机和端口组成，是配置、路由、能力调用之间的通用地址。
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Endpoint {
@@ -174,6 +229,43 @@ impl fmt::Display for Endpoint {
             _ => write!(f, "{}:{}", self.host, self.port),
         }
     }
+}
+
+impl FromStr for Endpoint {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (host, port) = split_host_port(value)?;
+        let port = port
+            .parse::<u16>()
+            .map_err(|_| format!("endpoint `{value}` has invalid port"))?;
+        Ok(Self {
+            host: host.parse::<Host>()?,
+            port,
+        })
+    }
+}
+
+fn split_host_port(value: &str) -> Result<(&str, &str), String> {
+    if let Some(rest) = value.strip_prefix('[') {
+        let (host, rest) = rest
+            .split_once(']')
+            .ok_or_else(|| format!("endpoint `{value}` has invalid bracketed IPv6 host"))?;
+        let port = rest
+            .strip_prefix(':')
+            .ok_or_else(|| format!("endpoint `{value}` must include host and port"))?;
+        return Ok((host, port));
+    }
+
+    let (host, port) = value
+        .rsplit_once(':')
+        .ok_or_else(|| format!("endpoint `{value}` must include host and port"))?;
+    if host.contains(':') {
+        return Err(format!(
+            "endpoint `{value}` uses an IPv6 host and must wrap it in brackets"
+        ));
+    }
+    Ok((host, port))
 }
 
 /// RustBox 数据面当前处理的网络类别。
@@ -284,4 +376,47 @@ pub enum ErrorKind {
     Engine,
     Config,
     Platform,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::str::FromStr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn parses_endpoint_hosts_and_ports() {
+        let ipv4 = Endpoint::from_str("127.0.0.1:18080").expect("ipv4 endpoint");
+        assert_eq!(ipv4.port, 18080);
+        assert_eq!(
+            ipv4.host,
+            Host::Ip(IpAddress::V4(Ipv4Addr::LOCALHOST.octets()))
+        );
+
+        let ipv6 = Endpoint::from_str("[::1]:1080").expect("ipv6 endpoint");
+        assert_eq!(ipv6.port, 1080);
+        assert_eq!(
+            ipv6.host,
+            Host::Ip(IpAddress::V6(Ipv6Addr::LOCALHOST.octets()))
+        );
+
+        let domain = Endpoint::from_str("proxy.example.test:443").expect("domain endpoint");
+        assert_eq!(domain.host, Host::Domain("proxy.example.test".to_string()));
+    }
+
+    #[test]
+    fn parses_cidr_and_port_ranges() {
+        assert_eq!(
+            IpCidr::from_str("198.18.0.0/15").expect("cidr"),
+            IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 15).expect("cidr")
+        );
+        assert_eq!(
+            PortRange::from_str("443").expect("single"),
+            PortRange::single(443)
+        );
+        assert_eq!(
+            PortRange::from_str("1000-2000").expect("range"),
+            PortRange::new(1000, 2000).expect("range")
+        );
+    }
 }

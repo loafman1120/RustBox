@@ -40,7 +40,7 @@ Runtime modules receive compiled typed config only.
 The current `rustbox-config` crate already has the core shape:
 
 ```text
-SourceConfig -> ParsedConfig -> ValidatedConfig -> CompiledConfig
+SourceConfig -> ParsedConfig -> NormalizedConfig -> ValidatedConfig -> CompiledConfig
 ```
 
 The next step should be to make the input and ABI boundaries explicit instead
@@ -113,6 +113,19 @@ pub struct SourceConfig {
 ```
 
 This layer should use stable logical IDs such as `"http"` and `"direct"`.
+Inbound and outbound entries keep shared identity outside their protocol
+variant:
+
+```rust
+pub struct OutboundConfig {
+    pub id: String,
+    pub kind: OutboundConfigKind,
+}
+```
+
+That shape keeps ID handling, duplicate checks, and compiled ID assignment out
+of every protocol variant.
+
 Observability configuration belongs to the application/control layer unless it
 changes runtime graph construction. Sink choices such as console, file,
 platform-native logging, or remote telemetry should not be deserialized inside
@@ -239,12 +252,18 @@ File parsing should live outside `rustbox-config`:
 rustbox-config-file
     parse bytes/string
     decode TOML/JSON/YAML
+    parse user strings into portable foundation types
     reject unknown fields if strict mode is enabled
+    apply schema migration hooks before SourceConfig construction
     convert to SourceConfig
 ```
 
 Do not let protocol modules deserialize themselves from TOML/JSON. Module
 runtime config should be constructed by the config compiler.
+
+Current implementation note: endpoint, CIDR, and port-range string parsing
+belongs to `rustbox-types` via `FromStr`; `rustbox-config-file` uses serde DTOs
+to produce those strong types before conversion to `SourceConfig`.
 
 Current file observability fields:
 
@@ -441,9 +460,8 @@ Plugin ABI version   changes when external plugin contracts change
 
 Recommended implementation order:
 
-1. Add `NormalizedConfig` and structured `ConfigDiagnostic` to
-   `rustbox-config`.
-2. Add schema migration hooks for future `schema_version` values.
+1. Add structured `ConfigDiagnostic` to `rustbox-config`.
+2. Extend schema migration hooks when future `schema_version` values appear.
 3. Add FFI config handle APIs:
 
    ```text
@@ -463,6 +481,7 @@ Recommended implementation order:
 Current implementation:
 
 - Good: format-neutral `SourceConfig` exists.
+- Good: `ParsedConfig -> NormalizedConfig -> ValidatedConfig` is explicit.
 - Good: validation and compilation are separate.
 - Good: FFI uses opaque engine handles and does not expose Rust runtime types.
 - Good: reload has a compile-and-swap transaction model.
@@ -470,7 +489,8 @@ Current implementation:
 - Good: `rustbox-app --config path` starts from TOML.
 - Good: FFI can validate, create, and reload from UTF-8 TOML bytes without
   exposing Rust config structs.
-- Gap: schema migration is not implemented beyond accepting `schema_version = 1`.
+- Partial: schema migration has an explicit hook and currently accepts only
+  `schema_version = 1`.
 - Gap: diagnostics are single-message rather than structured lists.
 - Gap: FFI currently has convenience helpers for default HTTP CONNECT and
   SOCKS5 proxies, but no general config-handle API yet.

@@ -139,7 +139,8 @@ impl FfiEngineTable {
         }
 
         let parsed = ConfigCompiler::parse(managed.source.clone()).map_err(config_error)?;
-        let validated = ConfigCompiler::validate(parsed).map_err(config_error)?;
+        let normalized = ConfigCompiler::normalize(parsed).map_err(config_error)?;
+        let validated = ConfigCompiler::validate(normalized).map_err(config_error)?;
         let compiled = ConfigCompiler::compile(validated).map_err(config_error)?;
         let mut runtime = TokioComposition::new()
             .compose(compiled)
@@ -347,7 +348,8 @@ struct ActiveRuntime {
 
 fn compile_source(source: SourceConfig) -> Result<CompiledConfig, RustBoxFfiError> {
     let parsed = ConfigCompiler::parse(source).map_err(config_error)?;
-    let validated = ConfigCompiler::validate(parsed).map_err(config_error)?;
+    let normalized = ConfigCompiler::normalize(parsed).map_err(config_error)?;
+    let validated = ConfigCompiler::validate(normalized).map_err(config_error)?;
     ConfigCompiler::compile(validated).map_err(config_error)
 }
 

@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 regex = "1"
+rustbox-dns-core = { path = "../../modules/dns/rustbox-dns-core" }
+rustbox-host-api = { path = "../../host/rustbox-host-api" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 
 [lints]

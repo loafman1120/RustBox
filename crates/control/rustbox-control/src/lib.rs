@@ -142,11 +142,10 @@ mod tests {
     #[test]
     fn reload_command_creates_prepare_plan_without_mutating_live_generation() {
         let source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
-        let compiled = ConfigCompiler::compile(
-            ConfigCompiler::validate(ConfigCompiler::parse(source).expect("parse"))
-                .expect("validate"),
-        )
-        .expect("compile");
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let normalized = ConfigCompiler::normalize(parsed).expect("normalize");
+        let validated = ConfigCompiler::validate(normalized).expect("validate");
+        let compiled = ConfigCompiler::compile(validated).expect("compile");
         let mut state = ControlState::new(EngineSnapshot::created());
 
         state.apply_command(EngineCommand::Reload(compiled));

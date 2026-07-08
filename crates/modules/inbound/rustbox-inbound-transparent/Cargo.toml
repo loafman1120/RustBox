@@ -1,15 +1,16 @@
 [package]
-name = "rustbox-dns-core"
+name = "rustbox-inbound-transparent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 rustbox-host-api = { path = "../../../host/rustbox-host-api" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 
 [dev-dependencies]
-futures = "0.3"
+rustbox-io = { path = "../../../foundation/rustbox-io" }
 
 [lints]
 workspace = true

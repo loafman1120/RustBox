@@ -28,7 +28,8 @@ Metadata enrichment pipeline
         ↓
 Route table / router
         ↓
-Direct, HTTP CONNECT, Shadowsocks, or SOCKS5 outbound
+Direct, HTTP CONNECT, Shadowsocks, SOCKS5, selector/urltest static group,
+or explicit unsupported-protocol diagnostics
         ↓
 Tokio host network capability
         ↓
@@ -225,8 +226,9 @@ flowchart TB
 ## 4. Current Data Plane
 
 The implemented end-to-end data paths are HTTP CONNECT tunnels, ordinary
-absolute-form HTTP proxy requests, SOCKS5 CONNECT tunnels, and SOCKS5 UDP
-ASSOCIATE flows.
+absolute-form HTTP proxy requests, SOCKS5 CONNECT tunnels, SOCKS5 UDP
+ASSOCIATE flows, and Linux transparent TCP redirect when external redirect
+rules are installed.
 
 ```mermaid
 sequenceDiagram
@@ -283,7 +285,7 @@ flowchart LR
     COMPILED["CompiledConfig\ntyped runtime plan"]
     COMPOSED["ComposedRuntime\nengine + services"]
 
-    FILE --> SOURCE --> PARSED --> VALIDATED --> COMPILED --> COMPOSED
+    FILE --> SOURCE --> PARSED --> NORMALIZED --> VALIDATED --> COMPILED --> COMPOSED
 ```
 
 Current default source:
@@ -300,10 +302,16 @@ Current config-file source:
 ```text
 schema_version = 1
 [[inbounds]] type = "http-connect", "socks5", or "mixed"
-[[outbounds]] type = "direct"
+[[outbounds]] type = "direct", "block", "socks5", "http", "shadowsocks",
+              "selector", "urltest", "vmess", "vless", "trojan", or "anytls"
 [[routes]] type = "rule", "logical", "default", or "reject-default"
 [[rule_sets]] type = "inline" or "local"
 ```
+
+`rustbox-config` stores inbound and outbound identity as shared outer fields
+(`id + kind`) so validation, compilation, and composition do not duplicate ID
+matching for every protocol variant. File DTOs parse endpoint/CIDR/port-range
+strings into `rustbox-types` before building `SourceConfig`.
 
 The application does not manually wire module internals. It calls:
 
@@ -382,7 +390,8 @@ Current capabilities:
 | Entropy | `Entropy` | `TokioHost`, `TestHost` |
 | Task spawning | `TaskSpawner` | `TokioHost` |
 | Packet device | `PacketDeviceProvider` | Windows and Linux open real TUN devices through `tun-rs`; non-native targets return typed unsupported errors |
-| Network control | `NetworkControl` | Typed transaction contract exists; Windows and Linux add routes through `net-route`; address, MTU, rule, transparent proxy, and socket-protection operations return typed planned/unsupported errors |
+| Network control | `NetworkControl` | Typed transaction contract exists; Windows and Linux add routes through `net-route`; address, MTU, rule, automatic transparent proxy, and socket-protection operations return typed planned/unsupported errors |
+| Transparent proxy | `TransparentProxyProvider` | Linux TCP redirect listener recovers original destinations; TPROXY, UDP, and automatic nftables/iptables rule installation remain planned |
 | Process lookup | `ProcessLookup` | Windows and Linux boundaries return typed planned/unsupported errors |
 | Observability | `ObservabilitySink` | `NoopObservabilitySink`, `ConsoleObservabilitySink`, `RecordingObservabilitySink`, `CompositeObservabilitySink`, `ObservabilityStore`, `FileObservabilitySink`, `PlatformLogSink`, `RemoteTelemetrySink` |
 
@@ -500,6 +509,12 @@ Important current status:
 | SOCKS5 inbound username-password auth | Implemented |
 | Direct TCP outbound | Implemented |
 | Direct UDP outbound | Implemented |
+| selector outbound config | Parsed and compiled; current route decision uses the configured default child statically |
+| urltest outbound config | Parsed and compiled; current route decision uses the first child statically, active probing planned |
+| VMess outbound config | Parsed, validated, and compiled; data-plane module not implemented yet |
+| VLESS outbound config | Parsed, validated, and compiled; data-plane module not implemented yet |
+| Trojan outbound config | Parsed, validated, and compiled; data-plane module not implemented yet |
+| AnyTLS outbound config | Parsed, validated, and compiled; data-plane module not implemented yet; `anytls-rs` is the first crate to evaluate for the protocol core |
 | Generic stream relay | Implemented |
 | Structured observability events | Implemented |
 | Console log adapter | Implemented |
@@ -515,7 +530,8 @@ Important current status:
 | Route rule-set loading | Implemented for inline and local TOML rule-sets |
 | SOCKS5 BIND | Not implemented yet |
 | DNS resolver contract | Implemented |
-| DNS UDP/TCP/DoH/DoQ transports | Not implemented yet |
+| DNS config, DNS rules, cache, FakeIP, and hijack config model | Implemented as portable contracts and config pipeline |
+| DNS UDP/TCP/DoH/DoT/DoQ network transports | Adapter contracts exist; concrete network transports are not implemented yet |
 | Packet-to-flow stack | Boundary implemented, concrete stack planned |
 | TUN inbound | Not implemented yet |
 
@@ -604,16 +620,18 @@ rustbox-platform-linux
 These crates currently implement the first Windows and Linux platform
 capabilities. Packet devices are opened through `tun-rs`. Route additions are
 applied through `net-route`, with best-effort rollback if a multi-route
-transaction fails under a required rollback policy. Address, MTU, route-rule,
-transparent proxy, socket protection, and process lookup operations still return
-explicit typed planned or unsupported errors.
+transaction fails under a required rollback policy. Linux transparent TCP
+redirect can accept captured streams and recover original destinations through
+netfilter socket options. Address, MTU, route-rule, automatic transparent proxy
+rule installation, socket protection, TPROXY, UDP transparent proxy, and process
+lookup operations still return explicit typed planned or unsupported errors.
 
 | Capability | Windows status | Linux status |
 |---|---|---|
 | TCP/UDP through runtime | Supported by `TokioHost` | Supported by `TokioHost` on Linux targets |
 | Packet device | Supported on Windows through `tun-rs` / Wintun | Supported on Linux through `tun-rs`, unsupported elsewhere |
 | Route control | Limited: `AddRoute` through `net-route`; other operations planned | Limited: `AddRoute` through `net-route`; route rules and other operations planned |
-| Transparent proxy | Planned | Planned on Linux targets, unsupported elsewhere |
+| Transparent proxy | Planned | Limited: TCP redirect inbound with external rules |
 | Process lookup | Planned | Planned on Linux targets, unsupported elsewhere |
 
 The kernel does not infer platform support from `cfg(target_os)`.
@@ -686,7 +704,9 @@ The current implementation satisfies these architecture invariants:
 The following are intentionally not complete yet:
 
 - SOCKS5 BIND.
-- DNS UDP/TCP/TLS/HTTPS/QUIC transports.
+- Active selector switching and urltest latency probing.
+- Data-plane modules for VMess, VLESS, Trojan, and AnyTLS.
+- Concrete DNS UDP/TCP/TLS/HTTPS/QUIC transport adapters.
 - Concrete TUN inbound.
 - Concrete packet-to-flow network stack.
 - Transparent proxy inbound.

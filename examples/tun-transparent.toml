@@ -1,0 +1,34 @@
+schema_version = 1
+
+[observability]
+level = "debug"
+
+[[inbounds]]
+id = "transparent"
+type = "transparent"
+listen = "127.0.0.1:12345"
+network = "tcp"
+mode = "redirect"
+auto_rules = false
+
+# TUN configuration is parsed and compiled, but the current composition layer
+# still rejects it until a packet-to-flow stack is implemented.
+#
+# [[inbounds]]
+# id = "tun"
+# type = "tun"
+# interface_name = "rustbox0"
+# addresses = ["172.18.0.1/30"]
+# mtu = 1500
+# auto_route = true
+# strict_route = false
+# route_includes = ["0.0.0.0/0"]
+# route_excludes = ["127.0.0.0/8"]
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[routes]]
+type = "default"
+outbound = "direct"

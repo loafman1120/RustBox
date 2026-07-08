@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use rustbox_compose::TokioComposition;
 use rustbox_config_file::load_toml_file;
 use rustbox_control::{ControlState, EngineCommand, EngineSnapshot, EngineState};
@@ -17,14 +17,33 @@ use tokio::sync::{mpsc, oneshot};
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let control_api_config = control_api_config_from_cli(&cli)
+    let mode = runtime_mode_from_cli(&cli).unwrap_or_else(|err| err.exit());
+    let control_api_config = control_api_config_from_cli(&cli.control)
         .unwrap_or_else(|err| Cli::command().error(ErrorKind::ValueValidation, err).exit());
-    let (mut runtime, listen, observability_store) = match (cli.command, cli.config.clone()) {
-        (None, None) => {
+    let (mut runtime, listen, observability_store) = match mode {
+        RuntimeMode::ArchitectureSummary => {
             print_architecture_summary();
             return;
         }
-        (Some(CliCommand::HttpProxy), None) => {
+        RuntimeMode::PlatformCapabilities => {
+            print_platform_capabilities();
+            return;
+        }
+        RuntimeMode::CheckConfig(path) => {
+            let file_config = load_toml_file(&path).unwrap_or_else(|err| {
+                panic!("load config file `{}`: {}", path.display(), err.message)
+            });
+            let runtime = TokioComposition::new()
+                .compose_source(file_config.source)
+                .unwrap_or_else(|err| panic!("check config `{}`: {err:?}", path.display()));
+            println!(
+                "RustBox config OK: services={} outbounds={}",
+                runtime.service_count(),
+                runtime.engine().outbound_count()
+            );
+            return;
+        }
+        RuntimeMode::HttpProxy => {
             let observability = observability_from_cli();
             (
                 TokioComposition::default_http_proxy_with_observability(
@@ -36,7 +55,7 @@ async fn main() {
                 observability.store,
             )
         }
-        (Some(CliCommand::Socks5Proxy), None) => {
+        RuntimeMode::Socks5Proxy => {
             let observability = observability_from_cli();
             (
                 TokioComposition::default_socks5_proxy_with_observability(
@@ -48,7 +67,7 @@ async fn main() {
                 observability.store,
             )
         }
-        (None | Some(CliCommand::Run), Some(path)) => {
+        RuntimeMode::ConfigFile(path) => {
             // 文件配置先进入 config-file，再进入统一 SourceConfig -> CompiledConfig 流水线。
             let file_config = load_toml_file(&path).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", path.display(), err.message)
@@ -63,18 +82,6 @@ async fn main() {
                 observability.store,
             )
         }
-        (Some(CliCommand::Run), None) => Cli::command()
-            .error(
-                ErrorKind::MissingRequiredArgument,
-                "`run` requires --config <FILE>",
-            )
-            .exit(),
-        (Some(command), Some(_)) => Cli::command()
-            .error(
-                ErrorKind::ArgumentConflict,
-                format!("`{}` cannot be used with --config", command.as_str()),
-            )
-            .exit(),
     };
     runtime
         .start("rustbox-app")
@@ -150,14 +157,20 @@ struct Cli {
     #[arg(short, long, value_name = "FILE", global = true)]
     config: Option<PathBuf>,
 
+    #[command(flatten)]
+    control: ControlArgs,
+
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+}
+
+#[derive(Debug, Args)]
+struct ControlArgs {
     #[arg(long, value_name = "ADDR", global = true)]
     control_grpc: Option<SocketAddr>,
 
     #[arg(long, value_name = "TOKEN", global = true)]
     control_token: Option<String>,
-
-    #[command(subcommand)]
-    command: Option<CliCommand>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Subcommand)]
@@ -165,6 +178,10 @@ struct Cli {
 enum CliCommand {
     /// Start from a TOML configuration file.
     Run,
+    /// Validate and compose a TOML configuration without starting services.
+    CheckConfig,
+    /// Print detected platform capability support.
+    PlatformCapabilities,
     /// Start the default local HTTP CONNECT proxy.
     HttpProxy,
     /// Start the default local SOCKS5 proxy.
@@ -175,10 +192,22 @@ impl CliCommand {
     fn as_str(self) -> &'static str {
         match self {
             Self::Run => "run",
+            Self::CheckConfig => "check-config",
+            Self::PlatformCapabilities => "platform-capabilities",
             Self::HttpProxy => "http-proxy",
             Self::Socks5Proxy => "socks5-proxy",
         }
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum RuntimeMode {
+    ArchitectureSummary,
+    CheckConfig(PathBuf),
+    ConfigFile(PathBuf),
+    HttpProxy,
+    PlatformCapabilities,
+    Socks5Proxy,
 }
 
 struct RuntimeObservability {
@@ -186,22 +215,89 @@ struct RuntimeObservability {
     store: Arc<ObservabilityStore>,
 }
 
+fn runtime_mode_from_cli(cli: &Cli) -> Result<RuntimeMode, clap::Error> {
+    match cli.command {
+        Some(CliCommand::HttpProxy) => {
+            reject_config_for_command(cli, CliCommand::HttpProxy)?;
+            Ok(RuntimeMode::HttpProxy)
+        }
+        Some(CliCommand::Socks5Proxy) => {
+            reject_config_for_command(cli, CliCommand::Socks5Proxy)?;
+            Ok(RuntimeMode::Socks5Proxy)
+        }
+        Some(CliCommand::Run) => config_file_mode(cli),
+        Some(CliCommand::CheckConfig) => cli
+            .config
+            .clone()
+            .map(RuntimeMode::CheckConfig)
+            .ok_or_else(|| {
+                Cli::command().error(
+                    ErrorKind::MissingRequiredArgument,
+                    "`check-config` requires --config <FILE>",
+                )
+            }),
+        Some(CliCommand::PlatformCapabilities) => {
+            reject_config_for_command(cli, CliCommand::PlatformCapabilities)?;
+            Ok(RuntimeMode::PlatformCapabilities)
+        }
+        None => Ok(cli
+            .config
+            .clone()
+            .map(RuntimeMode::ConfigFile)
+            .unwrap_or(RuntimeMode::ArchitectureSummary)),
+    }
+}
+
+fn config_file_mode(cli: &Cli) -> Result<RuntimeMode, clap::Error> {
+    cli.config
+        .clone()
+        .map(RuntimeMode::ConfigFile)
+        .ok_or_else(|| {
+            Cli::command().error(
+                ErrorKind::MissingRequiredArgument,
+                "`run` requires --config <FILE>",
+            )
+        })
+}
+
+fn reject_config_for_command(cli: &Cli, command: CliCommand) -> Result<(), clap::Error> {
+    if cli.config.is_some() {
+        return Err(Cli::command().error(
+            ErrorKind::ArgumentConflict,
+            format!("`{}` cannot be used with --config", command.as_str()),
+        ));
+    }
+
+    Ok(())
+}
+
 fn print_architecture_summary() {
     println!("{}", rustbox_kernel::architecture_summary());
     println!("Run `rustbox-app http-proxy` to start the default local HTTP CONNECT proxy.");
     println!("Run `rustbox-app socks5-proxy` to start the default local SOCKS5 proxy.");
     println!("Run `rustbox-app --config rustbox.toml` to start from a config file.");
+    println!("Run `rustbox-app check-config --config rustbox.toml` to validate a config file.");
 }
 
-fn control_api_config_from_cli(cli: &Cli) -> Result<Option<ControlApiConfig>, String> {
-    if cli.control_grpc.is_none() && cli.control_token.is_some() {
+fn print_platform_capabilities() {
+    let linux = rustbox_platform_linux::LinuxPlatform::new().capability_matrix();
+    println!("Linux platform capabilities:");
+    println!("  tcp_udp: {:?}", linux.tcp_udp);
+    println!("  packet_device: {:?}", linux.packet_device);
+    println!("  route_control: {:?}", linux.route_control);
+    println!("  transparent_proxy: {:?}", linux.transparent_proxy);
+    println!("  process_lookup: {:?}", linux.process_lookup);
+}
+
+fn control_api_config_from_cli(args: &ControlArgs) -> Result<Option<ControlApiConfig>, String> {
+    if args.control_grpc.is_none() && args.control_token.is_some() {
         return Err("`--control-token` requires `--control-grpc <ADDR>`".to_string());
     }
 
-    let Some(listen) = cli.control_grpc else {
+    let Some(listen) = args.control_grpc else {
         return Ok(None);
     };
-    let auth = cli
+    let auth = args
         .control_token
         .clone()
         .or_else(|| std::env::var("RUSTBOX_CONTROL_TOKEN").ok())
@@ -307,10 +403,10 @@ mod tests {
         .expect("parse cli");
 
         assert_eq!(
-            cli.control_grpc,
+            cli.control.control_grpc,
             Some("127.0.0.1:19090".parse().expect("socket addr"))
         );
-        assert_eq!(cli.control_token, Some("secret".to_string()));
+        assert_eq!(cli.control.control_token, Some("secret".to_string()));
     }
 
     #[test]
@@ -318,8 +414,73 @@ mod tests {
         let cli = Cli::try_parse_from(["rustbox-app", "--control-token", "secret", "http-proxy"])
             .expect("parse cli");
 
-        let error = control_api_config_from_cli(&cli).expect_err("reject unused token");
+        let error = control_api_config_from_cli(&cli.control).expect_err("reject unused token");
 
         assert!(error.contains("--control-grpc"));
+    }
+
+    #[test]
+    fn maps_cli_to_runtime_modes() {
+        let summary = Cli::try_parse_from(["rustbox-app"]).expect("parse cli");
+        assert_eq!(
+            runtime_mode_from_cli(&summary).expect("runtime mode"),
+            RuntimeMode::ArchitectureSummary
+        );
+
+        let config = Cli::try_parse_from(["rustbox-app", "--config", "examples/rustbox.toml"])
+            .expect("parse cli");
+        assert_eq!(
+            runtime_mode_from_cli(&config).expect("runtime mode"),
+            RuntimeMode::ConfigFile(PathBuf::from("examples/rustbox.toml"))
+        );
+
+        let http = Cli::try_parse_from(["rustbox-app", "http-proxy"]).expect("parse cli");
+        assert_eq!(
+            runtime_mode_from_cli(&http).expect("runtime mode"),
+            RuntimeMode::HttpProxy
+        );
+
+        let check = Cli::try_parse_from([
+            "rustbox-app",
+            "check-config",
+            "--config",
+            "examples/rustbox.toml",
+        ])
+        .expect("parse cli");
+        assert_eq!(
+            runtime_mode_from_cli(&check).expect("runtime mode"),
+            RuntimeMode::CheckConfig(PathBuf::from("examples/rustbox.toml"))
+        );
+
+        let capabilities =
+            Cli::try_parse_from(["rustbox-app", "platform-capabilities"]).expect("parse cli");
+        assert_eq!(
+            runtime_mode_from_cli(&capabilities).expect("runtime mode"),
+            RuntimeMode::PlatformCapabilities
+        );
+    }
+
+    #[test]
+    fn rejects_config_with_builtin_proxy_command() {
+        let cli = Cli::try_parse_from([
+            "rustbox-app",
+            "http-proxy",
+            "--config",
+            "examples/rustbox.toml",
+        ])
+        .expect("parse cli");
+
+        let error = runtime_mode_from_cli(&cli).expect_err("reject conflicting mode");
+
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn rejects_run_without_config() {
+        let cli = Cli::try_parse_from(["rustbox-app", "run"]).expect("parse cli");
+
+        let error = runtime_mode_from_cli(&cli).expect_err("reject missing config");
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 }

@@ -4,14 +4,17 @@
 //! 只有组合根知道 TokioHost、inbound、outbound、内核和观测 sink 的装配关系。
 
 use rustbox_config::{
-    CompiledConfig, CompiledInbound, CompiledOutbound, CompiledRouteConditions,
+    CompiledConfig, CompiledInboundKind, CompiledOutboundKind, CompiledRouteConditions,
     CompiledRouteMatcher, CompiledRouteRule, ConfigCompiler, ConfigError, LogicalModeConfig,
     SourceConfig,
 };
-use rustbox_host_api::{NoopObservabilitySink, ObservabilitySink};
+use rustbox_host_api::{NoopObservabilitySink, ObservabilitySink, TransparentProxyProvider};
 use rustbox_inbound_http::{HttpInboundCredentials, HttpProxyInbound};
 use rustbox_inbound_socks5::{
     MixedInbound, MixedInboundCredentials, Socks5Inbound, Socks5InboundCredentials,
+};
+use rustbox_inbound_transparent::{
+    TransparentInboundConfig as RuntimeTransparentInboundConfig, TransparentProxyInbound,
 };
 use rustbox_kernel::{Engine, EngineError, FlowSink, Service, ServiceContext, ServiceError};
 use rustbox_outbound_direct::DirectOutbound;
@@ -87,7 +90,8 @@ impl TokioComposition {
     pub fn compose_source(self, source: SourceConfig) -> Result<ComposedRuntime, ComposeError> {
         // 组合根接受 SourceConfig，但仍然先走完整配置流水线。
         let parsed = ConfigCompiler::parse(source).map_err(ComposeError::Config)?;
-        let validated = ConfigCompiler::validate(parsed).map_err(ComposeError::Config)?;
+        let normalized = ConfigCompiler::normalize(parsed).map_err(ComposeError::Config)?;
+        let validated = ConfigCompiler::validate(normalized).map_err(ComposeError::Config)?;
         let compiled = ConfigCompiler::compile(validated).map_err(ComposeError::Config)?;
         self.compose(compiled)
     }
@@ -99,63 +103,58 @@ impl TokioComposition {
             Engine::builder(Box::new(router)).observability(self.observability.clone());
 
         for outbound in &compiled.outbounds {
-            match outbound {
-                CompiledOutbound::Direct { id, .. } => {
+            match &outbound.kind {
+                CompiledOutboundKind::Direct => {
                     builder = builder
                         .register_outbound(Box::new(
-                            DirectOutbound::new(*id, self.host.clone())
+                            DirectOutbound::new(outbound.id, self.host.clone())
                                 .with_observability(self.observability.clone()),
                         ))
                         .map_err(ComposeError::Engine)?;
                 }
-                CompiledOutbound::Socks5 {
-                    id,
+                CompiledOutboundKind::Socks5 {
                     server,
                     username,
                     password,
-                    ..
                 } => {
-                    let mut outbound = Socks5Outbound::new(*id, server.clone(), self.host.clone())
-                        .with_observability(self.observability.clone());
+                    let mut runtime_outbound =
+                        Socks5Outbound::new(outbound.id, server.clone(), self.host.clone())
+                            .with_observability(self.observability.clone());
                     if let (Some(username), Some(password)) = (username.clone(), password.clone()) {
-                        outbound =
-                            outbound.with_credentials(Socks5Credentials { username, password });
+                        runtime_outbound = runtime_outbound
+                            .with_credentials(Socks5Credentials { username, password });
                     }
                     builder = builder
-                        .register_outbound(Box::new(outbound))
+                        .register_outbound(Box::new(runtime_outbound))
                         .map_err(ComposeError::Engine)?;
                 }
-                CompiledOutbound::Block { .. } => {
+                CompiledOutboundKind::Block => {
                     // `block` outbound 在配置编译阶段会被路由规则转成 Reject 决策，
                     // 组合根不需要为它注册会发起 I/O 的数据面组件。
                 }
-                CompiledOutbound::Http {
-                    id,
+                CompiledOutboundKind::Http {
                     server,
                     username,
                     password,
-                    ..
                 } => {
-                    let mut outbound =
-                        HttpProxyOutbound::new(*id, server.clone(), self.host.clone())
+                    let mut runtime_outbound =
+                        HttpProxyOutbound::new(outbound.id, server.clone(), self.host.clone())
                             .with_observability(self.observability.clone());
                     if let (Some(username), Some(password)) = (username.clone(), password.clone()) {
-                        outbound =
-                            outbound.with_credentials(HttpProxyCredentials { username, password });
+                        runtime_outbound = runtime_outbound
+                            .with_credentials(HttpProxyCredentials { username, password });
                     }
                     builder = builder
-                        .register_outbound(Box::new(outbound))
+                        .register_outbound(Box::new(runtime_outbound))
                         .map_err(ComposeError::Engine)?;
                 }
-                CompiledOutbound::Shadowsocks {
-                    id,
+                CompiledOutboundKind::Shadowsocks {
                     server,
                     method,
                     password,
-                    ..
                 } => {
                     let outbound = ShadowsocksOutbound::new(
-                        *id,
+                        outbound.id,
                         server.clone(),
                         method,
                         password,
@@ -167,6 +166,33 @@ impl TokioComposition {
                         .register_outbound(Box::new(outbound))
                         .map_err(ComposeError::Engine)?;
                 }
+                CompiledOutboundKind::Selector { .. } | CompiledOutboundKind::UrlTest { .. } => {
+                    // Group outbounds are compiled to their current child route decision.
+                }
+                CompiledOutboundKind::Vmess { .. } => {
+                    return Err(ComposeError::Config(ConfigError::new(format!(
+                        "vmess outbound `{}` is parsed but its data plane is not implemented yet",
+                        outbound.logical_id
+                    ))));
+                }
+                CompiledOutboundKind::Vless { .. } => {
+                    return Err(ComposeError::Config(ConfigError::new(format!(
+                        "vless outbound `{}` is parsed but its data plane is not implemented yet",
+                        outbound.logical_id
+                    ))));
+                }
+                CompiledOutboundKind::Trojan { .. } => {
+                    return Err(ComposeError::Config(ConfigError::new(format!(
+                        "trojan outbound `{}` is parsed but its data plane is not implemented yet",
+                        outbound.logical_id
+                    ))));
+                }
+                CompiledOutboundKind::AnyTls { .. } => {
+                    return Err(ComposeError::Config(ConfigError::new(format!(
+                        "anytls outbound `{}` is parsed but its data plane is not implemented yet",
+                        outbound.logical_id
+                    ))));
+                }
             }
         }
 
@@ -175,16 +201,14 @@ impl TokioComposition {
         let mut services: Vec<Box<dyn Service>> = Vec::new();
 
         for inbound in compiled.inbounds {
-            match inbound {
-                CompiledInbound::Mixed {
-                    id,
+            match inbound.kind {
+                CompiledInboundKind::Mixed {
                     listen,
                     username,
                     password,
-                    ..
                 } => {
                     let mut inbound = MixedInbound::new(
-                        id,
+                        inbound.id,
                         listen,
                         self.host.clone(),
                         self.host.clone(),
@@ -197,15 +221,13 @@ impl TokioComposition {
                     }
                     services.push(Box::new(inbound));
                 }
-                CompiledInbound::HttpConnect {
-                    id,
+                CompiledInboundKind::HttpConnect {
                     listen,
                     username,
                     password,
-                    ..
                 } => {
                     let mut inbound = HttpProxyInbound::new(
-                        id,
+                        inbound.id,
                         listen,
                         self.host.clone(),
                         self.host.clone(),
@@ -218,15 +240,13 @@ impl TokioComposition {
                     }
                     services.push(Box::new(inbound));
                 }
-                CompiledInbound::Socks5 {
-                    id,
+                CompiledInboundKind::Socks5 {
                     listen,
                     username,
                     password,
-                    ..
                 } => {
                     let mut inbound = Socks5Inbound::new(
-                        id,
+                        inbound.id,
                         listen,
                         self.host.clone(),
                         self.host.clone(),
@@ -238,6 +258,28 @@ impl TokioComposition {
                             .with_credentials(Socks5InboundCredentials { username, password });
                     }
                     services.push(Box::new(inbound));
+                }
+                CompiledInboundKind::Transparent(config) => {
+                    let provider = transparent_proxy_provider()?;
+                    let inbound = TransparentProxyInbound::new(
+                        inbound.id,
+                        config.listen,
+                        provider,
+                        self.host.clone(),
+                        sink.clone(),
+                        RuntimeTransparentInboundConfig {
+                            mode: config.mode,
+                            mark: config.mark,
+                        },
+                    )
+                    .with_observability(self.observability.clone());
+                    services.push(Box::new(inbound));
+                }
+                CompiledInboundKind::Tun(_config) => {
+                    return Err(ComposeError::Config(ConfigError::new(format!(
+                        "tun inbound `{}` is parsed but packet-to-flow stack composition is not implemented yet",
+                        inbound.logical_id
+                    ))));
                 }
             }
         }
@@ -365,8 +407,28 @@ fn logical_mode(mode: &LogicalModeConfig) -> LogicalMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbox_config::{InboundConfig, OutboundConfig, RouteRuleConfig};
+    use rustbox_config::{
+        InboundConfig, InboundConfigKind, OutboundConfig, OutboundConfigKind, RouteRuleConfig,
+    };
     use rustbox_types::Endpoint;
+
+    fn inbound_http(id: &str) -> InboundConfig {
+        InboundConfig {
+            id: id.to_string(),
+            kind: InboundConfigKind::HttpConnect {
+                listen: Endpoint::localhost_v4(0),
+                username: None,
+                password: None,
+            },
+        }
+    }
+
+    fn outbound_direct(id: &str) -> OutboundConfig {
+        OutboundConfig {
+            id: id.to_string(),
+            kind: OutboundConfigKind::Direct,
+        }
+    }
 
     #[test]
     fn composes_default_http_proxy_runtime_graph() {
@@ -389,38 +451,39 @@ mod tests {
     #[test]
     fn composes_first_batch_proxy_outbounds() {
         let source = SourceConfig {
-            inbounds: vec![InboundConfig::HttpConnect {
-                id: "http".to_string(),
-                listen: Endpoint::localhost_v4(0),
-                username: None,
-                password: None,
-            }],
+            inbounds: vec![inbound_http("http")],
             outbounds: vec![
-                OutboundConfig::Direct {
-                    id: "direct".to_string(),
-                },
-                OutboundConfig::Block {
+                outbound_direct("direct"),
+                OutboundConfig {
                     id: "block".to_string(),
+                    kind: OutboundConfigKind::Block,
                 },
-                OutboundConfig::Socks5 {
+                OutboundConfig {
                     id: "socks".to_string(),
-                    server: Endpoint::localhost_v4(1080),
-                    username: None,
-                    password: None,
+                    kind: OutboundConfigKind::Socks5 {
+                        server: Endpoint::localhost_v4(1080),
+                        username: None,
+                        password: None,
+                    },
                 },
-                OutboundConfig::Http {
+                OutboundConfig {
                     id: "http-out".to_string(),
-                    server: Endpoint::localhost_v4(8080),
-                    username: None,
-                    password: None,
+                    kind: OutboundConfigKind::Http {
+                        server: Endpoint::localhost_v4(8080),
+                        username: None,
+                        password: None,
+                    },
                 },
-                OutboundConfig::Shadowsocks {
+                OutboundConfig {
                     id: "ss".to_string(),
-                    server: Endpoint::localhost_v4(8388),
-                    method: "aes-128-gcm".to_string(),
-                    password: "test-password".to_string(),
+                    kind: OutboundConfigKind::Shadowsocks {
+                        server: Endpoint::localhost_v4(8388),
+                        method: "aes-128-gcm".to_string(),
+                        password: "test-password".to_string(),
+                    },
                 },
             ],
+            dns: None,
             route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
@@ -438,15 +501,16 @@ mod tests {
     #[test]
     fn composes_mixed_inbound_runtime_graph() {
         let source = SourceConfig {
-            inbounds: vec![InboundConfig::Mixed {
+            inbounds: vec![InboundConfig {
                 id: "mixed".to_string(),
-                listen: Endpoint::localhost_v4(0),
-                username: Some("alice".to_string()),
-                password: Some("secret".to_string()),
+                kind: InboundConfigKind::Mixed {
+                    listen: Endpoint::localhost_v4(0),
+                    username: Some("alice".to_string()),
+                    password: Some("secret".to_string()),
+                },
             }],
-            outbounds: vec![OutboundConfig::Direct {
-                id: "direct".to_string(),
-            }],
+            outbounds: vec![outbound_direct("direct")],
+            dns: None,
             route_rule_sets: Vec::new(),
             routes: vec![RouteRuleConfig::Default {
                 outbound: "direct".to_string(),
@@ -460,4 +524,112 @@ mod tests {
         assert_eq!(runtime.engine().outbound_count(), 1);
         assert_eq!(runtime.service_count(), 1);
     }
+
+    #[test]
+    fn composes_selector_as_static_child_route() {
+        let source = SourceConfig {
+            inbounds: vec![inbound_http("http")],
+            outbounds: vec![
+                outbound_direct("direct"),
+                OutboundConfig {
+                    id: "select".to_string(),
+                    kind: OutboundConfigKind::Selector {
+                        outbounds: vec!["direct".to_string()],
+                        default: Some("direct".to_string()),
+                    },
+                },
+            ],
+            dns: None,
+            route_rule_sets: Vec::new(),
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "select".to_string(),
+            }],
+        };
+
+        let runtime = TokioComposition::new()
+            .compose_source(source)
+            .expect("compose selector");
+
+        assert_eq!(runtime.engine().outbound_count(), 1);
+        assert_eq!(runtime.service_count(), 1);
+    }
+
+    #[test]
+    fn rejects_unimplemented_anytls_data_plane_at_composition() {
+        let source = SourceConfig {
+            inbounds: vec![inbound_http("http")],
+            outbounds: vec![OutboundConfig {
+                id: "anytls".to_string(),
+                kind: OutboundConfigKind::AnyTls {
+                    server: Endpoint::localhost_v4(443),
+                    password: "secret".to_string(),
+                    tls: None,
+                },
+            }],
+            dns: None,
+            route_rule_sets: Vec::new(),
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "anytls".to_string(),
+            }],
+        };
+
+        let error = match TokioComposition::new().compose_source(source) {
+            Ok(_) => panic!("expected unimplemented data plane to be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            ComposeError::Config(ConfigError { message }) if message.contains("anytls outbound `anytls`")
+        ));
+    }
+
+    #[test]
+    fn rejects_tun_inbound_until_packet_stack_is_composed() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig {
+                id: "tun".to_string(),
+                kind: InboundConfigKind::Tun(rustbox_config::TunInboundConfig {
+                    interface_name: Some("rustbox0".to_string()),
+                    addresses: vec![
+                        rustbox_types::IpCidr::new(
+                            rustbox_types::IpAddress::V4([172, 18, 0, 1]),
+                            30,
+                        )
+                        .expect("cidr"),
+                    ],
+                    mtu: Some(1500),
+                    route_mode: rustbox_config::RouteMode::Auto,
+                    dns_mode: rustbox_config::TunDnsMode::None,
+                    auto_route: true,
+                    strict_route: false,
+                    route_includes: Vec::new(),
+                    route_excludes: Vec::new(),
+                    dns_hijack: Vec::new(),
+                    platform_http_proxy: false,
+                    auto_redirect: false,
+                }),
+            }],
+            outbounds: vec![outbound_direct("direct")],
+            dns: None,
+            route_rule_sets: Vec::new(),
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "direct".to_string(),
+            }],
+        };
+
+        let error = match TokioComposition::new().compose_source(source) {
+            Ok(_) => panic!("expected tun inbound to be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            ComposeError::Config(ConfigError { message }) if message.contains("packet-to-flow stack")
+        ));
+    }
+}
+
+fn transparent_proxy_provider() -> Result<Arc<dyn TransparentProxyProvider>, ComposeError> {
+    Ok(Arc::new(rustbox_platform_linux::LinuxPlatform::new()))
 }

@@ -4,14 +4,23 @@
 //! `rustbox-config` 模型。运行时模块和内核不依赖文件解析。
 
 use rustbox_config::{
-    InboundConfig, LogicalModeConfig, OutboundConfig, RouteActionConfig, RouteMatchConfig,
-    RouteMatcherConfig, RouteRuleConfig, RouteRuleSetConfig, SourceConfig,
+    DnsCacheConfig, DnsConfig, DnsHijackTarget, DnsRecordType, DnsRuleAction, DnsRuleConfig,
+    DnsRuleMatcher, DnsServerConfig, DnsServerProtocol, FakeIpConfig, InboundConfig,
+    InboundConfigKind, LogicalModeConfig, OutboundConfig, OutboundConfigKind, OutboundTlsConfig,
+    RouteActionConfig, RouteMatchConfig, RouteMatcherConfig, RouteMode, RouteRuleConfig,
+    RouteRuleSetConfig, SourceConfig, TransparentInboundConfig, TransparentNetwork,
+    TransparentRedirectMode, TunDnsMode, TunInboundConfig,
 };
-use rustbox_types::{Endpoint, Host, IpAddress, IpCidr, Network, PortRange, RejectReason};
+use rustbox_types::{Endpoint, IpCidr, Network, PortRange, RejectReason};
 use serde::Deserialize;
+use serde_with::{DisplayFromStr, serde_as};
 use std::fs;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+
+mod error;
+mod migration;
+
+pub use error::ConfigFileError;
 
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
@@ -29,19 +38,6 @@ pub struct FileObservabilityConfig {
     pub file: Option<String>,
     pub platform: Option<bool>,
     pub remote_endpoint: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConfigFileError {
-    pub message: String,
-}
-
-impl ConfigFileError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
 }
 
 /// 从磁盘读取 TOML 文件并解析为统一配置模型。
@@ -75,6 +71,7 @@ struct TomlConfigDocument {
     inbounds: Vec<TomlInboundConfig>,
     #[serde(default)]
     outbounds: Vec<TomlOutboundConfig>,
+    dns: Option<TomlDnsConfig>,
     #[serde(default)]
     rule_sets: Vec<TomlRouteRuleSetConfig>,
     #[serde(default)]
@@ -84,12 +81,7 @@ struct TomlConfigDocument {
 impl TomlConfigDocument {
     fn into_file_config(self, base_dir: Option<&Path>) -> Result<FileConfig, ConfigFileError> {
         // 文件格式版本在进入 SourceConfig 前校验，避免运行时理解历史格式。
-        if self.schema_version != SUPPORTED_SCHEMA_VERSION {
-            return Err(ConfigFileError::new(format!(
-                "unsupported config schema_version `{}`",
-                self.schema_version
-            )));
-        }
+        migration::accept_schema_version(self.schema_version)?;
 
         let inbounds = self
             .inbounds
@@ -116,6 +108,7 @@ impl TomlConfigDocument {
             source: SourceConfig {
                 inbounds,
                 outbounds,
+                dns: self.dns.map(TomlDnsConfig::into_source).transpose()?,
                 route_rule_sets,
                 routes,
             },
@@ -140,26 +133,66 @@ struct TomlObservabilityConfig {
     remote_endpoint: Option<String>,
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlInboundConfig {
     Mixed {
         id: String,
-        listen: String,
+        #[serde_as(as = "DisplayFromStr")]
+        listen: Endpoint,
         username: Option<String>,
         password: Option<String>,
     },
     HttpConnect {
         id: String,
-        listen: String,
+        #[serde_as(as = "DisplayFromStr")]
+        listen: Endpoint,
         username: Option<String>,
         password: Option<String>,
     },
     Socks5 {
         id: String,
-        listen: String,
+        #[serde_as(as = "DisplayFromStr")]
+        listen: Endpoint,
         username: Option<String>,
         password: Option<String>,
+    },
+    Tun {
+        id: String,
+        interface_name: Option<String>,
+        #[serde(default)]
+        #[serde_as(as = "Vec<DisplayFromStr>")]
+        addresses: Vec<IpCidr>,
+        mtu: Option<u16>,
+        #[serde(default)]
+        auto_route: bool,
+        #[serde(default)]
+        strict_route: bool,
+        #[serde(default)]
+        #[serde_as(as = "Vec<DisplayFromStr>")]
+        route_includes: Vec<IpCidr>,
+        #[serde(default)]
+        #[serde_as(as = "Vec<DisplayFromStr>")]
+        route_excludes: Vec<IpCidr>,
+        #[serde(default)]
+        dns_hijack: Vec<TomlDnsHijackConfig>,
+        #[serde(default)]
+        platform_http_proxy: bool,
+        #[serde(default)]
+        auto_redirect: bool,
+    },
+    Transparent {
+        id: String,
+        #[serde_as(as = "DisplayFromStr")]
+        listen: Endpoint,
+        #[serde(default = "default_transparent_network")]
+        network: TomlTransparentNetwork,
+        #[serde(default = "default_transparent_mode")]
+        mode: TomlTransparentMode,
+        #[serde(default)]
+        auto_rules: bool,
+        mark: Option<u32>,
     },
 }
 
@@ -171,38 +204,98 @@ impl TomlInboundConfig {
                 listen,
                 username,
                 password,
-            } => Ok(InboundConfig::Mixed {
+            } => Ok(InboundConfig {
                 id,
-                listen: parse_endpoint(&listen)?,
-                username,
-                password,
+                kind: InboundConfigKind::Mixed {
+                    listen,
+                    username,
+                    password,
+                },
             }),
             Self::HttpConnect {
                 id,
                 listen,
                 username,
                 password,
-            } => Ok(InboundConfig::HttpConnect {
+            } => Ok(InboundConfig {
                 id,
-                listen: parse_endpoint(&listen)?,
-                username,
-                password,
+                kind: InboundConfigKind::HttpConnect {
+                    listen,
+                    username,
+                    password,
+                },
             }),
             Self::Socks5 {
                 id,
                 listen,
                 username,
                 password,
-            } => Ok(InboundConfig::Socks5 {
+            } => Ok(InboundConfig {
                 id,
-                listen: parse_endpoint(&listen)?,
-                username,
-                password,
+                kind: InboundConfigKind::Socks5 {
+                    listen,
+                    username,
+                    password,
+                },
+            }),
+            Self::Tun {
+                id,
+                interface_name,
+                addresses,
+                mtu,
+                auto_route,
+                strict_route,
+                route_includes,
+                route_excludes,
+                dns_hijack,
+                platform_http_proxy,
+                auto_redirect,
+            } => Ok(InboundConfig {
+                id,
+                kind: InboundConfigKind::Tun(TunInboundConfig {
+                    interface_name,
+                    addresses,
+                    mtu,
+                    route_mode: route_mode(auto_route, strict_route),
+                    dns_mode: if dns_hijack.is_empty() {
+                        TunDnsMode::None
+                    } else {
+                        TunDnsMode::Hijack
+                    },
+                    auto_route,
+                    strict_route,
+                    route_includes,
+                    route_excludes,
+                    dns_hijack: dns_hijack
+                        .into_iter()
+                        .map(TomlDnsHijackConfig::into_source)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    platform_http_proxy,
+                    auto_redirect,
+                }),
+            }),
+            Self::Transparent {
+                id,
+                listen,
+                network,
+                mode,
+                auto_rules,
+                mark,
+            } => Ok(InboundConfig {
+                id,
+                kind: InboundConfigKind::Transparent(TransparentInboundConfig {
+                    listen,
+                    network: network.into(),
+                    mode: mode.into(),
+                    auto_rules,
+                    mark,
+                }),
             }),
         }
     }
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlOutboundConfig {
@@ -214,63 +307,473 @@ enum TomlOutboundConfig {
     },
     Socks5 {
         id: String,
-        server: String,
+        #[serde_as(as = "DisplayFromStr")]
+        server: Endpoint,
         username: Option<String>,
         password: Option<String>,
     },
     Http {
         id: String,
-        server: String,
+        #[serde_as(as = "DisplayFromStr")]
+        server: Endpoint,
         username: Option<String>,
         password: Option<String>,
     },
     Shadowsocks {
         id: String,
-        server: String,
+        #[serde_as(as = "DisplayFromStr")]
+        server: Endpoint,
         method: String,
         password: String,
+    },
+    Selector {
+        id: String,
+        outbounds: Vec<String>,
+        default: Option<String>,
+    },
+    Urltest {
+        id: String,
+        outbounds: Vec<String>,
+        #[serde(default = "default_urltest_url")]
+        url: String,
+        #[serde(default = "default_urltest_interval_seconds")]
+        interval_seconds: u64,
+        #[serde(default)]
+        tolerance_ms: u16,
+    },
+    Vmess {
+        id: String,
+        #[serde_as(as = "DisplayFromStr")]
+        server: Endpoint,
+        uuid: String,
+        security: Option<String>,
+        alter_id: Option<u16>,
+        tls: Option<TomlOutboundTlsConfig>,
+        transport: Option<String>,
+    },
+    Vless {
+        id: String,
+        #[serde_as(as = "DisplayFromStr")]
+        server: Endpoint,
+        uuid: String,
+        flow: Option<String>,
+        tls: Option<TomlOutboundTlsConfig>,
+        transport: Option<String>,
+    },
+    Trojan {
+        id: String,
+        #[serde_as(as = "DisplayFromStr")]
+        server: Endpoint,
+        password: String,
+        tls: Option<TomlOutboundTlsConfig>,
+        transport: Option<String>,
+    },
+    Anytls {
+        id: String,
+        #[serde_as(as = "DisplayFromStr")]
+        server: Endpoint,
+        password: String,
+        tls: Option<TomlOutboundTlsConfig>,
     },
 }
 
 impl TomlOutboundConfig {
     fn into_source(self) -> Result<OutboundConfig, ConfigFileError> {
         match self {
-            Self::Direct { id } => Ok(OutboundConfig::Direct { id }),
-            Self::Block { id } => Ok(OutboundConfig::Block { id }),
+            Self::Direct { id } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::Direct,
+            }),
+            Self::Block { id } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::Block,
+            }),
             Self::Socks5 {
                 id,
                 server,
                 username,
                 password,
-            } => Ok(OutboundConfig::Socks5 {
+            } => Ok(OutboundConfig {
                 id,
-                server: parse_endpoint(&server)?,
-                username,
-                password,
+                kind: OutboundConfigKind::Socks5 {
+                    server,
+                    username,
+                    password,
+                },
             }),
             Self::Http {
                 id,
                 server,
                 username,
                 password,
-            } => Ok(OutboundConfig::Http {
+            } => Ok(OutboundConfig {
                 id,
-                server: parse_endpoint(&server)?,
-                username,
-                password,
+                kind: OutboundConfigKind::Http {
+                    server,
+                    username,
+                    password,
+                },
             }),
             Self::Shadowsocks {
                 id,
                 server,
                 method,
                 password,
-            } => Ok(OutboundConfig::Shadowsocks {
+            } => Ok(OutboundConfig {
                 id,
-                server: parse_endpoint(&server)?,
-                method,
+                kind: OutboundConfigKind::Shadowsocks {
+                    server,
+                    method,
+                    password,
+                },
+            }),
+            Self::Selector {
+                id,
+                outbounds,
+                default,
+            } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::Selector { outbounds, default },
+            }),
+            Self::Urltest {
+                id,
+                outbounds,
+                url,
+                interval_seconds,
+                tolerance_ms,
+            } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::UrlTest {
+                    outbounds,
+                    url,
+                    interval_seconds,
+                    tolerance_ms,
+                },
+            }),
+            Self::Vmess {
+                id,
+                server,
+                uuid,
+                security,
+                alter_id,
+                tls,
+                transport,
+            } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::Vmess {
+                    server,
+                    uuid,
+                    security,
+                    alter_id,
+                    tls: tls.map(Into::into),
+                    transport,
+                },
+            }),
+            Self::Vless {
+                id,
+                server,
+                uuid,
+                flow,
+                tls,
+                transport,
+            } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::Vless {
+                    server,
+                    uuid,
+                    flow,
+                    tls: tls.map(Into::into),
+                    transport,
+                },
+            }),
+            Self::Trojan {
+                id,
+                server,
                 password,
+                tls,
+                transport,
+            } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::Trojan {
+                    server,
+                    password,
+                    tls: tls.map(Into::into),
+                    transport,
+                },
+            }),
+            Self::Anytls {
+                id,
+                server,
+                password,
+                tls,
+            } => Ok(OutboundConfig {
+                id,
+                kind: OutboundConfigKind::AnyTls {
+                    server,
+                    password,
+                    tls: tls.map(Into::into),
+                },
             }),
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlOutboundTlsConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    server_name: Option<String>,
+    #[serde(default)]
+    insecure: bool,
+    #[serde(default)]
+    alpn: Vec<String>,
+}
+
+impl From<TomlOutboundTlsConfig> for OutboundTlsConfig {
+    fn from(value: TomlOutboundTlsConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            server_name: value.server_name,
+            insecure: value.insecure,
+            alpn: value.alpn,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlDnsConfig {
+    #[serde(default)]
+    servers: Vec<TomlDnsServerConfig>,
+    #[serde(default)]
+    rules: Vec<TomlDnsRuleConfig>,
+    final_server: Option<String>,
+    cache: Option<TomlDnsCacheConfig>,
+    fake_ip: Option<TomlFakeIpConfig>,
+    #[serde(default)]
+    hijack: Vec<TomlDnsHijackConfig>,
+}
+
+impl TomlDnsConfig {
+    fn into_source(self) -> Result<DnsConfig, ConfigFileError> {
+        Ok(DnsConfig {
+            servers: self
+                .servers
+                .into_iter()
+                .map(TomlDnsServerConfig::into_source)
+                .collect::<Result<Vec<_>, _>>()?,
+            rules: self
+                .rules
+                .into_iter()
+                .map(TomlDnsRuleConfig::into_source)
+                .collect::<Result<Vec<_>, _>>()?,
+            final_server: self.final_server,
+            cache: self.cache.map(Into::into).unwrap_or_default(),
+            fake_ip: self
+                .fake_ip
+                .map(TomlFakeIpConfig::into_source)
+                .transpose()?,
+            hijack: self
+                .hijack
+                .into_iter()
+                .map(TomlDnsHijackConfig::into_source)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlDnsServerConfig {
+    id: String,
+    protocol: TomlDnsServerProtocol,
+    #[serde_as(as = "DisplayFromStr")]
+    endpoint: Endpoint,
+    outbound: Option<String>,
+}
+
+impl TomlDnsServerConfig {
+    fn into_source(self) -> Result<DnsServerConfig, ConfigFileError> {
+        Ok(DnsServerConfig {
+            id: self.id,
+            protocol: self.protocol.into(),
+            endpoint: self.endpoint,
+            outbound: self.outbound,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlDnsServerProtocol {
+    Udp,
+    Tcp,
+    Tls,
+    Https,
+    Quic,
+}
+
+impl From<TomlDnsServerProtocol> for DnsServerProtocol {
+    fn from(value: TomlDnsServerProtocol) -> Self {
+        match value {
+            TomlDnsServerProtocol::Udp => Self::Udp,
+            TomlDnsServerProtocol::Tcp => Self::Tcp,
+            TomlDnsServerProtocol::Tls => Self::Tls,
+            TomlDnsServerProtocol::Https => Self::Https,
+            TomlDnsServerProtocol::Quic => Self::Quic,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlDnsRuleConfig {
+    action: TomlDnsRuleAction,
+    server: Option<String>,
+    #[serde(flatten)]
+    matcher: TomlDnsRuleMatcher,
+}
+
+impl TomlDnsRuleConfig {
+    fn into_source(self) -> Result<DnsRuleConfig, ConfigFileError> {
+        let action = match self.action {
+            TomlDnsRuleAction::Server => DnsRuleAction::Server(self.server.ok_or_else(|| {
+                ConfigFileError::new("dns rule with action = \"server\" must set server")
+            })?),
+            TomlDnsRuleAction::FakeIp => {
+                if self.server.is_some() {
+                    return Err(ConfigFileError::new("dns fake-ip rule must not set server"));
+                }
+                DnsRuleAction::FakeIp
+            }
+            TomlDnsRuleAction::Reject => {
+                if self.server.is_some() {
+                    return Err(ConfigFileError::new("dns reject rule must not set server"));
+                }
+                DnsRuleAction::Reject
+            }
+        };
+        Ok(DnsRuleConfig {
+            matcher: self.matcher.into_source(),
+            action,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlDnsRuleAction {
+    Server,
+    FakeIp,
+    Reject,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlDnsRuleMatcher {
+    #[serde(default)]
+    domain: Vec<String>,
+    #[serde(default)]
+    domain_suffix: Vec<String>,
+    #[serde(default)]
+    domain_keyword: Vec<String>,
+    #[serde(default)]
+    record_type: Vec<TomlDnsRecordType>,
+    #[serde(default)]
+    invert: bool,
+}
+
+impl TomlDnsRuleMatcher {
+    fn into_source(self) -> DnsRuleMatcher {
+        DnsRuleMatcher {
+            domains: self.domain,
+            domain_suffixes: self.domain_suffix,
+            domain_keywords: self.domain_keyword,
+            record_types: self.record_type.into_iter().map(Into::into).collect(),
+            invert: self.invert,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlDnsRecordType {
+    A,
+    Aaaa,
+}
+
+impl From<TomlDnsRecordType> for DnsRecordType {
+    fn from(value: TomlDnsRecordType) -> Self {
+        match value {
+            TomlDnsRecordType::A => Self::A,
+            TomlDnsRecordType::Aaaa => Self::Aaaa,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlDnsCacheConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_dns_cache_max_entries")]
+    max_entries: usize,
+    #[serde(default)]
+    min_ttl_seconds: u32,
+    #[serde(default = "default_dns_cache_max_ttl_seconds")]
+    max_ttl_seconds: u32,
+}
+
+impl From<TomlDnsCacheConfig> for DnsCacheConfig {
+    fn from(value: TomlDnsCacheConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            max_entries: value.max_entries,
+            min_ttl_seconds: value.min_ttl_seconds,
+            max_ttl_seconds: value.max_ttl_seconds,
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlFakeIpConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde_as(as = "DisplayFromStr")]
+    ipv4_pool: IpCidr,
+    #[serde(default = "default_fake_ip_ttl_seconds")]
+    ttl_seconds: u32,
+}
+
+impl TomlFakeIpConfig {
+    fn into_source(self) -> Result<FakeIpConfig, ConfigFileError> {
+        Ok(FakeIpConfig {
+            enabled: self.enabled,
+            ipv4_pool: self.ipv4_pool,
+            ttl_seconds: self.ttl_seconds,
+        })
+    }
+}
+
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlDnsHijackConfig {
+    #[serde_as(as = "DisplayFromStr")]
+    endpoint: Endpoint,
+    network: Option<TomlNetwork>,
+}
+
+impl TomlDnsHijackConfig {
+    fn into_source(self) -> Result<DnsHijackTarget, ConfigFileError> {
+        Ok(DnsHijackTarget {
+            network: self.network.map(Into::into),
+            endpoint: self.endpoint,
+        })
     }
 }
 
@@ -370,6 +873,7 @@ impl TomlRouteMatcherConfig {
     }
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TomlRouteMatchFields {
@@ -386,17 +890,21 @@ struct TomlRouteMatchFields {
     #[serde(default)]
     domain_regex: Vec<String>,
     #[serde(default)]
-    ip_cidr: Vec<String>,
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    ip_cidr: Vec<IpCidr>,
     #[serde(default)]
-    source_ip_cidr: Vec<String>,
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    source_ip_cidr: Vec<IpCidr>,
     #[serde(default)]
     port: Vec<u16>,
     #[serde(default)]
-    port_range: Vec<String>,
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    port_range: Vec<PortRange>,
     #[serde(default)]
     source_port: Vec<u16>,
     #[serde(default)]
-    source_port_range: Vec<String>,
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    source_port_range: Vec<PortRange>,
     #[serde(default)]
     rule_set: Vec<String>,
     #[serde(default)]
@@ -412,8 +920,8 @@ impl TomlRouteMatchFields {
             domain_suffix: self.domain_suffix,
             domain_keyword: self.domain_keyword,
             domain_regex: self.domain_regex,
-            ip_cidr: parse_cidrs(self.ip_cidr)?,
-            source_ip_cidr: parse_cidrs(self.source_ip_cidr)?,
+            ip_cidr: self.ip_cidr,
+            source_ip_cidr: self.source_ip_cidr,
             port: parse_port_ranges(self.port, self.port_range)?,
             source_port: parse_port_ranges(self.source_port, self.source_port_range)?,
             rule_set: self.rule_set,
@@ -434,6 +942,42 @@ impl From<TomlNetwork> for Network {
         match value {
             TomlNetwork::Tcp => Self::Tcp,
             TomlNetwork::Udp => Self::Udp,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlTransparentNetwork {
+    Tcp,
+    Udp,
+    TcpUdp,
+}
+
+impl From<TomlTransparentNetwork> for TransparentNetwork {
+    fn from(value: TomlTransparentNetwork) -> Self {
+        match value {
+            TomlTransparentNetwork::Tcp => Self::Tcp,
+            TomlTransparentNetwork::Udp => Self::Udp,
+            TomlTransparentNetwork::TcpUdp => Self::TcpUdp,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlTransparentMode {
+    Redirect,
+    Tproxy,
+    WfpRedirect,
+}
+
+impl From<TomlTransparentMode> for TransparentRedirectMode {
+    fn from(value: TomlTransparentMode) -> Self {
+        match value {
+            TomlTransparentMode::Redirect => Self::Redirect,
+            TomlTransparentMode::Tproxy => Self::Tproxy,
+            TomlTransparentMode::WfpRedirect => Self::WfpRedirect,
         }
     }
 }
@@ -550,56 +1094,13 @@ fn route_action(
     }
 }
 
-fn parse_cidrs(values: Vec<String>) -> Result<Vec<IpCidr>, ConfigFileError> {
-    values
-        .into_iter()
-        .map(|value| parse_cidr(&value))
-        .collect::<Result<Vec<_>, _>>()
-}
-
-fn parse_cidr(value: &str) -> Result<IpCidr, ConfigFileError> {
-    let (address, prefix_len) = value.split_once('/').ok_or_else(|| {
-        ConfigFileError::new(format!("CIDR `{value}` must include prefix length"))
-    })?;
-    let prefix_len = prefix_len
-        .parse::<u8>()
-        .map_err(|_| ConfigFileError::new(format!("CIDR `{value}` has invalid prefix length")))?;
-    let address = match address.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => IpAddress::V4(ip.octets()),
-        Ok(IpAddr::V6(ip)) => IpAddress::V6(ip.octets()),
-        Err(_) => {
-            return Err(ConfigFileError::new(format!(
-                "CIDR `{value}` has invalid IP address"
-            )));
-        }
-    };
-    IpCidr::new(address, prefix_len)
-        .ok_or_else(|| ConfigFileError::new(format!("CIDR `{value}` has invalid prefix length")))
-}
-
 fn parse_port_ranges(
     ports: Vec<u16>,
-    ranges: Vec<String>,
+    ranges: Vec<PortRange>,
 ) -> Result<Vec<PortRange>, ConfigFileError> {
     let mut parsed = ports.into_iter().map(PortRange::single).collect::<Vec<_>>();
-    for range in ranges {
-        parsed.push(parse_port_range(&range)?);
-    }
+    parsed.extend(ranges);
     Ok(parsed)
-}
-
-fn parse_port_range(value: &str) -> Result<PortRange, ConfigFileError> {
-    let (start, end) = value
-        .split_once('-')
-        .ok_or_else(|| ConfigFileError::new(format!("port range `{value}` must use start-end")))?;
-    let start = start
-        .parse::<u16>()
-        .map_err(|_| ConfigFileError::new(format!("port range `{value}` has invalid start")))?;
-    let end = end
-        .parse::<u16>()
-        .map_err(|_| ConfigFileError::new(format!("port range `{value}` has invalid end")))?;
-    PortRange::new(start, end)
-        .ok_or_else(|| ConfigFileError::new(format!("port range `{value}` has start after end")))
 }
 
 fn resolve_config_path(base_dir: Option<&Path>, path: &str) -> PathBuf {
@@ -611,42 +1112,54 @@ fn resolve_config_path(base_dir: Option<&Path>, path: &str) -> PathBuf {
     }
 }
 
-fn parse_endpoint(value: &str) -> Result<Endpoint, ConfigFileError> {
-    // 文件层负责把人类可读地址解析成基础层 Endpoint。
-    let (host, port) = split_host_port(value)?;
-    let port = port
-        .parse::<u16>()
-        .map_err(|_| ConfigFileError::new(format!("endpoint `{value}` has invalid port")))?;
-    Ok(Endpoint::new(parse_host(host), port))
+fn default_true() -> bool {
+    true
 }
 
-fn split_host_port(value: &str) -> Result<(&str, &str), ConfigFileError> {
-    if let Some(rest) = value.strip_prefix('[') {
-        let Some((host, port)) = rest.split_once("]:") else {
-            return Err(ConfigFileError::new(format!(
-                "endpoint `{value}` has invalid bracketed IPv6 form"
-            )));
-        };
-        return Ok((host, port));
-    }
-
-    value.rsplit_once(':').ok_or_else(|| {
-        ConfigFileError::new(format!("endpoint `{value}` must include host and port"))
-    })
+fn default_dns_cache_max_entries() -> usize {
+    DnsCacheConfig::default().max_entries
 }
 
-fn parse_host(value: &str) -> Host {
-    match value.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => Host::Ip(IpAddress::V4(ip.octets())),
-        Ok(IpAddr::V6(ip)) => Host::Ip(IpAddress::V6(ip.octets())),
-        Err(_) => Host::Domain(value.to_string()),
+fn default_dns_cache_max_ttl_seconds() -> u32 {
+    DnsCacheConfig::default().max_ttl_seconds
+}
+
+fn default_fake_ip_ttl_seconds() -> u32 {
+    60
+}
+
+fn default_urltest_url() -> String {
+    "https://www.gstatic.com/generate_204".to_string()
+}
+
+fn default_urltest_interval_seconds() -> u64 {
+    300
+}
+
+fn default_transparent_network() -> TomlTransparentNetwork {
+    TomlTransparentNetwork::Tcp
+}
+
+fn default_transparent_mode() -> TomlTransparentMode {
+    TomlTransparentMode::Redirect
+}
+
+fn route_mode(auto_route: bool, strict_route: bool) -> RouteMode {
+    if strict_route {
+        RouteMode::Strict
+    } else if auto_route {
+        RouteMode::Auto
+    } else {
+        RouteMode::Manual
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustbox_types::{Host, IpAddress};
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::str::FromStr;
 
     #[test]
     fn parses_http_and_socks5_proxy_config() {
@@ -701,6 +1214,53 @@ server = "ss.example.test:8388"
 method = "aes-128-gcm"
 password = "test-password"
 
+[[outbounds]]
+id = "select"
+type = "selector"
+outbounds = ["direct", "block"]
+default = "direct"
+
+[[outbounds]]
+id = "auto"
+type = "urltest"
+outbounds = ["direct", "block"]
+url = "https://www.gstatic.com/generate_204"
+interval_seconds = 300
+tolerance_ms = 50
+
+[[outbounds]]
+id = "vmess-out"
+type = "vmess"
+server = "vmess.example.test:443"
+uuid = "00000000-0000-0000-0000-000000000001"
+security = "auto"
+alter_id = 0
+transport = "tcp"
+tls = { enabled = true, server_name = "vmess.example.test", alpn = ["h2"] }
+
+[[outbounds]]
+id = "vless-out"
+type = "vless"
+server = "vless.example.test:443"
+uuid = "00000000-0000-0000-0000-000000000002"
+transport = "tcp"
+tls = { enabled = true, server_name = "vless.example.test" }
+
+[[outbounds]]
+id = "trojan-out"
+type = "trojan"
+server = "trojan.example.test:443"
+password = "test-password"
+transport = "tcp"
+tls = { enabled = true, server_name = "trojan.example.test" }
+
+[[outbounds]]
+id = "anytls-out"
+type = "anytls"
+server = "anytls.example.test:443"
+password = "test-password"
+tls = { enabled = true, server_name = "anytls.example.test" }
+
 [[routes]]
 type = "default"
 outbound = "direct"
@@ -709,27 +1269,39 @@ outbound = "direct"
         .expect("parse config");
 
         assert_eq!(config.source.inbounds.len(), 3);
-        assert_eq!(config.source.outbounds.len(), 5);
+        assert_eq!(config.source.outbounds.len(), 11);
         assert_eq!(config.source.routes.len(), 1);
         assert!(matches!(
-            &config.source.inbounds[2],
-            InboundConfig::Mixed {
+            &config.source.inbounds[2].kind,
+            InboundConfigKind::Mixed {
                 username: Some(username),
                 password: Some(password),
                 ..
             } if username == "alice" && password == "secret"
         ));
         assert!(matches!(
-            config.source.outbounds[2],
-            OutboundConfig::Block { .. }
+            &config.source.outbounds[2].kind,
+            OutboundConfigKind::Block
         ));
         assert!(matches!(
-            config.source.outbounds[3],
-            OutboundConfig::Http { .. }
+            &config.source.outbounds[3].kind,
+            OutboundConfigKind::Http { .. }
         ));
         assert!(matches!(
-            config.source.outbounds[4],
-            OutboundConfig::Shadowsocks { .. }
+            &config.source.outbounds[4].kind,
+            OutboundConfigKind::Shadowsocks { .. }
+        ));
+        assert!(matches!(
+            &config.source.outbounds[5].kind,
+            OutboundConfigKind::Selector { .. }
+        ));
+        assert!(matches!(
+            &config.source.outbounds[6].kind,
+            OutboundConfigKind::UrlTest { .. }
+        ));
+        assert!(matches!(
+            &config.source.outbounds[10].kind,
+            OutboundConfigKind::AnyTls { .. }
         ));
         assert_eq!(
             config.observability.map(|value| (
@@ -834,8 +1406,115 @@ rules = [
     }
 
     #[test]
+    fn parses_tun_and_transparent_inbounds() {
+        let config = parse_toml_str(
+            r#"
+schema_version = 1
+
+[[inbounds]]
+id = "tun"
+type = "tun"
+interface_name = "rustbox0"
+addresses = ["172.18.0.1/30"]
+mtu = 1500
+auto_route = true
+route_includes = ["0.0.0.0/0"]
+route_excludes = ["127.0.0.0/8"]
+
+[[inbounds]]
+id = "transparent"
+type = "transparent"
+listen = "127.0.0.1:12345"
+network = "tcp"
+mode = "redirect"
+auto_rules = false
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[routes]]
+type = "default"
+outbound = "direct"
+"#,
+        )
+        .expect("parse tun transparent config");
+
+        assert_eq!(config.source.inbounds.len(), 2);
+        assert!(matches!(
+            &config.source.inbounds[0].kind,
+            InboundConfigKind::Tun(value)
+                if value.interface_name.as_deref() == Some("rustbox0")
+                    && value.auto_route
+        ));
+        assert!(matches!(
+            &config.source.inbounds[1].kind,
+            InboundConfigKind::Transparent(value)
+                if value.listen == Endpoint::localhost_v4(12345)
+                    && value.network == TransparentNetwork::Tcp
+        ));
+    }
+
+    #[test]
+    fn parses_dns_config() {
+        let config = parse_toml_str(
+            r#"
+schema_version = 1
+
+[[inbounds]]
+id = "socks"
+type = "socks5"
+listen = "127.0.0.1:1080"
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[dns.cache]
+enabled = true
+max_entries = 256
+min_ttl_seconds = 5
+max_ttl_seconds = 300
+
+[dns.fake_ip]
+enabled = true
+ipv4_pool = "198.18.0.0/15"
+ttl_seconds = 60
+
+[[dns.servers]]
+id = "cf"
+protocol = "https"
+endpoint = "cloudflare-dns.com:443"
+outbound = "direct"
+
+[[dns.rules]]
+action = "fake-ip"
+domain_suffix = ["example.test"]
+record_type = ["a"]
+
+[[dns.hijack]]
+network = "udp"
+endpoint = "127.0.0.1:53"
+
+[[routes]]
+type = "default"
+outbound = "direct"
+"#,
+        )
+        .expect("parse dns config");
+
+        let dns = config.source.dns.expect("dns config");
+        assert_eq!(dns.servers.len(), 1);
+        assert_eq!(dns.servers[0].protocol, DnsServerProtocol::Https);
+        assert_eq!(dns.rules.len(), 1);
+        assert!(matches!(dns.rules[0].action, DnsRuleAction::FakeIp));
+        assert_eq!(dns.cache.max_entries, 256);
+        assert_eq!(dns.hijack.len(), 1);
+    }
+
+    #[test]
     fn parses_bracketed_ipv6_endpoint() {
-        let endpoint = parse_endpoint("[::1]:1080").expect("parse endpoint");
+        let endpoint = Endpoint::from_str("[::1]:1080").expect("parse endpoint");
 
         assert_eq!(endpoint.port, 1080);
         assert_eq!(
@@ -858,7 +1537,7 @@ schema_version = 2
 
     #[test]
     fn parses_ipv4_endpoint() {
-        let endpoint = parse_endpoint("127.0.0.1:18080").expect("parse endpoint");
+        let endpoint = Endpoint::from_str("127.0.0.1:18080").expect("parse endpoint");
 
         assert_eq!(endpoint.port, 18080);
         assert_eq!(

@@ -6,10 +6,13 @@
 
 #[cfg(target_os = "linux")]
 use net_route::{Handle as RouteHandle, Route};
+#[cfg(target_os = "linux")]
+use rustbox_host_api::{AcceptedTransparentStream, TransparentRedirectMode};
 use rustbox_host_api::{
     BoxFuture, ConnectionKey, NetworkControl, NetworkControlError, NetworkLease,
     NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceProvider, ProcessInfo,
-    ProcessLookup, ProcessLookupError,
+    ProcessLookup, ProcessLookupError, TransparentProxyError, TransparentProxyProvider,
+    TransparentStreamListener, TransparentTcpBind,
 };
 #[cfg(target_os = "linux")]
 use rustbox_host_api::{InterfaceRef, NetworkOperation, RollbackPolicy};
@@ -19,11 +22,19 @@ use rustbox_io::{IoError, IoErrorKind};
 #[cfg(target_os = "linux")]
 use rustbox_types::IpAddress;
 #[cfg(target_os = "linux")]
+use rustbox_types::{Endpoint, Host};
+#[cfg(target_os = "linux")]
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(target_os = "linux")]
 use std::pin::Pin;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::task::{Context, Poll};
+#[cfg(target_os = "linux")]
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+#[cfg(target_os = "linux")]
+use tokio::net::{TcpListener, TcpStream};
 #[cfg(target_os = "linux")]
 use tun_rs::{DeviceBuilder, Layer, SyncDevice};
 
@@ -79,6 +90,15 @@ impl ProcessLookup for LinuxPlatform {
     }
 }
 
+impl TransparentProxyProvider for LinuxPlatform {
+    fn bind_tcp(
+        &self,
+        request: TransparentTcpBind,
+    ) -> BoxFuture<'_, Result<Box<dyn TransparentStreamListener>, TransparentProxyError>> {
+        Box::pin(bind_linux_transparent_tcp(request))
+    }
+}
+
 /// Linux 能力矩阵，用于组合层在启动前给出早期诊断。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LinuxCapabilityMatrix {
@@ -103,7 +123,7 @@ fn linux_capability_matrix() -> LinuxCapabilityMatrix {
         tcp_udp: CapabilitySupport::Supported,
         packet_device: CapabilitySupport::Supported,
         route_control: CapabilitySupport::Limited,
-        transparent_proxy: CapabilitySupport::Planned,
+        transparent_proxy: CapabilitySupport::Limited,
         process_lookup: CapabilitySupport::Planned,
     }
 }
@@ -289,6 +309,169 @@ fn network_control_io_error(action: &str, err: std::io::Error) -> NetworkControl
     NetworkControlError::new(format!("{action} failed: {err}"))
 }
 
+async fn bind_linux_transparent_tcp(
+    request: TransparentTcpBind,
+) -> Result<Box<dyn TransparentStreamListener>, TransparentProxyError> {
+    #[cfg(target_os = "linux")]
+    {
+        if request.mode != TransparentRedirectMode::Redirect {
+            return Err(TransparentProxyError::new(format!(
+                "Linux transparent proxy currently supports redirect mode only; requested {:?}",
+                request.mode
+            )));
+        }
+        if request.mark.is_some() {
+            return Err(TransparentProxyError::new(
+                "Linux transparent redirect does not use socket mark; set mark only for tproxy",
+            ));
+        }
+
+        let addr = endpoint_to_socket_addr(&request.listen).map_err(TransparentProxyError::new)?;
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|err| TransparentProxyError::new(format!("bind transparent TCP: {err}")))?;
+        Ok(Box::new(LinuxTransparentTcpListener { inner: listener })
+            as Box<dyn TransparentStreamListener>)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(TransparentProxyError::new(format!(
+            "Linux transparent TCP is unavailable on this target; listen={}",
+            request.listen
+        )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxTransparentTcpListener {
+    inner: TcpListener,
+}
+
+#[cfg(target_os = "linux")]
+impl TransparentStreamListener for LinuxTransparentTcpListener {
+    fn local_endpoint(&self) -> Option<Endpoint> {
+        self.inner.local_addr().ok().map(socket_addr_to_endpoint)
+    }
+
+    fn accept(
+        &mut self,
+    ) -> BoxFuture<'_, Result<AcceptedTransparentStream, TransparentProxyError>> {
+        Box::pin(async move {
+            let (stream, peer) = self.inner.accept().await.map_err(|err| {
+                TransparentProxyError::new(format!("accept transparent TCP: {err}"))
+            })?;
+            let original_destination = original_destination(&stream)?;
+            Ok(AcceptedTransparentStream {
+                stream: Box::new(LinuxTransparentTcpStream { inner: stream }),
+                peer: socket_addr_to_endpoint(peer),
+                original_destination,
+            })
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxyError> {
+    match stream
+        .local_addr()
+        .map(|addr| addr.is_ipv4())
+        .unwrap_or(true)
+    {
+        true => {
+            let addr = nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::OriginalDst)
+                .map_err(|err| {
+                    TransparentProxyError::new(format!("read SO_ORIGINAL_DST: {err}"))
+                })?;
+            let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
+            Ok(Endpoint::new(
+                Host::Ip(IpAddress::V4(ip.octets())),
+                u16::from_be(addr.sin_port),
+            ))
+        }
+        false => {
+            let addr =
+                nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::Ip6tOriginalDst)
+                    .map_err(|err| {
+                        TransparentProxyError::new(format!("read IP6T_SO_ORIGINAL_DST: {err}"))
+                    })?;
+            let ip = Ipv6Addr::from(addr.sin6_addr.s6_addr);
+            Ok(Endpoint::new(
+                Host::Ip(IpAddress::V6(ip.octets())),
+                u16::from_be(addr.sin6_port),
+            ))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxTransparentTcpStream {
+    inner: TcpStream,
+}
+
+#[cfg(target_os = "linux")]
+impl rustbox_io::ByteStream for LinuxTransparentTcpStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, IoError>> {
+        let mut read_buf = ReadBuf::new(buf);
+        match Pin::new(&mut self.inner).poll_read(cx, &mut read_buf) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, IoError>> {
+        Pin::new(&mut self.inner)
+            .poll_write(cx, buf)
+            .map_err(io_error)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
+        Pin::new(&mut self.inner).poll_flush(cx).map_err(io_error)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
+        Pin::new(&mut self.inner)
+            .poll_shutdown(cx)
+            .map_err(io_error)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, String> {
+    match &endpoint.host {
+        Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
+        Host::Domain(domain) => Err(format!(
+            "cannot bind transparent listener to domain {domain}"
+        )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
+    let host = match addr.ip() {
+        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
+        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
+    };
+    Endpoint::new(host, addr.port())
+}
+
+#[cfg(target_os = "linux")]
+fn ip_to_std(ip: IpAddress) -> IpAddr {
+    match ip {
+        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
+        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn open_linux_packet_device(
     config: PacketDeviceConfig,
@@ -421,7 +604,7 @@ mod tests {
             assert_eq!(matrix.tcp_udp, CapabilitySupport::Supported);
             assert_eq!(matrix.packet_device, CapabilitySupport::Supported);
             assert_eq!(matrix.route_control, CapabilitySupport::Limited);
-            assert_eq!(matrix.transparent_proxy, CapabilitySupport::Planned);
+            assert_eq!(matrix.transparent_proxy, CapabilitySupport::Limited);
             assert_eq!(matrix.process_lookup, CapabilitySupport::Planned);
         }
 

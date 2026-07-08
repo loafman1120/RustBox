@@ -96,11 +96,10 @@ mod tests {
     #[test]
     fn reload_transaction_enforces_prepare_commit_drain_order() {
         let source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
-        let compiled = ConfigCompiler::compile(
-            ConfigCompiler::validate(ConfigCompiler::parse(source).expect("parse"))
-                .expect("validate"),
-        )
-        .expect("compile");
+        let parsed = ConfigCompiler::parse(source).expect("parse");
+        let normalized = ConfigCompiler::normalize(parsed).expect("normalize");
+        let validated = ConfigCompiler::validate(normalized).expect("validate");
+        let compiled = ConfigCompiler::compile(validated).expect("compile");
         let mut transaction = ReloadTransaction::prepare(2, compiled);
 
         assert_eq!(transaction.phase(), ReloadPhase::Prepare);

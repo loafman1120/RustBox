@@ -41,7 +41,7 @@ The repository already has the correct architectural placeholders:
 | Network control | `rustbox-host-api::NetworkControl` | Typed transaction contract exists; `AddRoute` is implemented through `net-route`, while address/MTU/rule/transparent operations are still planned |
 | Packet-to-flow boundary | `rustbox-stack::NetworkStack` | Contract exists; planned error implementation |
 | Windows platform boundary | `rustbox-platform-windows` | TUN packet device through `tun-rs` / Wintun; `AddRoute` through `net-route`; typed planned errors for WFP, address/MTU, and process lookup |
-| Linux platform boundary | `rustbox-platform-linux` | TUN packet device through `tun-rs`; `AddRoute` through `net-route`; typed planned errors for route rules, tproxy/redirect, address/MTU, and process lookup |
+| Linux platform boundary | `rustbox-platform-linux` | TUN packet device through `tun-rs`; `AddRoute` through `net-route`; transparent TCP redirect listener with original-destination lookup; typed planned errors for route rules, TPROXY/auto-rules, address/MTU, and process lookup |
 | Metadata enrichment | `rustbox-kernel::MetadataEnricher` | Correct hook for process metadata |
 | Routing | `rustbox-route` | Pure `FlowMeta -> RouteDecision` |
 
@@ -108,6 +108,19 @@ Transparent proxy is not the same as TUN:
 | Windows WFP | Usually no | No | ALE/connect redirection or filtering |
 | Apple Network Extension transparent proxy | No | No | host app extension settings |
 | Android VpnService | Yes | Yes | VPN interface, routes, protected sockets |
+
+Current MVP status:
+
+- `type = "transparent"` is parsed, validated, compiled, and composed as a real
+  inbound service for TCP redirect mode.
+- Linux provides the transparent TCP listener and original destination lookup
+  through `SO_ORIGINAL_DST` / `IP6T_SO_ORIGINAL_DST`.
+- Operators must install redirect rules externally for now
+  (`auto_rules = false`). Automatic nftables/iptables rule installation and
+  TPROXY socket marks remain planned platform-control work.
+- `type = "tun"` is parsed and compiled, but composition rejects it until the
+  packet-to-flow stack exists. A TUN packet device alone is not a usable proxy
+  inbound.
 
 ---
 
@@ -322,6 +335,18 @@ network = "tcp-udp"
 mode = "redirect"
 auto_rules = true
 mark = 2022
+```
+
+Runnable external-rule MVP shape:
+
+```toml
+[[inbounds]]
+id = "transparent"
+type = "transparent"
+listen = "127.0.0.1:12345"
+network = "tcp"
+mode = "redirect"
+auto_rules = false
 ```
 
 Suggested source model:
