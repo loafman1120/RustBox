@@ -20,12 +20,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   rust:
-    name: Rust checks (${{ matrix.os }})
+    name: Rust checks and smoke tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
@@ -44,6 +45,11 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy --component rustfmt
           rustup default stable
 
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -54,6 +60,9 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -72,21 +81,23 @@ jobs:
       - name: Build CLI
         run: cargo build --locked -p rustbox-app
 
+      - name: Check CLI help
+        run: cargo run --locked -p rustbox-app -- --help
+
       - name: Control gRPC smoke test
-        if: matrix.os == 'ubuntu-latest'
         run: bash scripts/ci/control-grpc-smoke.sh
 
-      - name: Curl inbound and outbound proxy smoke test
-        if: matrix.os == 'ubuntu-latest'
+      - name: Local inbound and outbound proxy smoke test
+        shell: pwsh
         env:
           RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
           RUSTBOX_CI_DUMP_LOGS: "1"
-        run: bash scripts/ci/proxy-smoke.sh
+        run: ./scripts/ci/proxy-smoke.ps1
 
       - name: Upload proxy smoke logs
-        if: always() && matrix.os == 'ubuntu-latest'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rustbox-proxy-smoke-logs
+          name: rustbox-proxy-smoke-logs-${{ matrix.os }}
           path: target/ci-proxy-smoke/logs
           if-no-files-found: ignore

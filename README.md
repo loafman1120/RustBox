@@ -266,6 +266,34 @@ Run clippy with warnings denied:
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+## CI
+
+GitHub Actions runs the stable Rust toolchain on Linux, Windows, and macOS.
+Each OS runs:
+
+```text
+cargo fmt --all --check
+cargo test --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo doc --locked --workspace --no-deps
+cargo build --locked -p rustbox-app
+cargo run --locked -p rustbox-app -- --help
+```
+
+The matrix also runs the native gRPC control API smoke test and a local proxy
+smoke test that exercises HTTP proxying, HTTP CONNECT, SOCKS5, mixed inbound,
+direct outbound, and observability logs without requiring external network
+access. The proxy smoke test can be run locally after building the CLI:
+
+```powershell
+cargo build --locked -p rustbox-app
+./scripts/ci/proxy-smoke.ps1
+```
+
+External egress through the proxy is intentionally opt-in for CI. Trigger the
+workflow manually with `external_network=true`, or set `RUSTBOX_CI_EXTERNAL=1`
+when running the smoke script locally.
+
 ## Current Capabilities
 
 - HTTP inbound over TCP with CONNECT tunnels, ordinary absolute-form proxy
