@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/apps/rustbox/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/config/rustbox-config-file/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/control/rustbox-config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/control/rustbox-control-api/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/control/rustbox-control-api/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/control/rustbox-control/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ffi/rustbox-ffi/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/foundation/rustbox-io/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/foundation/rustbox-types/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/host/rustbox-host-api/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/host/rustbox-test-host/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/kernel/rustbox-kernel/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/kernel/rustbox-registry/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/kernel/rustbox-route/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/dns/rustbox-dns-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/inbound/rustbox-inbound-http/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/inbound/rustbox-inbound-socks5/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/inbound/rustbox-inbound-transparent/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/inbound/rustbox-inbound-tun/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/inspect/rustbox-inspect/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/outbound/rustbox-outbound-anytls/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/outbound/rustbox-outbound-direct/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/outbound/rustbox-outbound-http/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/outbound/rustbox-outbound-shadowsocks/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/outbound/rustbox-outbound-socks5/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/stack/rustbox-stack/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/modules/transport/rustbox-transport/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/observability/rustbox-observability/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/platform/rustbox-platform-linux/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/platform/rustbox-platform-windows/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/plugin/rustbox-plugin/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reload/rustbox-reload/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/rustbox/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

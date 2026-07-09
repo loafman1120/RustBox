@@ -96,11 +96,16 @@ jobs:
       - name: Check CLI help
         run: cargo run --locked -p rustbox-app -- --help
 
-      - name: Check TUN transparent config
+      - name: Validate example configs (all)
+        shell: pwsh
+        run: |
+          cargo run --locked -p rustbox-app -- check-config --config examples/rustbox.toml
+
+      - name: Validate TUN config
         if: matrix.os != 'macos-latest'
         run: cargo run --locked -p rustbox-app -- check-config --config examples/tun-transparent.toml
 
-      - name: Control gRPC smoke
+      - name: Control API gRPC test
         run: bash scripts/ci/control-grpc-smoke.sh
 
       - name: Upload binary
@@ -112,9 +117,10 @@ jobs:
             target/debug/rustbox-app.exe
           if-no-files-found: error
 
-  # ── Smoke: proxy + gRPC ────────────────────────────────────────
-  smoke-proxy:
-    name: Smoke proxy (${{ matrix.os }})
+  # ── E2E inbound: RustBox as proxy server ────────────────────────
+  #     curl → rustbox inbound → direct outbound → target
+  e2e-inbound:
+    name: E2E inbound (${{ matrix.os }})
     needs: build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -138,23 +144,24 @@ jobs:
       - name: Fix permissions (Unix)
         if: matrix.os != 'windows-latest'
         run: chmod +x target/debug/rustbox-app
-      - name: Proxy smoke
+      - name: Run inbound e2e
         shell: pwsh
         env:
           RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
           RUSTBOX_CI_DUMP_LOGS: "1"
         run: ./scripts/ci/proxy-smoke.ps1
-      - name: Upload proxy smoke logs
+      - name: Upload inbound e2e logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: proxy-smoke-logs-${{ matrix.os }}
+          name: e2e-inbound-logs-${{ matrix.os }}
           path: target/ci-proxy-smoke/logs
           if-no-files-found: ignore
 
-  # ── Smoke: sing-box e2e matrix ─────────────────────────────────
-  smoke-singbox:
-    name: Smoke sbox/${{ matrix.outbound }} (${{ matrix.os }})
+  # ── E2E outbound: RustBox → upstream proxy → target ────────────
+  #     curl → rustbox inbound → $outbound → sing-box → target
+  e2e-outbound:
+    name: E2E out/${{ matrix.outbound }} (${{ matrix.os }})
     needs: build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -183,16 +190,16 @@ jobs:
       - name: Fix permissions (Unix)
         if: matrix.os != 'windows-latest'
         run: chmod +x target/debug/rustbox-app
-      - name: Sing-box e2e smoke
+      - name: Run outbound e2e
         shell: pwsh
         env:
           RUSTBOX_SBOX_OUTBOUND: ${{ matrix.outbound }}
           RUSTBOX_CI_DUMP_LOGS: "1"
         run: ./scripts/ci/sing-box-smoke.ps1
-      - name: Upload sing-box smoke logs
+      - name: Upload outbound e2e logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sbox-smoke-${{ matrix.outbound }}-${{ matrix.os }}
+          name: e2e-outbound-${{ matrix.outbound }}-${{ matrix.os }}
           path: target/ci-singbox-smoke/logs
           if-no-files-found: ignore
