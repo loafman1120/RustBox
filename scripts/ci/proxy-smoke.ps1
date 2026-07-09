@@ -66,6 +66,21 @@ function New-CiTlsCertificate {
         [string]$KeyPath
     )
 
+    # Prefer openssl on Unix, fall back to .NET APIs
+    $openssl = Get-Command openssl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($openssl) {
+        $keyFile = Join-Path ([System.IO.Path]::GetTempPath()) "rustbox-ci-tls-key.pem"
+        $certFile = Join-Path ([System.IO.Path]::GetTempPath()) "rustbox-ci-tls-cert.pem"
+        $null = & $openssl req -x509 -newkey rsa:2048 -keyout $keyFile -out $certFile `
+            -days 7 -nodes -subj "/CN=127.0.0.1" `
+            -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "openssl cert generation failed" }
+        Copy-Item $certFile $CertPath
+        Copy-Item $keyFile $KeyPath
+        Remove-Item $keyFile, $certFile -Force -ErrorAction SilentlyContinue
+        return
+    }
+
     $Rsa = [System.Security.Cryptography.RSA]::Create(2048)
     try {
         $Request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
