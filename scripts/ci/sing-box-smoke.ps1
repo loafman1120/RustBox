@@ -208,8 +208,7 @@ listen = "127.0.0.1:$RustboxHttpPort"
 [[outbounds]]
 id = "sbox"
 type = "socks5"
-server = "127.0.0.1"
-server_port = $SboxInboundPort
+server = "127.0.0.1:$SboxInboundPort"
 
 [[routes]]
 type = "default"
@@ -222,8 +221,7 @@ outbound = "sbox"
 [[outbounds]]
 id = "sbox"
 type = "http"
-server = "127.0.0.1"
-server_port = $SboxInboundPort
+server = "127.0.0.1:$SboxInboundPort"
 
 [[routes]]
 type = "default"
@@ -236,8 +234,7 @@ outbound = "sbox"
 [[outbounds]]
 id = "sbox"
 type = "shadowsocks"
-server = "127.0.0.1"
-server_port = $SboxInboundPort
+server = "127.0.0.1:$SboxInboundPort"
 method = "$SsMethod"
 password = "$SsPassword"
 
@@ -252,12 +249,13 @@ outbound = "sbox"
 [[outbounds]]
 id = "sbox"
 type = "anytls"
-server = "127.0.0.1"
-server_port = $SboxInboundPort
+server = "127.0.0.1:$SboxInboundPort"
 password = "$AnyTlsPassword"
 
 [outbounds.tls]
-enabled = false
+enabled = true
+# The smoke test generates a short-lived self-signed certificate.
+insecure = true
 
 [[routes]]
 type = "default"
