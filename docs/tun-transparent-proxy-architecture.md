@@ -46,7 +46,7 @@ The repository already has the correct architectural placeholders:
 | Routing | `rustbox-route` | Pure `FlowMeta -> RouteDecision` |
 
 The missing work is therefore not a kernel rewrite. It is a controlled expansion
-of L1 capability contracts, L3 inbound/stack modules, L4 composition, and
+of platform capability contracts, inbound/stack modules, shared assembly, and
 platform adapter crates.
 
 ---
@@ -567,7 +567,7 @@ pub struct PlatformCapabilities {
 }
 ```
 
-`TokioComposition` can grow into:
+the internal RustBox assembly can grow into:
 
 ```rust
 pub struct RuntimeComposition {

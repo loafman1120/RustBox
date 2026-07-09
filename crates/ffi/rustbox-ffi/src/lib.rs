@@ -1,10 +1,10 @@
 //! 基于不透明句柄的粗粒度 FFI 边界。
 //!
-//! 本 crate 位于外部 ABI 边界，刻意把 Rust trait、引用、Tokio runtime
-//! 和内部模块指针都隐藏在 Rust 侧句柄表后面。
+//! 本 crate 只把共享的 `RustBox` 接口翻译成 C ABI：句柄、状态码和字节串。
+//! 配置、装配和生命周期语义不在 FFI 层重复实现。
 
-use rustbox_compose::{ComposeError, ComposedRuntime, TokioComposition};
-use rustbox_config::{CompiledConfig, ConfigCompiler, ConfigError, SourceConfig};
+use rustbox::{RustBox, RustBoxError};
+use rustbox_config::SourceConfig;
 use rustbox_config_file::{ConfigFileError, parse_toml_str};
 use rustbox_control::{EngineSnapshot, EngineState};
 use rustbox_types::Endpoint;
@@ -96,90 +96,52 @@ impl FfiEngineTable {
     }
 
     pub fn validate(source: SourceConfig) -> Result<(), RustBoxFfiError> {
-        compile_source(source)?;
+        RustBox::new(source).map_err(compose_error)?;
         Ok(())
     }
 
-    pub fn create_default_http_proxy(&mut self, listen: Endpoint) -> RustBoxEngineHandle {
+    pub fn create_default_http_proxy(
+        &mut self,
+        listen: Endpoint,
+    ) -> Result<RustBoxEngineHandle, RustBoxFfiError> {
         self.create_with_source(SourceConfig::default_http_proxy(listen))
     }
 
-    pub fn create_default_socks5_proxy(&mut self, listen: Endpoint) -> RustBoxEngineHandle {
+    pub fn create_default_socks5_proxy(
+        &mut self,
+        listen: Endpoint,
+    ) -> Result<RustBoxEngineHandle, RustBoxFfiError> {
         self.create_with_source(SourceConfig::default_socks5_proxy(listen))
     }
 
-    pub fn create_from_source(&mut self, source: SourceConfig) -> RustBoxEngineHandle {
+    pub fn create_from_source(
+        &mut self,
+        source: SourceConfig,
+    ) -> Result<RustBoxEngineHandle, RustBoxFfiError> {
         self.create_with_source(source)
     }
 
-    fn create_with_source(&mut self, source: SourceConfig) -> RustBoxEngineHandle {
+    fn create_with_source(
+        &mut self,
+        source: SourceConfig,
+    ) -> Result<RustBoxEngineHandle, RustBoxFfiError> {
+        let engine = RustBox::new(source).map_err(compose_error)?;
         let handle = RustBoxEngineHandle(self.next);
         self.next = self.next.saturating_add(1);
         self.engines.insert(
             handle,
             ManagedEngine {
-                source,
+                engine,
                 runtime: None,
-                snapshot: EngineSnapshot::created(),
             },
         );
-        handle
-    }
-
-    pub async fn start(&mut self, handle: RustBoxEngineHandle) -> Result<(), RustBoxFfiError> {
-        let managed = self
-            .engines
-            .get_mut(&handle)
-            .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
-        if managed.runtime.is_some() {
-            return Err(RustBoxFfiError::new(
-                RustBoxStatusCode::AlreadyRunning,
-                "engine is already running",
-            ));
-        }
-
-        let parsed = ConfigCompiler::parse(managed.source.clone()).map_err(config_error)?;
-        let normalized = ConfigCompiler::normalize(parsed).map_err(config_error)?;
-        let validated = ConfigCompiler::validate(normalized).map_err(config_error)?;
-        let compiled = ConfigCompiler::compile(validated).map_err(config_error)?;
-        let mut runtime = TokioComposition::new()
-            .compose(compiled)
-            .map_err(compose_error)?;
-        runtime.start("rustbox-ffi").await.map_err(compose_error)?;
-        managed.snapshot.state = EngineState::Running;
-        managed.snapshot.inbound_count = runtime.service_count();
-        managed.snapshot.outbound_count = runtime.engine().outbound_count();
-        managed.runtime = Some(ManagedRuntime::Borrowed(runtime));
-        Ok(())
-    }
-
-    pub async fn stop(&mut self, handle: RustBoxEngineHandle) -> Result<(), RustBoxFfiError> {
-        let managed = self
-            .engines
-            .get_mut(&handle)
-            .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
-        managed.snapshot.state = EngineState::Stopping;
-        if let Some(runtime) = managed.runtime.take() {
-            match runtime {
-                ManagedRuntime::Borrowed(mut runtime) => {
-                    runtime.stop().await.map_err(compose_error)?;
-                }
-                ManagedRuntime::Owned(mut active) => {
-                    active
-                        .runtime
-                        .block_on(active.composed.stop())
-                        .map_err(compose_error)?;
-                }
-            }
-        }
-        managed.snapshot.state = EngineState::Stopped;
-        Ok(())
+        Ok(handle)
     }
 
     pub fn snapshot(&self, handle: RustBoxEngineHandle) -> Result<EngineSnapshot, RustBoxFfiError> {
         self.engines
             .get(&handle)
-            .map(|managed| managed.snapshot.clone())
+            .map(|managed| managed.engine.snapshot().clone())
             .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))
     }
 
@@ -191,15 +153,9 @@ impl FfiEngineTable {
             ));
         };
         if let Some(runtime) = managed.runtime.take() {
-            match runtime {
-                ManagedRuntime::Borrowed(_runtime) => {}
-                ManagedRuntime::Owned(mut active) => {
-                    active
-                        .runtime
-                        .block_on(active.composed.stop())
-                        .map_err(compose_error)?;
-                }
-            }
+            runtime
+                .block_on(managed.engine.stop())
+                .map_err(compose_error)?;
         }
         Ok(())
     }
@@ -209,19 +165,18 @@ impl FfiEngineTable {
             .engines
             .get_mut(&handle)
             .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
-        if managed.runtime.is_some() {
+        if managed.engine.snapshot().state == EngineState::Running {
             return Err(RustBoxFfiError::new(
                 RustBoxStatusCode::AlreadyRunning,
                 "engine is already running",
             ));
         }
 
-        let compiled = compile_source(managed.source.clone())?;
-        let active = start_owned_runtime(compiled)?;
-        managed.snapshot.state = EngineState::Running;
-        managed.snapshot.inbound_count = active.composed.service_count();
-        managed.snapshot.outbound_count = active.composed.engine().outbound_count();
-        managed.runtime = Some(ManagedRuntime::Owned(active));
+        let runtime = new_runtime()?;
+        runtime
+            .block_on(managed.engine.start())
+            .map_err(compose_error)?;
+        managed.runtime = Some(runtime);
         Ok(())
     }
 
@@ -230,24 +185,11 @@ impl FfiEngineTable {
             .engines
             .get_mut(&handle)
             .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
-        managed.snapshot.state = EngineState::Stopping;
         if let Some(runtime) = managed.runtime.take() {
-            match runtime {
-                ManagedRuntime::Borrowed(_runtime) => {
-                    return Err(RustBoxFfiError::new(
-                        RustBoxStatusCode::RuntimeError,
-                        "engine was started by an async Rust caller and cannot be stopped through the blocking C ABI",
-                    ));
-                }
-                ManagedRuntime::Owned(mut active) => {
-                    active
-                        .runtime
-                        .block_on(active.composed.stop())
-                        .map_err(compose_error)?;
-                }
-            }
+            runtime
+                .block_on(managed.engine.stop())
+                .map_err(compose_error)?;
         }
-        managed.snapshot.state = EngineState::Stopped;
         Ok(())
     }
 
@@ -272,55 +214,23 @@ impl FfiEngineTable {
         handle: RustBoxEngineHandle,
         next_source: SourceConfig,
     ) -> Result<(), RustBoxFfiError> {
-        // 当前 FFI reload 先编译新配置，再按 stop/start 模式替换运行图。
-        let compiled = compile_source(next_source.clone())?;
         let managed = self
             .engines
             .get_mut(&handle)
             .ok_or_else(|| RustBoxFfiError::new(RustBoxStatusCode::NotFound, "unknown handle"))?;
 
-        let was_running = managed.runtime.is_some();
-        if let Some(runtime) = managed.runtime.take() {
-            managed.snapshot.state = EngineState::Stopping;
-            match runtime {
-                ManagedRuntime::Borrowed(_runtime) => {
-                    return Err(RustBoxFfiError::new(
-                        RustBoxStatusCode::RuntimeError,
-                        "engine was started by an async Rust caller and cannot be reloaded through the blocking C ABI",
-                    ));
-                }
-                ManagedRuntime::Owned(mut active) => {
-                    active
-                        .runtime
-                        .block_on(active.composed.stop())
-                        .map_err(compose_error)?;
-                }
-            }
+        let owned_runtime = managed.runtime.take();
+        let runtime = match owned_runtime {
+            Some(runtime) => runtime,
+            None => new_runtime()?,
+        };
+        let result = runtime
+            .block_on(managed.engine.reload(next_source))
+            .map_err(compose_error);
+        if managed.engine.snapshot().state == EngineState::Running {
+            managed.runtime = Some(runtime);
         }
-
-        managed.source = next_source;
-        managed.snapshot.generation = managed.snapshot.generation.saturating_add(1);
-        managed.snapshot.inbound_count = compiled.inbounds.len();
-        managed.snapshot.outbound_count = compiled.outbounds.len();
-
-        if was_running {
-            match start_owned_runtime(compiled) {
-                Ok(active) => {
-                    managed.snapshot.state = EngineState::Running;
-                    managed.snapshot.inbound_count = active.composed.service_count();
-                    managed.snapshot.outbound_count = active.composed.engine().outbound_count();
-                    managed.runtime = Some(ManagedRuntime::Owned(active));
-                    Ok(())
-                }
-                Err(err) => {
-                    managed.snapshot.state = EngineState::Failed;
-                    Err(err)
-                }
-            }
-        } else {
-            managed.snapshot.state = EngineState::Prepared;
-            Ok(())
-        }
+        result
     }
 }
 
@@ -331,26 +241,8 @@ impl Default for FfiEngineTable {
 }
 
 struct ManagedEngine {
-    source: SourceConfig,
-    runtime: Option<ManagedRuntime>,
-    snapshot: EngineSnapshot,
-}
-
-enum ManagedRuntime {
-    Borrowed(ComposedRuntime),
-    Owned(ActiveRuntime),
-}
-
-struct ActiveRuntime {
-    runtime: Runtime,
-    composed: ComposedRuntime,
-}
-
-fn compile_source(source: SourceConfig) -> Result<CompiledConfig, RustBoxFfiError> {
-    let parsed = ConfigCompiler::parse(source).map_err(config_error)?;
-    let normalized = ConfigCompiler::normalize(parsed).map_err(config_error)?;
-    let validated = ConfigCompiler::validate(normalized).map_err(config_error)?;
-    ConfigCompiler::compile(validated).map_err(config_error)
+    engine: RustBox,
+    runtime: Option<Runtime>,
 }
 
 fn parse_toml_source(bytes: *const u8, len: usize) -> Result<SourceConfig, RustBoxFfiError> {
@@ -374,31 +266,18 @@ fn parse_toml_source(bytes: *const u8, len: usize) -> Result<SourceConfig, RustB
         .map_err(config_file_error)
 }
 
-fn start_owned_runtime(compiled: CompiledConfig) -> Result<ActiveRuntime, RustBoxFfiError> {
-    // C ABI 调用方通常没有 Tokio runtime，因此这里由 FFI 层持有独立 runtime。
-    let runtime = Builder::new_multi_thread()
+fn new_runtime() -> Result<Runtime, RustBoxFfiError> {
+    Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|err| RustBoxFfiError::new(RustBoxStatusCode::RuntimeError, err.to_string()))?;
-    let mut composed = TokioComposition::new()
-        .compose(compiled)
-        .map_err(compose_error)?;
-    if let Err(err) = runtime.block_on(composed.start("rustbox-ffi")) {
-        let _ = runtime.block_on(composed.stop());
-        return Err(compose_error(err));
-    }
-    Ok(ActiveRuntime { runtime, composed })
-}
-
-fn config_error(err: ConfigError) -> RustBoxFfiError {
-    RustBoxFfiError::new(RustBoxStatusCode::InvalidConfig, err.message)
+        .map_err(|err| RustBoxFfiError::new(RustBoxStatusCode::RuntimeError, err.to_string()))
 }
 
 fn config_file_error(err: ConfigFileError) -> RustBoxFfiError {
     RustBoxFfiError::new(RustBoxStatusCode::InvalidConfig, err.message)
 }
 
-fn compose_error(err: ComposeError) -> RustBoxFfiError {
+fn compose_error(err: RustBoxError) -> RustBoxFfiError {
     RustBoxFfiError::new(RustBoxStatusCode::RuntimeError, format!("{err:?}"))
 }
 
@@ -555,7 +434,7 @@ pub extern "C" fn rustbox_engine_create_default_http_proxy(
     diagnostic: *mut RustBoxFfiDiagnostic,
 ) -> RustBoxStatusCode {
     match with_table(diagnostic, |table| {
-        let handle = table.create_default_http_proxy(Endpoint::localhost_v4(listen_port));
+        let handle = table.create_default_http_proxy(Endpoint::localhost_v4(listen_port))?;
         write_out(out_handle, handle)?;
         Ok(())
     }) {
@@ -576,8 +455,7 @@ pub extern "C" fn rustbox_engine_create_from_config_toml(
 ) -> RustBoxStatusCode {
     match with_table(diagnostic, |table| {
         let source = parse_toml_source(bytes, len)?;
-        compile_source(source.clone())?;
-        let handle = table.create_from_source(source);
+        let handle = table.create_from_source(source)?;
         write_out(out_handle, handle)?;
         Ok(())
     }) {
@@ -596,7 +474,7 @@ pub extern "C" fn rustbox_engine_create_default_socks5_proxy(
     diagnostic: *mut RustBoxFfiDiagnostic,
 ) -> RustBoxStatusCode {
     match with_table(diagnostic, |table| {
-        let handle = table.create_default_socks5_proxy(Endpoint::localhost_v4(listen_port));
+        let handle = table.create_default_socks5_proxy(Endpoint::localhost_v4(listen_port))?;
         write_out(out_handle, handle)?;
         Ok(())
     }) {
@@ -852,6 +730,13 @@ mod tests {
         let snapshot_code = rustbox_engine_snapshot(handle, &mut snapshot, &mut diagnostic);
         assert_eq!(snapshot_code, RustBoxStatusCode::Ok);
         assert_eq!(snapshot.state, RustBoxEngineStateCode::Stopped);
+        free_diagnostic(&mut diagnostic);
+
+        let restart = rustbox_engine_start(handle, &mut diagnostic);
+        assert_eq!(restart, RustBoxStatusCode::Ok);
+        free_diagnostic(&mut diagnostic);
+        let stop = rustbox_engine_stop(handle, &mut diagnostic);
+        assert_eq!(stop, RustBoxStatusCode::Ok);
         free_diagnostic(&mut diagnostic);
 
         let destroy = rustbox_engine_destroy(handle, &mut diagnostic);

@@ -1,7 +1,7 @@
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
-use rustbox_compose::TokioComposition;
+use rustbox::RustBox;
 use rustbox_config_file::load_toml_file;
-use rustbox_control::{ControlState, EngineCommand, EngineSnapshot, EngineState};
+use rustbox_control::{ControlState, EngineCommand, EngineState};
 use rustbox_control_api::{AuthPolicy, ControlApiConfig, ControlApiState};
 use rustbox_observability::{
     CompositeObservabilitySink, ConsoleObservabilitySink, FileObservabilitySink, LevelFilter,
@@ -33,20 +33,19 @@ async fn main() {
             let file_config = load_toml_file(&path).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", path.display(), err.message)
             });
-            let runtime = TokioComposition::new()
-                .compose_source(file_config.source)
+            let runtime = RustBox::new(file_config.source)
                 .unwrap_or_else(|err| panic!("check config `{}`: {err:?}", path.display()));
+            let snapshot = runtime.snapshot();
             println!(
                 "RustBox config OK: services={} outbounds={}",
-                runtime.service_count(),
-                runtime.engine().outbound_count()
+                snapshot.inbound_count, snapshot.outbound_count
             );
             return;
         }
         RuntimeMode::HttpProxy => {
             let observability = observability_from_cli();
             (
-                TokioComposition::default_http_proxy_with_observability(
+                RustBox::default_http_proxy_with_observability(
                     Endpoint::localhost_v4(18080),
                     observability.sink,
                 )
@@ -58,7 +57,7 @@ async fn main() {
         RuntimeMode::Socks5Proxy => {
             let observability = observability_from_cli();
             (
-                TokioComposition::default_socks5_proxy_with_observability(
+                RustBox::default_socks5_proxy_with_observability(
                     Endpoint::localhost_v4(1080),
                     observability.sink,
                 )
@@ -75,27 +74,19 @@ async fn main() {
             let observability = observability_from_file(&file_config)
                 .unwrap_or_else(|err| panic!("configure observability: {err}"));
             (
-                TokioComposition::with_observability(observability.sink)
-                    .compose_source(file_config.source)
+                RustBox::with_observability(file_config.source, observability.sink)
                     .expect("compose config file"),
                 "configured proxy graph started",
                 observability.store,
             )
         }
     };
-    runtime
-        .start("rustbox-app")
-        .await
-        .expect("start default proxy");
+    runtime.start().await.expect("start default proxy");
 
-    let inbound_count = runtime.service_count();
-    let outbound_count = runtime.engine().outbound_count();
-    let control_state = Arc::new(Mutex::new(ControlState::new(EngineSnapshot {
-        state: EngineState::Running,
-        generation: 0,
-        inbound_count,
-        outbound_count,
-    })));
+    let snapshot = runtime.snapshot().clone();
+    let inbound_count = snapshot.inbound_count;
+    let outbound_count = snapshot.outbound_count;
+    let control_state = Arc::new(Mutex::new(ControlState::new(snapshot)));
 
     let (command_tx, mut command_rx) = mpsc::unbounded_channel();
     let control_api_task = if let Some(config) = control_api_config {

@@ -13,7 +13,6 @@ shadowsocks = "1.24.0"
 tokio = { version = "1", features = ["io-util"] }
 
 [dev-dependencies]
-rustbox-runtime-tokio = { path = "../../../runtime/rustbox-runtime-tokio" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
 
 [lints]

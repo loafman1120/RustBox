@@ -435,7 +435,7 @@ fn io_error_to_std(err: IoError) -> io::Error {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_runtime_tokio::TokioHost;
+    use rustbox_host_api::TokioHost;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use shadowsocks::relay::tcprelay::proxy_listener::ProxyListener;
     use std::future::poll_fn;

@@ -1,13 +1,12 @@
 # RustBox
 
-RustBox is a modular proxy engine written in Rust. The project is organized as
-a portable core, host capability contracts, replaceable runtime/platform
-adapters, protocol modules, and a composition root.
+RustBox is a modular proxy engine written in Rust and built directly on Tokio.
+The CLI and FFI are thin frontends over the same `RustBox` lifecycle API.
 
 The repository currently includes a runnable minimum proxy graph:
 
 ```text
-HTTP / mixed / SOCKS5 inbound -> RustBox kernel -> route table -> outbound -> Tokio host
+CLI / FFI -> RustBox -> inbound -> route table -> outbound -> Tokio
 ```
 
 For the full target architecture, see `docs/architecture.md`. For what exists
@@ -185,6 +184,14 @@ server = "ss.example.test:8388"
 method = "aes-128-gcm"
 password = "test-password"
 
+# Forward TCP and UDP-over-TCP through an AnyTLS server.
+[[outbounds]]
+id = "anytls-out"
+type = "anytls"
+server = "anytls.example.test:443"
+password = "test-password"
+tls = { enabled = true, server_name = "anytls.example.test" }
+
 # Optional inline rule-set, referenced by ordered route rules.
 [[rule_sets]]
 id = "ads"
@@ -209,8 +216,11 @@ outbound = "direct"
 
 Supported inbound `type` values are `http-connect`, `socks5`, and `mixed`. Supported
 outbound `type` values are `direct`, `block`, `socks5`, `http`, and
-`shadowsocks`. The current runtime can instantiate `direct`, `socks5`, `http`,
-and `shadowsocks`; `block` compiles to a policy rejection.
+`shadowsocks`, `selector`, `urltest`, `vmess`, `vless`, `trojan`, and
+`anytls`. The current runtime can instantiate `direct`, `socks5`, `http`,
+`shadowsocks`, and `anytls`; `block` compiles to a policy rejection. VMess,
+VLESS, and Trojan remain configuration-only and are rejected during
+composition.
 
 Route rules are evaluated in file order before the default route. Supported
 match fields are `inbound`, `network`, `domain`, `domain_suffix`,
@@ -222,9 +232,9 @@ loaded from local TOML files with `[[rule_sets]] type = "local"`.
 
 ## FFI Compatibility
 
-The C ABI convenience functions for default HTTP CONNECT and SOCKS5 proxies are
-still available. Additional TOML-based entrypoints allow embedding hosts to
-validate, create, and reload from the same config text accepted by the app:
+The C ABI uses the same `RustBox::new/start/stop/reload/snapshot` implementation
+as the CLI. It only translates TOML bytes, opaque handles, status codes, and
+diagnostics. The default HTTP CONNECT and SOCKS5 helpers remain available:
 
 ```c
 rustbox_validate_config_toml(...)
@@ -308,6 +318,8 @@ when running the smoke script locally.
 - TUN inbound composition through platform packet-device capabilities and a
   packet-to-flow stack boundary.
 - Direct TCP and UDP outbound through the host network capability.
+- AnyTLS TCP and UDP-over-TCP outbound with certificate verification, SNI,
+  ALPN, and explicit insecure-mode support.
 - Portable kernel flow submission, ordered rule routing, metadata enrichment
   pipeline, and stream relay.
 - Staged configuration model: source, parsed, validated, compiled.
@@ -315,8 +327,8 @@ when running the smoke script locally.
   recording, metrics/query store, file, platform-bridge, and remote-telemetry
   bridge sinks.
 - Native gRPC control API over `ObservabilityStore` and `ControlState`.
-- Tokio-backed host adapter for TCP, UDP binding, clock, entropy, and task
-  spawning.
+- Tokio-backed TCP, UDP, clock, entropy, and task implementation in
+  `rustbox-host-api`.
 - Test host, registry model, plugin manifest model, reload transaction model,
   FFI handle model, and Windows platform boundary.
 
@@ -335,15 +347,15 @@ when running the smoke script locally.
 ## Workspace Layout
 
 ```text
-apps/rustbox                         application entrypoint
-crates/compose/rustbox-compose       composition root
+apps/rustbox                         thin CLI
+crates/rustbox                       shared RustBox API and internal assembly
 crates/control/rustbox-config        configuration pipeline
 crates/control/rustbox-control       control commands and snapshots
 crates/control/rustbox-control-api   gRPC control and stats API
 crates/ffi/rustbox-ffi               FFI handle boundary
 crates/foundation/rustbox-types      portable data types
-crates/foundation/rustbox-io         runtime-neutral IO traits
-crates/host/rustbox-host-api         host capability contracts
+crates/foundation/rustbox-io         shared stream/datagram/device traits
+crates/host/rustbox-host-api         Tokio host plus test/platform contracts
 crates/host/rustbox-test-host        deterministic test host
 crates/kernel/rustbox-kernel         flow, lifecycle, relay, engine
 crates/kernel/rustbox-route          route decisions and tables
@@ -351,5 +363,4 @@ crates/kernel/rustbox-registry       construction-time registry
 crates/modules/*                     protocol and subsystem modules
 crates/observability/*               log and event sink adapters
 crates/platform/*                    platform capability adapters
-crates/runtime/rustbox-runtime-tokio Tokio host adapter
 ```

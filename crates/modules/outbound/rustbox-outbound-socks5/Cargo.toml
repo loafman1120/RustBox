@@ -16,7 +16,6 @@ tokio = { version = "1", features = ["io-util", "net"] }
 rustbox-inbound-socks5 = { path = "../../inbound/rustbox-inbound-socks5" }
 rustbox-outbound-direct = { path = "../rustbox-outbound-direct" }
 rustbox-route = { path = "../../../kernel/rustbox-route" }
-rustbox-runtime-tokio = { path = "../../../runtime/rustbox-runtime-tokio" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
 
 [lints]

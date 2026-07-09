@@ -1,15 +1,10 @@
-//! Tokio 宿主能力实现。
-//!
-//! 本 crate 是 runtime adapter，把 Tokio 的 TCP/UDP、计时器、任务派生和随机数
-//! 适配为 `rustbox-host-api` 中的能力 trait。核心 crate 不暴露 Tokio 类型。
-
-use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
-use core::task::{Context, Poll};
-use rustbox_host_api::{
+use crate::{
     BoxFuture, Clock, Entropy, EntropyError, HostInstant, NetError, NetworkProvider, SpawnError,
     StreamListener, TaskHandle, TaskName, TaskSpawner, TcpBind, TcpConnect, UdpBind,
 };
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_types::{Endpoint, Host, IpAddress};
 use std::io;
@@ -19,7 +14,7 @@ use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
-/// 基于 Tokio 的宿主能力集合。
+/// RustBox 默认使用的 Tokio 网络、时钟、随机数和任务实现。
 #[derive(Clone)]
 pub struct TokioHost {
     inner: Arc<TokioHostInner>,
@@ -52,7 +47,6 @@ impl NetworkProvider for TokioHost {
         &self,
         request: TcpConnect,
     ) -> BoxFuture<'_, Result<Box<dyn ByteStream>, NetError>> {
-        // 运行时适配器在这里把可移植 Endpoint 转换成 Tokio TcpStream。
         Box::pin(async move {
             let stream = match request.target.host {
                 Host::Domain(domain) => TcpStream::connect((domain.as_str(), request.target.port))
@@ -123,8 +117,7 @@ impl TaskSpawner for TokioHost {
     }
 }
 
-/// Tokio TCP listener 到 RustBox `StreamListener` 的适配器。
-pub struct TokioTcpListener {
+struct TokioTcpListener {
     inner: TcpListener,
 }
 
@@ -144,8 +137,7 @@ impl StreamListener for TokioTcpListener {
     }
 }
 
-/// Tokio TcpStream 到 RustBox `ByteStream` 的适配器。
-pub struct TokioTcpStream {
+struct TokioTcpStream {
     inner: TcpStream,
 }
 
@@ -184,8 +176,7 @@ impl ByteStream for TokioTcpStream {
     }
 }
 
-/// Tokio UdpSocket 到 RustBox `DatagramSocket` 的适配器。
-pub struct TokioUdpSocket {
+struct TokioUdpSocket {
     inner: UdpSocket,
 }
 
@@ -226,7 +217,6 @@ impl DatagramSocket for TokioUdpSocket {
 }
 
 fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, NetError> {
-    // bind 只能使用具体 IP；域名解析属于更高层 DNS/配置策略，不在这里隐式发生。
     match &endpoint.host {
         Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
         Host::Domain(domain) => Err(NetError::new(format!(

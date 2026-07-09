@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "apps/rustbox",
     "crates/config/rustbox-config-file",
-    "crates/compose/rustbox-compose",
+    "crates/rustbox",
     "crates/control/rustbox-config",
     "crates/control/rustbox-control",
     "crates/control/rustbox-control-api",
@@ -22,6 +22,7 @@ members = [
     "crates/modules/inbound/rustbox-inbound-transparent",
     "crates/modules/inbound/rustbox-inbound-tun",
     "crates/modules/outbound/rustbox-outbound-direct",
+    "crates/modules/outbound/rustbox-outbound-anytls",
     "crates/modules/outbound/rustbox-outbound-http",
     "crates/modules/outbound/rustbox-outbound-shadowsocks",
     "crates/modules/outbound/rustbox-outbound-socks5",
@@ -32,7 +33,6 @@ members = [
     "crates/platform/rustbox-platform-windows",
     "crates/plugin/rustbox-plugin",
     "crates/reload/rustbox-reload",
-    "crates/runtime/rustbox-runtime-tokio",
 ]
 
 [workspace.package]

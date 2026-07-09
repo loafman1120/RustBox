@@ -76,10 +76,10 @@ password = "test-password"
 # interval_seconds = 300
 # tolerance_ms = 50
 
-# VMess/VLESS/Trojan/AnyTLS are accepted by the config pipeline so GUI/FFI/file
+# VMess/VLESS/Trojan are accepted by the config pipeline so GUI/FFI/file
 # frontends can converge on the shape before their data-plane modules land.
-# Starting a runtime with these outbounds currently returns a clear
-# "data plane is not implemented yet" composition error.
+# Starting a runtime with those outbounds returns a clear composition error.
+# AnyTLS now has a working TCP and UDP-over-TCP outbound.
 # [[outbounds]]
 # id = "vmess-out"
 # type = "vmess"

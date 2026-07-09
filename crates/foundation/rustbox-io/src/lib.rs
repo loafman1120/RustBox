@@ -1,7 +1,7 @@
-//! 运行时无关的异步 I/O 契约。
+//! 代理模块共享的异步 I/O 契约。
 //!
-//! 本 crate 只定义可轮询的字节流、数据报和三层包设备接口。
-//! Tokio、测试内存流、平台设备都在外侧把自己适配成这些 trait。
+//! 这些 trait 用来统一 TCP、TLS、代理隧道、测试内存流和平台包设备，不用于
+//! 替换 Tokio runtime。
 
 use core::pin::Pin;
 use core::task::{Context, Poll};

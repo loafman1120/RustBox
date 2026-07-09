@@ -236,7 +236,7 @@ pub enum OutboundConfigKind {
         tls: Option<OutboundTlsConfig>,
         transport: Option<String>,
     },
-    /// AnyTLS 上游代理的配置表面。数据面模块可优先评估 `anytls-rs`。
+    /// AnyTLS 上游代理；组合根通过 `rustbox-outbound-anytls` 实例化数据面。
     AnyTls {
         server: Endpoint,
         password: String,
@@ -600,7 +600,12 @@ impl ConfigCompiler {
                     transport.as_deref(),
                 )?,
                 OutboundConfigKind::AnyTls { password, tls, .. } => {
-                    validate_secret_protocol_config("anytls", logical_id, password, tls, None)?
+                    validate_secret_protocol_config("anytls", logical_id, password, tls, None)?;
+                    if tls.as_ref().is_some_and(|tls| !tls.enabled) {
+                        return Err(ConfigError::new(format!(
+                            "anytls outbound `{logical_id}` requires TLS"
+                        )));
+                    }
                 }
                 OutboundConfigKind::Direct | OutboundConfigKind::Block => {}
             }
@@ -1979,6 +1984,35 @@ mod tests {
         let error = validate_error(source);
 
         assert!(error.message.contains("method must not be empty"));
+    }
+
+    #[test]
+    fn rejects_anytls_with_tls_disabled() {
+        let source = SourceConfig {
+            inbounds: vec![inbound_http("http")],
+            outbounds: vec![OutboundConfig {
+                id: "anytls".to_string(),
+                kind: OutboundConfigKind::AnyTls {
+                    server: Endpoint::localhost_v4(443),
+                    password: "secret".to_string(),
+                    tls: Some(OutboundTlsConfig {
+                        enabled: false,
+                        server_name: None,
+                        insecure: false,
+                        alpn: Vec::new(),
+                    }),
+                },
+            }],
+            dns: None,
+            route_rule_sets: Vec::new(),
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "anytls".to_string(),
+            }],
+        };
+
+        let error = validate_error(source);
+
+        assert!(error.message.contains("requires TLS"));
     }
 
     #[test]

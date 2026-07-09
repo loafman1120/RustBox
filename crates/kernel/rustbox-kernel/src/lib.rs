@@ -16,7 +16,7 @@ use std::future::poll_fn;
 use std::sync::Arc;
 
 pub fn architecture_summary() -> &'static str {
-    "RustBox: portable core + capability ports + host adapters + composition root"
+    "RustBox: one shared engine API for CLI, FFI, and Tokio"
 }
 
 /// 数据面进入内核后的基本工作单元。

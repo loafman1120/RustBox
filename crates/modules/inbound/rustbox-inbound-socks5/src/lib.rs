@@ -1068,10 +1068,10 @@ mod tests {
     use super::*;
     use core::num::NonZeroU64;
     use fast_socks5::{new_udp_header, parse_udp_request};
+    use rustbox_host_api::TokioHost;
     use rustbox_kernel::{Engine, Service};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
-    use rustbox_runtime_tokio::TokioHost;
     use rustbox_types::OutboundId;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
