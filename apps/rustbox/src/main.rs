@@ -7,7 +7,6 @@ use rustbox_observability::{
     CompositeObservabilitySink, ConsoleObservabilitySink, FileObservabilitySink, LevelFilter,
     ObservabilityStore,
 };
-use rustbox_types::Endpoint;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -37,30 +36,6 @@ async fn main() {
             );
             return;
         }
-        CliCommand::HttpProxy => {
-            let observability = observability_from_cli();
-            (
-                RustBox::default_http_proxy_with_observability(
-                    Endpoint::localhost_v4(18080),
-                    observability.sink,
-                )
-                .expect("compose default HTTP proxy"),
-                "HTTP CONNECT proxy listening on 127.0.0.1:18080",
-                observability.store,
-            )
-        }
-        CliCommand::Socks5Proxy => {
-            let observability = observability_from_cli();
-            (
-                RustBox::default_socks5_proxy_with_observability(
-                    Endpoint::localhost_v4(1080),
-                    observability.sink,
-                )
-                .expect("compose default SOCKS5 proxy"),
-                "SOCKS5 proxy listening on 127.0.0.1:1080",
-                observability.store,
-            )
-        }
         CliCommand::Run { config } => {
             // 文件配置先进入 config-file，再进入统一 SourceConfig -> CompiledConfig 流水线。
             let file_config = load_toml_file(&config).unwrap_or_else(|err| {
@@ -76,7 +51,7 @@ async fn main() {
             )
         }
     };
-    runtime.start().await.expect("start default proxy");
+    runtime.start().await.expect("start configured proxy graph");
 
     let snapshot = runtime.snapshot().clone();
     let inbound_count = snapshot.inbound_count;
@@ -117,7 +92,7 @@ async fn main() {
     };
 
     eprintln!("RustBox stopping after {stop_reason}");
-    runtime.stop().await.expect("stop default proxy");
+    runtime.stop().await.expect("stop configured proxy graph");
 
     if let Ok(mut state) = control_state.lock() {
         let mut snapshot = state.snapshot().clone();
@@ -177,10 +152,6 @@ enum CliCommand {
     },
     /// Print detected platform capability support.
     PlatformCapabilities,
-    /// Start the default local HTTP CONNECT proxy.
-    HttpProxy,
-    /// Start the default local SOCKS5 proxy.
-    Socks5Proxy,
 }
 
 struct RuntimeObservability {
@@ -219,10 +190,6 @@ fn control_api_config_from_cli(args: &ControlArgs) -> Result<Option<ControlApiCo
     };
     config.validate().map_err(|err| err.message)?;
     Ok(Some(config))
-}
-
-fn observability_from_cli() -> RuntimeObservability {
-    observability_with_outputs(LevelFilter::from_env(), None).expect("configure CLI observability")
 }
 
 fn observability_from_file(
@@ -267,13 +234,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_default_http_proxy_command() {
-        let cli = Cli::try_parse_from(["rustbox-app", "http-proxy"]).expect("parse cli");
-
-        assert_eq!(cli.command, CliCommand::HttpProxy);
-    }
-
-    #[test]
     fn shows_help_without_subcommand() {
         let error = Cli::try_parse_from(["rustbox-app"]).expect_err("require subcommand");
 
@@ -311,7 +271,9 @@ mod tests {
             "127.0.0.1:19090",
             "--control-token",
             "secret",
-            "http-proxy",
+            "run",
+            "--config",
+            "examples/rustbox.toml",
         ])
         .expect("parse cli");
 
@@ -324,8 +286,15 @@ mod tests {
 
     #[test]
     fn rejects_control_token_without_grpc_listener() {
-        let cli = Cli::try_parse_from(["rustbox-app", "--control-token", "secret", "http-proxy"])
-            .expect("parse cli");
+        let cli = Cli::try_parse_from([
+            "rustbox-app",
+            "--control-token",
+            "secret",
+            "run",
+            "--config",
+            "examples/rustbox.toml",
+        ])
+        .expect("parse cli");
 
         let error = control_api_config_from_cli(&cli.control).expect_err("reject unused token");
 
@@ -350,16 +319,13 @@ mod tests {
     }
 
     #[test]
-    fn clap_rejects_config_for_builtin_proxy_command() {
-        let error = Cli::try_parse_from([
-            "rustbox-app",
-            "http-proxy",
-            "--config",
-            "examples/rustbox.toml",
-        ])
-        .expect_err("reject unknown argument");
+    fn rejects_removed_builtin_proxy_commands() {
+        for command in ["http-proxy", "socks5-proxy"] {
+            let error =
+                Cli::try_parse_from(["rustbox-app", command]).expect_err("reject removed command");
 
-        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
+        }
     }
 
     #[test]

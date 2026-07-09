@@ -34,25 +34,13 @@ Show CLI help:
 cargo run -p rustbox-app
 ```
 
-Start the default HTTP CONNECT proxy:
-
-```powershell
-cargo run -p rustbox-app -- http-proxy
-```
-
-Start the default SOCKS5 proxy:
-
-```powershell
-cargo run -p rustbox-app -- socks5-proxy
-```
-
-Start from a TOML config file:
+Start RustBox from a TOML config file:
 
 ```powershell
 cargo run -p rustbox-app -- run --config examples/rustbox.toml
 ```
 
-The default proxies listen on:
+The example config enables these local listeners:
 
 ```text
 HTTP CONNECT: 127.0.0.1:18080
@@ -68,7 +56,7 @@ minimum log level with `RUSTBOX_LOG`:
 
 ```powershell
 $env:RUSTBOX_LOG = "debug"
-cargo run -p rustbox-app -- http-proxy
+cargo run -p rustbox-app -- run --config examples/rustbox.toml
 ```
 
 Supported levels are:
@@ -96,7 +84,7 @@ same store.
 Start a local gRPC control service next to the proxy:
 
 ```powershell
-cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 http-proxy
+cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 run --config examples/rustbox.toml
 ```
 
 The service exposes native RustBox observation/control methods for metrics,
@@ -106,7 +94,7 @@ Loopback listeners may run without a token. Non-loopback listeners require a
 bearer token:
 
 ```powershell
-cargo run -p rustbox-app -- --control-grpc 0.0.0.0:19090 --control-token secret http-proxy
+cargo run -p rustbox-app -- --control-grpc 0.0.0.0:19090 --control-token secret run --config examples/rustbox.toml
 ```
 
 Clients can pass `authorization: Bearer <token>` metadata, or
@@ -114,8 +102,8 @@ Clients can pass `authorization: Bearer <token>` metadata, or
 
 ## Config File
 
-The app accepts TOML config files that are parsed by `rustbox-config-file` into
-the same format-neutral `SourceConfig` used by FFI and built-in defaults.
+The app starts proxy services only from TOML config files. They are parsed by
+`rustbox-config-file` into the same format-neutral `SourceConfig` used by FFI.
 The config pipeline is staged as Source -> Parsed -> Normalized -> Validated ->
 Compiled; endpoints, CIDRs, and port ranges are parsed into shared
 `rustbox-types` before validation.
@@ -128,6 +116,9 @@ unrelated commands without custom validation code:
 cargo run -p rustbox-app -- run --config examples/rustbox.toml
 cargo run -p rustbox-app -- check-config --config examples/rustbox.toml
 ```
+
+The CLI does not provide built-in `http-proxy` or `socks5-proxy` startup
+commands. Add the corresponding `[[inbounds]]` entries to the TOML file instead.
 
 ```toml
 schema_version = 1
