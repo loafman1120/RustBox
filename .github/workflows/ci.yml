@@ -190,9 +190,17 @@ jobs:
       - name: Fix permissions (Unix)
         if: matrix.os != 'windows-latest'
         run: chmod +x target/debug/rustbox-app
+
+      - name: Cache sing-box
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rustbox-ci-sing-box
+          key: sing-box-${{ runner.os }}-${{ runner.arch }}-1.13.14
+
       - name: Run outbound e2e
         shell: pwsh
         env:
+          SING_BOX_CACHE_DIR: ${{ runner.temp }}/rustbox-ci-sing-box
           RUSTBOX_SBOX_OUTBOUND: ${{ matrix.outbound }}
           RUSTBOX_CI_DUMP_LOGS: "1"
         run: ./scripts/ci/sing-box-smoke.ps1
