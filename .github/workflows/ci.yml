@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      external_network:
+        description: Also check outbound egress through the proxy to https://example.com
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust:
+    name: Checks & smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup default stable
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Check formatting
+        shell: pwsh
+        run: ./scripts/build.ps1 -Fmt -Locked
+
+      - name: Test
+        shell: pwsh
+        run: ./scripts/build.ps1 -Test -AllTargets -Locked
+
+      - name: Clippy
+        shell: pwsh
+        run: ./scripts/build.ps1 -Clippy -AllTargets -Locked
+
+      - name: Build docs
+        shell: pwsh
+        run: ./scripts/build.ps1 -Doc -AllTargets -Locked
+
+      - name: Build CLI
+        shell: pwsh
+        run: ./scripts/build.ps1 -Build -Locked
+
+      - name: Check CLI help
+        run: cargo run --locked -p rustbox-app -- --help
+
+      - name: Check TUN transparent config
+        if: matrix.os != 'macos-latest'
+        run: cargo run --locked -p rustbox-app -- check-config --config examples/tun-transparent.toml
+
+      - name: Control gRPC smoke test
+        run: bash scripts/ci/control-grpc-smoke.sh
+
+      - name: Proxy smoke test
+        shell: pwsh
+        env:
+          RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
+          RUSTBOX_CI_DUMP_LOGS: "1"
+        run: ./scripts/ci/proxy-smoke.ps1
+
+      - name: Upload proxy smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustbox-proxy-smoke-logs-${{ matrix.os }}
+          path: target/ci-proxy-smoke/logs
+          if-no-files-found: ignore
