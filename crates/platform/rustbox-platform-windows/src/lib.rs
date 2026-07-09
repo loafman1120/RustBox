@@ -7,11 +7,12 @@
 use net_route::{Handle as RouteHandle, Route};
 use rustbox_host_api::{
     BoxFuture, ConnectionKey, NetworkControl, NetworkControlError, NetworkLease,
-    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
+    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceLease,
     PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError,
 };
 #[cfg(target_os = "windows")]
-use rustbox_host_api::{InterfaceRef, NetworkOperation, RollbackPolicy};
+use rustbox_host_api::{InterfaceRef, NetworkOperation, PacketDeviceInfo, RollbackPolicy};
+#[cfg(target_os = "windows")]
 use rustbox_io::PacketDevice;
 #[cfg(target_os = "windows")]
 use rustbox_io::{IoError, IoErrorKind};

@@ -684,7 +684,10 @@ mod tests {
 
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
-            let error = result.expect_err("unsupported tun platform");
+            let error = match result {
+                Ok(_) => panic!("expected unsupported tun platform"),
+                Err(error) => error,
+            };
             assert!(matches!(
                 error,
                 ComposeError::Config(ConfigError { message }) if message.contains("tun inbound")
