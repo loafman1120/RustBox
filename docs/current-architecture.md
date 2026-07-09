@@ -17,6 +17,20 @@ rustbox-ffi (C ABI) ─────┘       |
 CLI 与 FFI 使用相同的 `new/start/stop/reload/snapshot` 生命周期。内部的组合器和
 运行图类型不再是公共 API。
 
+CLI 的子命令直接承载自己的参数：
+
+```text
+run --config <FILE>
+check-config --config <FILE>
+http-proxy
+socks5-proxy
+platform-capabilities
+```
+
+Clap derive 负责子命令和必填参数校验。代码直接对 `CliCommand` 做行为路由，
+不再有第二个 `RuntimeMode`、全局 `--config` 或手写参数冲突检查。无子命令时
+Clap 显示帮助。
+
 ## 主要 crate
 
 | 位置 | 职责 |

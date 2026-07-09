@@ -50,7 +50,7 @@ The current code implements the following pieces:
 | Remote bridge | `RemoteTelemetrySink` + `TelemetryExporter` | Adapter point for HTTP/gRPC/OTLP/custom telemetry exporters |
 | Control API | `rustbox-control-api` | Native gRPC snapshots, event queries, and stop command |
 
-`rustbox-app --config` currently wires console output and optional file output
+`rustbox-app run --config` currently wires console output and optional file output
 from TOML:
 
 ```toml

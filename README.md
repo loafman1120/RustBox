@@ -28,7 +28,7 @@ cargo build --workspace
 
 ## Run
 
-Print the architecture summary:
+Show CLI help:
 
 ```powershell
 cargo run -p rustbox-app
@@ -49,7 +49,7 @@ cargo run -p rustbox-app -- socks5-proxy
 Start from a TOML config file:
 
 ```powershell
-cargo run -p rustbox-app -- --config examples/rustbox.toml
+cargo run -p rustbox-app -- run --config examples/rustbox.toml
 ```
 
 The default proxies listen on:
@@ -81,9 +81,9 @@ The current log events cover service lifecycle, accepted TCP connections, flow
 submission, route decisions, direct outbound connection attempts, relay traffic
 bytes, flow completion, and failures.
 
-When starting with `--config`, `[observability] level = "info"` in the TOML
-file controls the console log level. `RUSTBOX_LOG` is still used as the fallback
-when the file omits that setting.
+When starting with `run --config`, `[observability] level = "info"` in the
+TOML file controls the console log level. `RUSTBOX_LOG` is still used as the
+fallback when the file omits that setting.
 
 Add `file = "target/rustbox.log"` under `[observability]` to append the same
 structured event stream to a file. Metrics, connection statistics, bounded event
@@ -119,6 +119,15 @@ the same format-neutral `SourceConfig` used by FFI and built-in defaults.
 The config pipeline is staged as Source -> Parsed -> Normalized -> Validated ->
 Compiled; endpoints, CIDRs, and port ranges are parsed into shared
 `rustbox-types` before validation.
+
+`--config` belongs to the `run` and `check-config` subcommands rather than the
+global CLI. Clap therefore enforces the required path and rejects it for
+unrelated commands without custom validation code:
+
+```powershell
+cargo run -p rustbox-app -- run --config examples/rustbox.toml
+cargo run -p rustbox-app -- check-config --config examples/rustbox.toml
+```
 
 ```toml
 schema_version = 1

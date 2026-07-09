@@ -15,10 +15,6 @@ use std::collections::HashMap;
 use std::future::poll_fn;
 use std::sync::Arc;
 
-pub fn architecture_summary() -> &'static str {
-    "RustBox: one shared engine API for CLI, FFI, and Tokio"
-}
-
 /// 数据面进入内核后的基本工作单元。
 pub struct Flow {
     pub meta: FlowMeta,

@@ -292,7 +292,7 @@ outbound = "direct"
     Start-LoggedProcess `
         -Label "rustbox" `
         -FilePath $BinPath `
-        -ArgumentList @("--config", $ConfigPath) `
+        -ArgumentList @("run", "--config", $ConfigPath) `
         -StdoutPath (Join-Path $LogsDir "rustbox-stdout.log") `
         -StderrPath (Join-Path $LogsDir "rustbox-stderr.log") | Out-Null
 

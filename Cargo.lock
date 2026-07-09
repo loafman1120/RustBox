@@ -2738,7 +2738,6 @@ dependencies = [
  "rustbox-config-file",
  "rustbox-control",
  "rustbox-control-api",
- "rustbox-kernel",
  "rustbox-observability",
  "rustbox-platform-linux",
  "rustbox-types",

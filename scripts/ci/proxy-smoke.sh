@@ -178,7 +178,7 @@ type = "default"
 outbound = "direct"
 EOF
 
-  "$BIN_PATH" --config "$WORK_DIR/rustbox-ci.toml" \
+  "$BIN_PATH" run --config "$WORK_DIR/rustbox-ci.toml" \
     >"$WORK_DIR/logs/rustbox-stdout.log" 2>"$WORK_DIR/logs/rustbox-stderr.log" &
   RUSTBOX_PID=$!
 
