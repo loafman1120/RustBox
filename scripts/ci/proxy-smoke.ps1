@@ -102,40 +102,20 @@ function Start-LoggedProcess {
         [string]$StderrPath
     )
 
+    $Params = @{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        RedirectStandardOutput = $StdoutPath
+        RedirectStandardError = $StderrPath
+        PassThru = $true
+        WorkingDirectory = $RootDir
+    }
     if ($IsWindows) {
-        $Params = @{
-            FilePath = $FilePath
-            ArgumentList = $ArgumentList
-            RedirectStandardOutput = $StdoutPath
-            RedirectStandardError = $StderrPath
-            PassThru = $true
-            WorkingDirectory = $RootDir
-            WindowStyle = "Hidden"
-        }
-
-        Write-CiLog "start $Label`: $FilePath $($ArgumentList -join ' ')"
-        $Process = Start-Process @Params
-    } else {
-        $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
-        $StartInfo.FileName = "/bin/sh"
-        $StartInfo.WorkingDirectory = $RootDir
-        $StartInfo.UseShellExecute = $false
-        $StartInfo.RedirectStandardOutput = $false
-        $StartInfo.RedirectStandardError = $false
-        $StartInfo.CreateNoWindow = $true
-        $StartInfo.ArgumentList.Add("-c")
-        $StartInfo.ArgumentList.Add("exec `"$FilePath`" $($ArgumentList -join ' ') > `"$StdoutPath`" 2> `"$StderrPath`"")
-
-        $Process = [System.Diagnostics.Process]::new()
-        $Process.StartInfo = $StartInfo
-        $Process.EnableRaisingEvents = $true
-
-        Write-CiLog "start $Label`: $FilePath $($ArgumentList -join ' ')"
-        if (-not $Process.Start()) {
-            throw "failed to start $Label"
-        }
+        $Params.WindowStyle = "Hidden"
     }
 
+    Write-CiLog "start $Label`: $FilePath $($ArgumentList -join ' ')"
+    $Process = Start-Process @Params
     $Processes.Add($Process)
     Start-Sleep -Milliseconds 250
     if ($Process.HasExited) {
@@ -156,13 +136,13 @@ function Wait-ForTcp {
     while ([DateTime]::UtcNow -lt $Deadline) {
         $Client = [System.Net.Sockets.TcpClient]::new()
         try {
-            $ConnectTask = $Client.ConnectAsync($HostName, $Port)
-            if ($ConnectTask.Wait([TimeSpan]::FromSeconds(1)) -and $Client.Connected) {
+            $Client.Connect($HostName, $Port)
+            if ($Client.Connected) {
                 Write-CiLog "$Label is listening on ${HostName}:$Port"
                 return
             }
         } catch {
-            $LastError = $_.Exception.Message
+            $LastError = $_.Exception.GetBaseException().Message
         } finally {
             $Client.Dispose()
         }
