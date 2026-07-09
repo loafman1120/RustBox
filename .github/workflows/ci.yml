@@ -21,7 +21,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  SING_BOX_VERSION: "1.13.14"
 
 jobs:
   # ── Lint: format only, no compilation ──────────────────────────
@@ -153,9 +152,9 @@ jobs:
           path: target/ci-proxy-smoke/logs
           if-no-files-found: ignore
 
-  # ── Smoke: sing-box e2e ────────────────────────────────────────
+  # ── Smoke: sing-box e2e matrix ─────────────────────────────────
   smoke-singbox:
-    name: Smoke sing-box (${{ matrix.os }})
+    name: Smoke sbox/${{ matrix.outbound }} (${{ matrix.os }})
     needs: build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -166,6 +165,11 @@ jobs:
           - ubuntu-latest
           - windows-latest
           - macos-latest
+        outbound:
+          - socks5
+          - http
+          - shadowsocks
+          - anytls
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -182,12 +186,13 @@ jobs:
       - name: Sing-box e2e smoke
         shell: pwsh
         env:
+          RUSTBOX_SBOX_OUTBOUND: ${{ matrix.outbound }}
           RUSTBOX_CI_DUMP_LOGS: "1"
         run: ./scripts/ci/sing-box-smoke.ps1
       - name: Upload sing-box smoke logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: singbox-smoke-logs-${{ matrix.os }}
+          name: sbox-smoke-${{ matrix.outbound }}-${{ matrix.os }}
           path: target/ci-singbox-smoke/logs
           if-no-files-found: ignore
