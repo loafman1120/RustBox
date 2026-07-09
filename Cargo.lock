@@ -2740,7 +2740,6 @@ dependencies = [
  "rustbox-control-api",
  "rustbox-observability",
  "rustbox-platform-linux",
- "rustbox-types",
  "tokio",
 ]
 
