@@ -21,13 +21,37 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  SING_BOX_VERSION: "1.13.14"
 
 jobs:
-  rust:
-    name: Checks & smoke (${{ matrix.os }})
+  # ── Lint: format only, no compilation ──────────────────────────
+  lint:
+    name: Lint (fmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-lint-
+      - name: Check formatting
+        shell: pwsh
+        run: ./scripts/build.ps1 -Fmt
+
+  # ── Build: compile, test, clippy, doc, upload artifact ─────────
+  build:
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
-
     strategy:
       fail-fast: false
       matrix:
@@ -35,21 +59,12 @@ jobs:
           - ubuntu-latest
           - windows-latest
           - macos-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install stable Rust
         run: |
-          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -60,21 +75,16 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
-
       - name: Fetch dependencies
         run: cargo fetch --locked
-
-      - name: Check formatting
-        shell: pwsh
-        run: ./scripts/build.ps1 -Fmt -Locked
-
-      - name: Test
-        shell: pwsh
-        run: ./scripts/build.ps1 -Test -AllTargets -Locked
 
       - name: Clippy
         shell: pwsh
         run: ./scripts/build.ps1 -Clippy -AllTargets -Locked
+
+      - name: Test
+        shell: pwsh
+        run: ./scripts/build.ps1 -Test -AllTargets -Locked
 
       - name: Build docs
         shell: pwsh
@@ -91,20 +101,93 @@ jobs:
         if: matrix.os != 'macos-latest'
         run: cargo run --locked -p rustbox-app -- check-config --config examples/tun-transparent.toml
 
-      - name: Control gRPC smoke test
+      - name: Control gRPC smoke
         run: bash scripts/ci/control-grpc-smoke.sh
 
-      - name: Proxy smoke test
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustbox-app-${{ matrix.os }}
+          path: |
+            target/debug/rustbox-app
+            target/debug/rustbox-app.exe
+          if-no-files-found: error
+
+  # ── Smoke: proxy + gRPC ────────────────────────────────────────
+  smoke-proxy:
+    name: Smoke proxy (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rustbox-app-${{ matrix.os }}
+          path: target/debug
+      - name: Fix permissions (Unix)
+        if: matrix.os != 'windows-latest'
+        run: chmod +x target/debug/rustbox-app
+      - name: Proxy smoke
         shell: pwsh
         env:
           RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
           RUSTBOX_CI_DUMP_LOGS: "1"
         run: ./scripts/ci/proxy-smoke.ps1
-
       - name: Upload proxy smoke logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rustbox-proxy-smoke-logs-${{ matrix.os }}
+          name: proxy-smoke-logs-${{ matrix.os }}
           path: target/ci-proxy-smoke/logs
+          if-no-files-found: ignore
+
+  # ── Smoke: sing-box e2e ────────────────────────────────────────
+  smoke-singbox:
+    name: Smoke sing-box (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rustbox-app-${{ matrix.os }}
+          path: target/debug
+      - name: Fix permissions (Unix)
+        if: matrix.os != 'windows-latest'
+        run: chmod +x target/debug/rustbox-app
+      - name: Sing-box e2e smoke
+        shell: pwsh
+        env:
+          RUSTBOX_CI_DUMP_LOGS: "1"
+        run: ./scripts/ci/sing-box-smoke.ps1
+      - name: Upload sing-box smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: singbox-smoke-logs-${{ matrix.os }}
+          path: target/ci-singbox-smoke/logs
           if-no-files-found: ignore
