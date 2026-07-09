@@ -466,11 +466,11 @@ fn io_error_to_std(err: IoError) -> io::Error {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
+    use rustbox_host_api::TokioHost;
     use rustbox_inbound_socks5::Socks5Inbound;
     use rustbox_kernel::{Engine, FlowSink, Service, ServiceContext};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
-    use rustbox_runtime_tokio::TokioHost;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use std::future::poll_fn;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

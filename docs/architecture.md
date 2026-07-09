@@ -1,366 +1,96 @@
-# RustBox Architecture
+# RustBox 架构
 
-> **Document status:** Draft
-> **Architecture version:** 0.1
-> **Project:** RustBox
-> **Current implementation map:** `docs/current-architecture.md`
-> **Configuration and FFI design:** `docs/config-ffi-architecture.md`
-> **Observability design:** `docs/observability-architecture.md`
-> **TUN / transparent proxy design:** `docs/tun-transparent-proxy-architecture.md`
-
-This document defines the stable architectural boundaries for RustBox. It is
-intentionally short. Current implementation details, crate inventories, test
-lists, and config/FFI API detail live in the companion documents above.
-
----
-
-## 1. Purpose
-
-RustBox is a modular proxy engine organized around:
+RustBox 采用一条直接的主调用链：
 
 ```text
-portable core + capability ports + host adapters + composition root
+CLI / FFI / Rust embedding
+          |
+          v
+       RustBox
+  new/start/stop/reload/snapshot
+          |
+          v
+  config + proxy modules + kernel
+          |
+          v
+        Tokio
 ```
 
-The key portability rule is:
+## 原则
 
-> If a module claims to be platform-independent, it must not require native
-> operating-system facilities in order to compile.
+1. `apps/rustbox` 只是 CLI。它解析参数、处理终端信号并调用 `RustBox`，不自行
+   编译配置或装配代理图。
+2. `rustbox-ffi` 只是 ABI 翻译层。它把 C 的字节串、句柄和状态码转换为同一个
+   `RustBox` 接口，不维护第二套引擎实现。
+3. Tokio 是项目选定的异步运行时，可以在需要异步 I/O 的 crate 中直接使用。
+   不为假设中的其他 runtime 增加 adapter、executor 或 wrapper 层。
+4. 只有存在真实替换需求时才保留 trait：
+   - 测试需要内存网络或可控时钟；
+   - Linux、Windows、Android 等平台实现确实不同；
+   - 一个协议需要接收 TCP、TLS、代理隧道等多种流。
+5. crate 按可独立测试和复用的功能拆分，不按抽象层级拆分。没有独立用途的
+   pass-through crate 应合并或删除。
 
-This does not mean RustBox must ship as WebAssembly. The WASM-like constraint is
-a design test that keeps proxy logic separate from host effects.
+## 公共 Rust 接口
 
----
+`rustbox` crate 当前承载共享应用接口：
 
-## 2. Goals
+```rust
+let mut rustbox = RustBox::new(source_config)?;
+rustbox.start().await?;
+let snapshot = rustbox.snapshot();
+rustbox.reload(next_source_config).await?;
+rustbox.stop().await?;
+```
 
-RustBox should provide:
+源码位于 `crates/rustbox`。内部运行图构造器不属于 CLI 或 FFI API。
 
-1. A platform-independent proxy core.
-2. Replaceable OS, runtime, and platform adapters.
-3. Independent inbound, outbound, transport, DNS, routing, and inspection modules.
-4. Explicit dependency direction.
-5. Explicit lifecycle ownership.
-6. Testable modules without real sockets or real operating systems.
-7. A clear FFI and mobile embedding boundary.
+## 配置
 
-RustBox is not designed around these assumptions:
-
-- Tokio is the architecture.
-- TUN is part of the core.
-- Configuration file formats define runtime architecture.
-- Dynamic plugins are mandatory.
-- Internal Rust traits are the external stable ABI.
-- Protocol modules directly call OS sockets or platform APIs.
-
----
-
-## 3. Dependency Rule
-
-Dependencies point inward toward abstractions:
+所有入口使用同一条路径：
 
 ```text
-Application
-    -> Composition
-    -> Modules
-    -> Kernel
-    -> Capability Contracts
-    -> Foundation
-
-Host adapters implement capability contracts from the side.
+TOML / programmatic SourceConfig
+  -> parse
+  -> normalize
+  -> validate
+  -> compile
+  -> RustBox
 ```
 
-Forbidden examples:
+文件格式解析仍与运行配置模型分开，因为 FFI、GUI 和测试可以直接提供
+`SourceConfig`。这是一条有实际调用方的边界，不是为解耦而解耦。
 
-```text
-rustbox-kernel -> tokio
-rustbox-kernel -> rustbox-platform-windows
-rustbox-kernel -> std::net::TcpStream
-```
+## Tokio 与 host trait
 
-Allowed examples:
+`TokioHost` 位于 `rustbox-host-api`，不再有独立的
+`rustbox-runtime-tokio` crate。网络、时钟、随机数和任务默认由 Tokio 实现。
 
-```text
-rustbox-kernel -> rustbox-host-api
-rustbox-runtime-tokio -> rustbox-host-api
-rustbox-platform-windows -> rustbox-host-api
-```
+`NetworkProvider`、`Clock`、`PacketDeviceProvider` 等 trait 暂时保留，是因为
+测试 host 和平台设备确实有多个实现。它们不是“可替换 runtime 架构”。如果
+某个 trait 最终只有 Tokio 一个实现且测试也不需要替身，应继续删除。
 
----
+## 生命周期
 
-## 4. Layer Model
+`RustBox` 是生命周期的唯一所有者：
 
-| Layer | Responsibility |
-|---|---|
-| L5 Application and control | CLI, app lifecycle, FFI boundary, control commands |
-| L4 Composition | Builds a concrete runtime graph from validated config |
-| L3 Proxy modules | Inbounds, outbounds, transports, DNS, inspection, stack adapters |
-| L2 Kernel | Flow lifecycle, routing coordination, relay, sessions, reload |
-| L1 Capability contracts | Network, clock, entropy, tasks, packet device, platform control |
-| L0 Foundation | Portable types and runtime-neutral I/O traits |
+- `new`：校验配置并准备运行图；
+- `start`：启动所有 inbound 服务；
+- `stop`：按反向顺序停止服务；
+- `reload`：准备新图，并在需要时停止旧图、启动新图；
+- `snapshot`：向 CLI、FFI、控制 API 返回同一种状态。
 
-Host/runtime/platform adapters attach to L1. They do not become part of the
-portable core.
+C 调用方没有 Tokio runtime，因此 FFI 只额外持有一个 Tokio `Runtime` 来
+`block_on` 同一组 async 方法。这是同步 ABI 桥接，不是另一套业务实现。
 
----
+## 依赖边界
 
-## 5. Core Concepts
+需要坚持的边界很少：
 
-### Flow
+- 协议模块不解析 CLI 参数；
+- FFI 不暴露 Rust 引用或 trait object；
+- 配置校验不在各 inbound/outbound 中重复；
+- 平台路由、TUN 和透明代理操作留在对应平台实现；
+- CLI 与 FFI 不直接操作内部 `Engine` 或 service 列表。
 
-A flow is network work entering the engine. Inbounds create flows; they do not
-choose outbounds.
-
-```text
-Inbound -> Flow -> Metadata -> Router -> Outbound -> Transport -> Host capability
-```
-
-### Capability
-
-A capability is an effect supplied by the host, such as TCP connect, UDP bind,
-time, entropy, task spawning, packet-device access, route control, or
-observability output.
-
-Portable modules request effects through capabilities. They do not call native
-APIs directly.
-
-### Module
-
-A module creates, transforms, observes, or executes flows. Examples:
-
-```text
-inbound-http
-inbound-socks5
-outbound-direct
-outbound-http
-outbound-shadowsocks
-outbound-socks5
-transport-tls
-dns-core
-inspect
-stack
-```
-
-Protocol codec logic should be separated from runtime adapters when practical.
-Codec crates should parse and encode protocol data, not open sockets.
-
-### Kernel
-
-The kernel owns flow coordination, routing decisions, session state, relay
-primitives, lifecycle state, and controlled reload.
-
-The kernel does not own protocol parsing, OS networking, config file parsing, or
-platform route manipulation.
-
----
-
-## 6. Configuration
-
-All configuration frontends feed the same staged pipeline:
-
-```text
-File / CLI / GUI / FFI / remote control
-        -> SourceConfig
-        -> ParsedConfig
-        -> ValidatedConfig
-        -> CompiledConfig
-        -> Composition root
-        -> Runtime graph
-```
-
-Input formats are not runtime architecture. Runtime modules receive typed,
-validated configuration only.
-
-Detailed config and FFI rules live in `docs/config-ffi-architecture.md`.
-
----
-
-## 7. Application and Control
-
-`rustbox-app` owns the concrete process lifecycle:
-
-- parse CLI input
-- load and validate configuration
-- choose the composition path
-- start the runtime graph
-- handle Ctrl-C and shutdown
-- initiate future reload paths
-
-CLI parsing belongs at this layer. The current app may use `clap` derive, but
-CLI flags and subcommands must not leak into the kernel, protocol modules, or
-runtime adapters.
-
-The current runnable forms are:
-
-```text
-cargo run -p rustbox-app
-cargo run -p rustbox-app -- http-proxy
-cargo run -p rustbox-app -- socks5-proxy
-cargo run -p rustbox-app -- --config examples/rustbox.toml
-cargo run -p rustbox-app -- run --config examples/rustbox.toml
-```
-
-The no-argument form prints the architecture summary. The default proxy commands
-start local HTTP CONNECT and SOCKS5 graphs. Config-file startup enters through
-`rustbox-config-file` and then follows the shared configuration pipeline.
-
-Control frontends, including CLI, HTTP, gRPC, GUI, mobile, or embedded hosts,
-must interact with engine commands and snapshots rather than direct mutable
-kernel internals.
-
----
-
-## 8. Composition
-
-Composition is where abstract components become a concrete RustBox instance.
-
-It is the layer that selects:
-
-- runtime adapter
-- platform adapter
-- observability sink
-- enabled modules
-- route table
-- validated compiled configuration
-
-RustBox prefers explicit construction over global context. Constructors should
-not bind sockets, open packet devices, spawn background tasks, or mutate system
-routes. Long-lived resources are acquired during explicit start/lifecycle
-transitions.
-
----
-
-## 9. Platform and Runtime Adapters
-
-Runtime adapters implement executor and I/O details such as:
-
-- task spawning
-- timers
-- TCP and UDP networking
-- runtime-specific stream adapters
-
-Platform adapters implement OS facilities such as:
-
-- packet devices
-- route control
-- transparent proxy integration
-- process metadata
-- platform event monitoring
-
-Unsupported capabilities must be explicit. The kernel must not infer platform
-support from scattered `cfg(target_os)` branches.
-
----
-
-## 10. FFI Boundary
-
-FFI sits outside the kernel. It exposes coarse engine and configuration
-operations through stable handles and versioned status codes.
-
-FFI must not expose:
-
-- Rust trait objects
-- Tokio types
-- Rust references
-- internal module pointers
-- internal Rust enums without explicit representation
-
-Mobile and desktop embeddings are built on this boundary.
-
----
-
-## 11. Observability
-
-The core emits structured events through an observability capability. Detailed
-implementation and API rules live in `docs/observability-architecture.md`.
-
-Portable crates may define event kinds and attach flow identifiers. The
-application or embedding host chooses the final sink, such as console, recording
-sink, metrics/query store, platform-native logging, file logging, or remote
-telemetry.
-
-Runtime metrics and connection statistics are derived from the same structured
-event stream. Control frontends, including HTTP, gRPC, GUI, mobile, FFI, or
-compatibility APIs, query snapshots and bounded event history rather than direct
-mutable kernel state.
-
-High-frequency data-plane accounting should avoid synchronous formatted logging
-and should not make remote telemetry part of the relay hot path.
-
----
-
-## 12. Reload
-
-Reload follows a compile-and-swap model:
-
-```text
-new source config
-    -> parse
-    -> validate
-    -> compile runtime plan
-    -> prepare replacement graph
-    -> commit
-    -> drain old graph
-```
-
-A reload must not mutate the live engine incrementally while validation is still
-in progress. New flows use the new graph after commit; existing flows may
-continue on the plan selected when they were created.
-
----
-
-## 13. Testing
-
-The architecture must allow core behavior to be tested without real OS
-networking.
-
-Required test styles:
-
-- protocol codec unit tests
-- module tests with fake capabilities
-- kernel integration tests with a deterministic test host
-- app and FFI boundary tests
-- platform integration tests for real OS capabilities
-
----
-
-## 14. Invariants
-
-These rules are mandatory:
-
-1. Portable core crates do not import OS implementation crates.
-2. Portable core APIs do not expose native handles or Tokio types.
-3. Inbounds create flows; they do not choose outbounds.
-4. Routing consumes metadata and returns a decision.
-5. OS metadata acquisition is an enrichment capability, not router logic.
-6. TUN device creation belongs to a platform capability.
-7. Stream, datagram, and packet I/O remain distinct abstractions.
-8. Constructors do not acquire long-lived OS resources.
-9. Background tasks have explicit lifecycle owners.
-10. Config parsing is outside protocol runtime logic.
-11. External FFI ABI is separate from internal Rust traits.
-12. Platform support is expressed through capabilities.
-
----
-
-## 15. Current Implementation
-
-The current implementation map is maintained in `docs/current-architecture.md`.
-That file owns crate lists, current module coverage, verification commands,
-implemented tests, and known gaps.
-
-At a high level, the current executable proof is:
-
-```text
-HTTP CONNECT or SOCKS5 inbound
-    -> kernel flow submission
-    -> route table
-    -> direct outbound
-    -> Tokio host network capability
-```
-
-Known planned areas include full TUN and packet stack integration, transparent
-proxy integration, full platform route control, richer config handles, a
-networked HTTP/gRPC control API, and concrete platform/remote telemetry
-adapters. The TUN and transparent proxy design is maintained in
-`docs/tun-transparent-proxy-architecture.md`.
+除此之外，优先选择直接依赖和普通函数调用。

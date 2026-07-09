@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
-rustbox-compose = { path = "../../compose/rustbox-compose" }
+rustbox = { path = "../../rustbox" }
 rustbox-config = { path = "../../control/rustbox-config" }
 rustbox-config-file = { path = "../../config/rustbox-config-file" }
 rustbox-control = { path = "../../control/rustbox-control" }

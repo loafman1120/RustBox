@@ -310,7 +310,7 @@ impl ByteStream for HttpTunnelStream {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_runtime_tokio::TokioHost;
+    use rustbox_host_api::TokioHost;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

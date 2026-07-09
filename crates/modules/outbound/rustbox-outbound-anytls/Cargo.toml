@@ -1,0 +1,25 @@
+[package]
+name = "rustbox-outbound-anytls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anytls = { version = "=0.3.5", default-features = false, features = ["client"] }
+rustbox-host-api = { path = "../../../host/rustbox-host-api" }
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+rustls = "0.23.40"
+sha2 = "0.11.0"
+tokio = { version = "1", features = ["io-util", "sync", "time"] }
+tokio-rustls = "0.26.4"
+webpki-roots = "1"
+
+[dev-dependencies]
+anytls = { version = "=0.3.5", default-features = false, features = ["client", "server"] }
+rcgen = "0.14.8"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

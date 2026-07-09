@@ -14,7 +14,6 @@ rustbox-types = { path = "../../../foundation/rustbox-types" }
 [dev-dependencies]
 rustbox-outbound-direct = { path = "../../outbound/rustbox-outbound-direct" }
 rustbox-route = { path = "../../../kernel/rustbox-route" }
-rustbox-runtime-tokio = { path = "../../../runtime/rustbox-runtime-tokio" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
 
 [lints]

@@ -1300,6 +1300,18 @@ outbound = "direct"
             OutboundConfigKind::UrlTest { .. }
         ));
         assert!(matches!(
+            &config.source.outbounds[7].kind,
+            OutboundConfigKind::Vmess { .. }
+        ));
+        assert!(matches!(
+            &config.source.outbounds[8].kind,
+            OutboundConfigKind::Vless { .. }
+        ));
+        assert!(matches!(
+            &config.source.outbounds[9].kind,
+            OutboundConfigKind::Trojan { .. }
+        ));
+        assert!(matches!(
             &config.source.outbounds[10].kind,
             OutboundConfigKind::AnyTls { .. }
         ));

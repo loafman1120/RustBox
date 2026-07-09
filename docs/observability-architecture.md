@@ -14,7 +14,7 @@ metrics, API, or telemetry backend.
 
 RustBox observability must support:
 
-1. Structured events from the portable core and modules.
+1. Structured events from the kernel and modules.
 2. Low-cost counters for services, flows, routes, outbounds, diagnostics, and
    traffic bytes.
 3. Per-flow connection statistics for API, GUI, FFI, and tests.
@@ -61,7 +61,7 @@ file = "target/rustbox.log"
 
 Platform and remote telemetry are implemented as host-facing adapter traits.
 The concrete ETW/logcat/os_log/OTLP clients should live in platform or product
-adapter crates, not in the portable core.
+output implementations, not in the flow kernel.
 
 ---
 

@@ -1,7 +1,11 @@
-//! 宿主能力契约。
+//! RustBox 使用的 Tokio 网络实现与平台能力契约。
 //!
-//! 本 crate 是 L1 Capability Contracts。可移植内核和模块只依赖这些 trait，
-//! 不直接依赖 Tokio、Linux、Windows 或任何真实宿主实现。
+//! Tokio 是项目的直接依赖。这里的 trait 用于测试替身和操作系统能力注入，
+//! 不是为了抽象或替换 Tokio runtime。
+
+mod tokio_host;
+
+pub use tokio_host::TokioHost;
 
 use core::future::Future;
 use core::pin::Pin;
