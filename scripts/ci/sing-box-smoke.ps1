@@ -178,7 +178,7 @@ function Get-SingBoxConfig {
             $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
             $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
             return @"
-{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"anytls","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"password":"$AnyTlsPassword","tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"anytls","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"name":"rustbox","password":"$AnyTlsPassword"}],"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
 "@
         }
         default { throw "unsupported outbound type: $OutboundType" }
