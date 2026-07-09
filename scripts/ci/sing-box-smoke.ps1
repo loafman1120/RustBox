@@ -43,8 +43,8 @@ function Get-SingBoxBinary {
          elseif ($IsWindows) { "windows-amd64" }
          else { throw "unsupported OS" }
 
-    $cachedBin = Join-Path $cacheDir "sing-box-$SboxVersion-$osArch"
-    if ($IsWindows) { $cachedBin = "$cachedBin.exe" }
+    $binName = if ($IsWindows) { "sing-box.exe" } else { "sing-box" }
+    $cachedBin = Join-Path $cacheDir $binName
 
     if (Test-Path $cachedBin) {
         Write-CiLog "using cached sing-box: $cachedBin"
