@@ -1,11 +1,17 @@
-//! AnyTLS outbound.
+//! AnyTLS outbound backed by the protocol-compatible `anytls 0.2.3` client.
 //!
-//! The `anytls` crate owns protocol framing and session state. RustBox keeps
-//! responsibility for routing, host-provided TCP connectivity, TLS policy,
-//! target-address framing, and observability.
+//! The pinned `anytls` crate owns protocol framing, its single-active-stream
+//! session pool, and session state. RustBox keeps responsibility for routing,
+//! host-provided TCP connectivity, TLS policy, target-address framing, and
+//! observability.
+//!
+//! The selected crate version retains canonical stream creation (`cmdSYN`),
+//! monotonically increasing stream IDs, session pooling, and `cmdSYNACK`
+//! handling. See `docs/anytls-support.md` for the interoperability contract and
+//! upgrade gates.
 
-use anytls::core::{Command, PaddingFactory};
-use anytls::proxy::session::{Client, DEFAULT_SID, Session};
+use anytls::core::PaddingFactory;
+use anytls::proxy::session::{Client, Stream};
 use anytls::runtime::DefaultPaddingFactory;
 use anytls::{AsyncReadWrite, DialOutFunc};
 use core::future::Future;
@@ -31,10 +37,13 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio_rustls::TlsConnector;
 
-const STREAM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_SESSION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const IDLE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 const UOT_SENTINEL: &str = "sp.v2.udp-over-tcp.arpa";
+
+/// Peer implementation profile covered by RustBox's unit and process-level
+/// end-to-end tests.
+pub const SUPPORTED_ANYTLS_PROFILE: &str = "canonical-anytls-v2/anytls-crate-0.2.3";
 
 /// TLS policy used by an AnyTLS outbound.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -158,21 +167,14 @@ impl Outbound for AnyTlsOutbound {
 
             let result = async {
                 let address = encode_target(&target)?;
-                let session = self
+                let stream = self
                     .client()
                     .await
                     .create_stream()
                     .await
                     .map_err(outbound_io_error)?;
-                session.write(&address).await.map_err(outbound_io_error)?;
-                tokio::time::timeout(
-                    STREAM_HANDSHAKE_TIMEOUT,
-                    session.wait_for_stream_handshake(),
-                )
-                .await
-                .map_err(|_| OutboundError::new("anytls target handshake timed out"))?
-                .map_err(outbound_io_error)?;
-                Ok(Box::new(AnyTlsSessionStream::new(session)) as Box<dyn ByteStream>)
+                stream.write(&address).await.map_err(outbound_io_error)?;
+                Ok(Box::new(AnyTlsByteStream::new(stream)) as Box<dyn ByteStream>)
             }
             .await;
 
@@ -203,28 +205,21 @@ impl Outbound for AnyTlsOutbound {
                 .await;
 
             let result = async {
-                let session = self
+                let stream = self
                     .client()
                     .await
                     .create_stream()
                     .await
                     .map_err(outbound_io_error)?;
                 let sentinel = encode_target(&Endpoint::new(Host::domain(UOT_SENTINEL), 0))?;
-                session.write(&sentinel).await.map_err(outbound_io_error)?;
+                stream.write(&sentinel).await.map_err(outbound_io_error)?;
 
                 // UOT datagram mode followed by an unspecified SOCKS address.
-                session
+                stream
                     .write(&[0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await
                     .map_err(outbound_io_error)?;
-                tokio::time::timeout(
-                    STREAM_HANDSHAKE_TIMEOUT,
-                    session.wait_for_stream_handshake(),
-                )
-                .await
-                .map_err(|_| OutboundError::new("anytls UOT handshake timed out"))?
-                .map_err(outbound_io_error)?;
-                Ok(Box::new(AnyTlsDatagramSocket::new(session)) as Box<dyn DatagramSocket>)
+                Ok(Box::new(AnyTlsDatagramSocket::new(stream)) as Box<dyn DatagramSocket>)
             }
             .await;
 
@@ -503,18 +498,18 @@ impl AsyncWrite for SharedByteStream {
     }
 }
 
-struct AnyTlsSessionStream {
-    session: Arc<Session>,
+struct AnyTlsByteStream {
+    stream: Arc<Stream>,
     read: Option<ReadFuture>,
     write: Option<WriteFuture>,
     close: Option<CloseFuture>,
     closed: bool,
 }
 
-impl AnyTlsSessionStream {
-    fn new(session: Arc<Session>) -> Self {
+impl AnyTlsByteStream {
+    fn new(stream: Arc<Stream>) -> Self {
         Self {
-            session,
+            stream,
             read: None,
             write: None,
             close: None,
@@ -523,18 +518,18 @@ impl AnyTlsSessionStream {
     }
 }
 
-impl AsyncRead for AnyTlsSessionStream {
+impl AsyncRead for AnyTlsByteStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         if self.read.is_none() {
-            let session = self.session.clone();
+            let stream = self.stream.clone();
             let capacity = buf.remaining();
             self.read = Some(Box::pin(async move {
                 let mut bytes = vec![0_u8; capacity];
-                let result = session.read(&mut bytes).await;
+                let result = stream.read(&mut bytes).await;
                 (bytes, result)
             }));
         }
@@ -555,16 +550,16 @@ impl AsyncRead for AnyTlsSessionStream {
     }
 }
 
-impl AsyncWrite for AnyTlsSessionStream {
+impl AsyncWrite for AnyTlsByteStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         if self.write.is_none() {
-            let session = self.session.clone();
+            let stream = self.stream.clone();
             let bytes = buf.to_vec();
-            self.write = Some(Box::pin(async move { session.write(&bytes).await }));
+            self.write = Some(Box::pin(async move { stream.write(&bytes).await }));
         }
 
         let future = self.write.as_mut().expect("write future initialized");
@@ -586,13 +581,8 @@ impl AsyncWrite for AnyTlsSessionStream {
             return Poll::Ready(Ok(()));
         }
         if self.close.is_none() {
-            let session = self.session.clone();
-            self.close = Some(Box::pin(async move {
-                session
-                    .write_frame(anytls::core::Frame::new(Command::Fin, DEFAULT_SID))
-                    .await?;
-                session.mark_local_stream_closed(DEFAULT_SID).await
-            }));
+            let stream = self.stream.clone();
+            self.close = Some(Box::pin(async move { stream.close().await }));
         }
 
         let future = self.close.as_mut().expect("close future initialized");
@@ -609,24 +599,24 @@ impl AsyncWrite for AnyTlsSessionStream {
     }
 }
 
-impl Drop for AnyTlsSessionStream {
+impl Drop for AnyTlsByteStream {
     fn drop(&mut self) {
         if !self.closed {
-            close_session_in_background(self.session.clone());
+            close_stream_in_background(self.stream.clone());
         }
     }
 }
 
 struct AnyTlsDatagramSocket {
-    session: Arc<Session>,
+    stream: Arc<Stream>,
     send: Option<DatagramSendFuture>,
     recv: Option<DatagramRecvFuture>,
 }
 
 impl AnyTlsDatagramSocket {
-    fn new(session: Arc<Session>) -> Self {
+    fn new(stream: Arc<Stream>) -> Self {
         Self {
-            session,
+            stream,
             send: None,
             recv: None,
         }
@@ -635,7 +625,7 @@ impl AnyTlsDatagramSocket {
 
 impl Drop for AnyTlsDatagramSocket {
     fn drop(&mut self) {
-        close_session_in_background(self.session.clone());
+        close_stream_in_background(self.stream.clone());
     }
 }
 
@@ -646,8 +636,8 @@ impl DatagramSocket for AnyTlsDatagramSocket {
         buf: &mut [u8],
     ) -> Poll<Result<(usize, Endpoint), IoError>> {
         if self.recv.is_none() {
-            let session = self.session.clone();
-            self.recv = Some(Box::pin(async move { read_uot_datagram(&session).await }));
+            let stream = self.stream.clone();
+            self.recv = Some(Box::pin(async move { read_uot_datagram(&stream).await }));
         }
 
         let future = self.recv.as_mut().expect("datagram receive initialized");
@@ -673,12 +663,12 @@ impl DatagramSocket for AnyTlsDatagramSocket {
         target: &Endpoint,
     ) -> Poll<Result<usize, IoError>> {
         if self.send.is_none() {
-            let session = self.session.clone();
+            let stream = self.stream.clone();
             let target = target.clone();
             let payload = buf.to_vec();
             self.send = Some(Box::pin(async move {
                 let frame = encode_uot_datagram(&target, &payload)?;
-                session.write(&frame).await?;
+                stream.write(&frame).await?;
                 Ok(payload.len())
             }));
         }
@@ -694,13 +684,10 @@ impl DatagramSocket for AnyTlsDatagramSocket {
     }
 }
 
-fn close_session_in_background(session: Arc<Session>) {
+fn close_stream_in_background(stream: Arc<Stream>) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         drop(handle.spawn(async move {
-            let _ = session
-                .write_frame(anytls::core::Frame::new(Command::Fin, DEFAULT_SID))
-                .await;
-            let _ = session.mark_local_stream_closed(DEFAULT_SID).await;
+            let _ = stream.close().await;
         }));
     }
 }
@@ -715,29 +702,29 @@ fn encode_uot_datagram(target: &Endpoint, payload: &[u8]) -> io::Result<Vec<u8>>
     Ok(frame)
 }
 
-async fn read_uot_datagram(session: &Session) -> io::Result<(Vec<u8>, Endpoint)> {
-    let source = read_socks_target(session).await?;
+async fn read_uot_datagram(stream: &Stream) -> io::Result<(Vec<u8>, Endpoint)> {
+    let source = read_socks_target(stream).await?;
     let mut payload_length = [0_u8; 2];
-    read_session_bytes(session, &mut payload_length).await?;
+    read_stream_bytes(stream, &mut payload_length).await?;
     let mut payload = vec![0_u8; usize::from(u16::from_be_bytes(payload_length))];
-    read_session_bytes(session, &mut payload).await?;
+    read_stream_bytes(stream, &mut payload).await?;
     Ok((payload, source))
 }
 
-async fn read_socks_target(session: &Session) -> io::Result<Endpoint> {
+async fn read_socks_target(stream: &Stream) -> io::Result<Endpoint> {
     let mut kind = [0_u8; 1];
-    read_session_bytes(session, &mut kind).await?;
+    read_stream_bytes(stream, &mut kind).await?;
     let host = match kind[0] {
         0x01 => {
             let mut octets = [0_u8; 4];
-            read_session_bytes(session, &mut octets).await?;
+            read_stream_bytes(stream, &mut octets).await?;
             Host::Ip(IpAddress::V4(octets))
         }
         0x03 => {
             let mut length = [0_u8; 1];
-            read_session_bytes(session, &mut length).await?;
+            read_stream_bytes(stream, &mut length).await?;
             let mut domain = vec![0_u8; usize::from(length[0])];
-            read_session_bytes(session, &mut domain).await?;
+            read_stream_bytes(stream, &mut domain).await?;
             Host::domain(
                 String::from_utf8(domain)
                     .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
@@ -745,7 +732,7 @@ async fn read_socks_target(session: &Session) -> io::Result<Endpoint> {
         }
         0x04 => {
             let mut octets = [0_u8; 16];
-            read_session_bytes(session, &mut octets).await?;
+            read_stream_bytes(stream, &mut octets).await?;
             Host::Ip(IpAddress::V6(octets))
         }
         value => {
@@ -756,17 +743,17 @@ async fn read_socks_target(session: &Session) -> io::Result<Endpoint> {
         }
     };
     let mut port = [0_u8; 2];
-    read_session_bytes(session, &mut port).await?;
+    read_stream_bytes(stream, &mut port).await?;
     Ok(Endpoint::new(host, u16::from_be_bytes(port)))
 }
 
-async fn read_session_bytes(session: &Session, mut output: &mut [u8]) -> io::Result<()> {
+async fn read_stream_bytes(stream: &Stream, mut output: &mut [u8]) -> io::Result<()> {
     while !output.is_empty() {
-        let read = session.read(output).await?;
+        let read = stream.read(output).await?;
         if read == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "anytls session closed",
+                "anytls stream closed",
             ));
         }
         output = &mut output[read..];
@@ -904,6 +891,16 @@ mod tests {
         assert!(error.message.contains("password"));
     }
 
+    #[test]
+    fn supported_profile_matches_the_exact_dependency_pin() {
+        let manifest = include_str!("../Cargo.toml");
+        assert_eq!(manifest.matches("version = \"=0.2.3\"").count(), 2);
+        assert_eq!(
+            SUPPORTED_ANYTLS_PROFILE,
+            "canonical-anytls-v2/anytls-crate-0.2.3"
+        );
+    }
+
     async fn start_anytls_server() -> Endpoint {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -928,11 +925,11 @@ mod tests {
                 .await
                 .expect("read auth padding");
 
-            let callback = Box::new(|session: Arc<Session>| {
+            let callback = Box::new(|stream: Arc<Stream>| {
                 tokio::spawn(async move {
-                    handle_test_session(session)
+                    handle_test_stream(stream)
                         .await
-                        .expect("handle anytls session");
+                        .expect("handle anytls stream");
                 });
             });
             let session =
@@ -943,32 +940,32 @@ mod tests {
         endpoint
     }
 
-    async fn handle_test_session(session: Arc<Session>) -> io::Result<()> {
-        let target = read_socks_target(&session).await?;
+    async fn handle_test_stream(stream: Arc<Stream>) -> io::Result<()> {
+        let target = read_socks_target(&stream).await?;
         if target == Endpoint::new(Host::domain(UOT_SENTINEL), 0) {
             let mut mode = [0_u8; 1];
-            read_session_bytes(&session, &mut mode).await?;
+            read_stream_bytes(&stream, &mut mode).await?;
             assert_eq!(mode, [0]);
-            let unspecified = read_socks_target(&session).await?;
+            let unspecified = read_socks_target(&stream).await?;
             assert_eq!(
                 unspecified,
                 Endpoint::new(Host::Ip(IpAddress::V4([0, 0, 0, 0])), 0)
             );
-            session.handshake_success().await?;
+            stream.handshake_success().await?;
 
-            let (payload, target) = read_uot_datagram(&session).await?;
+            let (payload, target) = read_uot_datagram(&stream).await?;
             assert_eq!(&payload, b"ping");
             assert_eq!(target, Endpoint::new(Host::domain("dns.example.test"), 53));
             let response = encode_uot_datagram(&target, b"pong")?;
-            session.write(&response).await?;
+            stream.write(&response).await?;
         } else {
             assert_eq!(target, Endpoint::new(Host::domain("example.test"), 443));
-            session.handshake_success().await?;
+            stream.handshake_success().await?;
 
             let mut request = [0_u8; 4];
-            read_session_bytes(&session, &mut request).await?;
+            read_stream_bytes(&stream, &mut request).await?;
             assert_eq!(&request, b"ping");
-            session.write(b"pong").await?;
+            stream.write(b"pong").await?;
         }
         Ok(())
     }

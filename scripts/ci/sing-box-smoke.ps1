@@ -101,9 +101,11 @@ function Get-Curl {
 }
 
 function Get-Python {
-    foreach ($c in @("python3", "python")) {
+    foreach ($c in @("python", "python3")) {
         $cmd = Get-Command $c -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($cmd) { return $cmd.Source }
+        if (-not $cmd) { continue }
+        & $cmd.Source --version *> $null
+        if ($LASTEXITCODE -eq 0) { return $cmd.Source }
     }
     throw "python not found"
 }
@@ -345,24 +347,30 @@ try {
     Wait-ForTcp "127.0.0.1" $RustboxHttpPort "rustbox"
 
     # ---- Curl ----
-    Write-CiLog "curling: curl -> rustbox -> $OutboundType -> sing-box -> target"
-    $bodyFile = Join-Path $LogsDir "curl-body.log"
-    & $Curl --fail --silent --show-error --verbose `
-        --max-time 15 --retry 2 --retry-delay 1 --noproxy "" `
-        --proxy "http://127.0.0.1:$RustboxHttpPort" `
-        --output $bodyFile `
-        "http://127.0.0.1:$HttpTargetPort/marker.txt" 2> (Join-Path $LogsDir "curl.log")
+    # AnyTLS gets three sequential requests so the test exercises stream-ID
+    # progression and session reuse, not only the initial sid=1 stream.
+    $requestCount = if ($OutboundType -eq "anytls") { 3 } else { 1 }
+    for ($request = 1; $request -le $requestCount; $request++) {
+        Write-CiLog "curling ${request}/${requestCount}: curl -> rustbox -> $OutboundType -> sing-box -> target"
+        $bodyFile = Join-Path $LogsDir "curl-body-$request.log"
+        $curlLog = Join-Path $LogsDir "curl-$request.log"
+        & $Curl --fail --silent --show-error --verbose `
+            --max-time 15 --retry 2 --retry-delay 1 --noproxy "" `
+            --proxy "http://127.0.0.1:$RustboxHttpPort" `
+            --output $bodyFile `
+            "http://127.0.0.1:$HttpTargetPort/marker.txt?request=$request" 2> $curlLog
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "curl through $OutboundType chain failed"
+        if ($LASTEXITCODE -ne 0) {
+            throw "request $request through $OutboundType chain failed"
+        }
+
+        $body = Get-Content -Path $bodyFile -Raw
+        if (-not $body.Contains($Marker)) {
+            throw "request $request returned unexpected response through $OutboundType chain: $body"
+        }
     }
 
-    $body = Get-Content -Path $bodyFile -Raw
-    if (-not $body.Contains($Marker)) {
-        throw "unexpected response through $OutboundType chain: $body"
-    }
-
-    Write-CiLog "PASSED: rustbox -> sing-box $OutboundType"
+    Write-CiLog "PASSED: $requestCount request(s), rustbox -> sing-box $OutboundType"
 } catch {
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1

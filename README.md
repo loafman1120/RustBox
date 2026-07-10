@@ -54,6 +54,10 @@ cargo run -p rustbox-app -- --control-grpc 0.0.0.0:19090 --control-token secret 
 See `examples/rustbox.toml`. Inbound types: `http-connect`, `socks5`, `mixed`.
 Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `anytls`.
 
+The `anytls` outbound uses the pinned, protocol-compatible `anytls 0.2.3`
+client and is continuously tested against a sing-box AnyTLS server. See the
+[AnyTLS support contract](docs/anytls-support.md).
+
 ## Verify
 
 ```powershell
@@ -67,4 +71,6 @@ curl.exe --socks5-hostname 127.0.0.1:1080 https://example.com -I
 cargo test --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+$env:RUSTBOX_SBOX_OUTBOUND = "anytls"
+./scripts/ci/sing-box-smoke.ps1
 ```

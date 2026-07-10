@@ -1,7 +1,7 @@
 # RustBox Observability Architecture
 
 > **Document status:** Current implementation and target direction
-> **Last updated:** 2026-07-07
+> **Last updated:** 2026-07-10
 > **Related documents:** `docs/architecture.md`, `docs/current-architecture.md`, `docs/config-ffi-architecture.md`
 
 This document defines how RustBox records, exposes, and exports runtime
@@ -113,6 +113,11 @@ Traffic bytes are emitted as a structured `TrafficRecorded` event after relay
 completion. The store aggregates this into process-wide metrics and the matching
 flow's connection stats.
 
+This means active long-lived flows do not currently expose continuously updated
+byte counters. The target architecture adds low-cost counted stream/datagram
+wrappers and a `SessionRegistry`; it does not emit one formatted event per
+buffer.
+
 High-frequency byte accounting should remain event or counter based. It must not
 perform synchronous formatted logging for every data-plane buffer.
 
@@ -143,8 +148,28 @@ stateDiagram-v2
     Active --> Failed: FlowFailed
 ```
 
-Future UDP support should use the same state model, but datagram counters must
-stay distinct from stream relay counters.
+Target UDP sessions use the same lifecycle state model, but keep datagram packet,
+byte, drop, idle-expiry, and capacity-eviction counters distinct from stream
+relay counters.
+
+## 5.1 Target Session Registry
+
+`ObservabilityStore` remains the event/query store. A separate runtime-owned
+`SessionRegistry` holds the minimum live control state:
+
+```text
+FlowId / SessionId
+metadata snapshot and selected logical/concrete outbound
+created_at / last_active_at
+atomic byte counters; UDP packet/drop counters
+cancellation handle
+```
+
+The registry must be bounded, remove completed sessions according to an explicit
+retention policy, and never expose sockets or mutable engine references. Relay
+completion publishes the final event and outcome; periodic API reads obtain
+live counters directly from a snapshot. `stop`, reload draining, and control API
+connection cancellation all use the same supervisor-owned cancellation path.
 
 ---
 

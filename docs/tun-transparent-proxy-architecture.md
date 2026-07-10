@@ -1,14 +1,15 @@
 # RustBox TUN, Transparent Proxy, And System Routing Architecture
 
 > **Document status:** Design recommendation
-> **Last updated:** 2026-07-09
+> **Last updated:** 2026-07-10
 > **Scope:** TUN inbound, transparent proxy inbound, packet-to-flow stack,
 > platform route control, automatic routing, and process lookup
 > **Reference architecture:** `docs/architecture.md`
 > **Current implementation map:** `docs/current-architecture.md`
 
-This document designs the missing TUN, transparent proxy, system routing, and
-process metadata layers without weakening the existing portability rule:
+This document records the implemented TUN/transparent boundaries and designs
+the remaining dispatcher, UDP session, system routing, and process metadata
+work without weakening the existing portability rule:
 
 ```text
 portable proxy core must compile without native operating-system facilities
@@ -32,22 +33,22 @@ References:
 
 ## 1. Current State
 
-The repository already has the correct architectural placeholders:
+The repository already has the main platform and packet-to-flow boundaries:
 
 | Area | Current location | Current status |
 |---|---|---|
 | Packet device I/O contract | `rustbox-io::PacketDevice` | Portable poll interface exists |
 | Packet device provider | `rustbox-host-api::PacketDeviceProvider` | Typed contract exists with name, addresses, MTU, route mode, and DNS mode |
 | Network control | `rustbox-host-api::NetworkControl` | Typed transaction contract exists; `AddRoute` is implemented through `net-route`, while address/MTU/rule/transparent operations are still planned |
-| Packet-to-flow boundary | `rustbox-stack::NetworkStack` | Contract exists; planned error implementation |
+| Packet-to-flow boundary | `rustbox-stack::NetworkStack` | `ipstack` adapter creates TCP/UDP flows; its accept loop currently waits for each submitted flow to finish and must move to the shared dispatcher |
 | Windows platform boundary | `rustbox-platform-windows` | TUN packet device through `tun-rs` / Wintun; `AddRoute` through `net-route`; typed planned errors for WFP, address/MTU, and process lookup |
 | Linux platform boundary | `rustbox-platform-linux` | TUN packet device through `tun-rs`; `AddRoute` through `net-route`; transparent TCP redirect listener with original-destination lookup; typed planned errors for route rules, TPROXY/auto-rules, address/MTU, and process lookup |
-| Metadata enrichment | `rustbox-kernel::MetadataEnricher` | Correct hook for process metadata |
+| Metadata enrichment | `rustbox-kernel::MetadataEnricher` | Correct hook for metadata-only process/DNS lookup; payload inspection requires a separate bounded, replayable-prefix contract |
 | Routing | `rustbox-route` | Pure `FlowMeta -> RouteDecision` |
 
-The missing work is therefore not a kernel rewrite. It is a controlled expansion
-of platform capability contracts, inbound/stack modules, shared assembly, and
-platform adapter crates.
+The remaining work is therefore not a kernel rewrite. It is a controlled
+upgrade of shared flow dispatch, UDP session ownership, platform capability
+implementations, and runtime assembly.
 
 ---
 
@@ -76,10 +77,11 @@ The design should not do these things:
 platform PacketDevice
     -> rustbox-inbound-tun service
     -> rustbox-stack packet-to-flow adapter
-    -> Flow(Stream or Datagram) + FlowMeta
-    -> kernel enrichment
+    -> shared FlowDispatcher
+    -> Flow(Stream or DatagramSession) + FlowMeta
+    -> metadata enrichment + bounded payload inspection
     -> route table
-    -> outbound
+    -> runtime outbound graph
     -> host NetworkProvider
 ```
 
@@ -92,10 +94,11 @@ during `start`, not during construction.
 platform redirect / TPROXY / WFP / NETransparentProxyProvider
     -> rustbox-inbound-transparent service
     -> original destination lookup
-    -> Flow(Stream or Datagram) + FlowMeta
-    -> kernel enrichment
+    -> shared FlowDispatcher
+    -> Flow(Stream or DatagramEndpoint/Session) + FlowMeta
+    -> metadata enrichment + bounded payload inspection
     -> route table
-    -> outbound
+    -> runtime outbound graph
 ```
 
 Transparent proxy is not the same as TUN:
@@ -128,15 +131,17 @@ Current MVP status:
 
 ## 4. Crate Layout
 
-Recommended crate additions after the first Windows/Linux boundary step:
+Current data-plane crates and later platform additions:
 
 ```text
 crates/modules/inbound/rustbox-inbound-tun
 crates/modules/inbound/rustbox-inbound-transparent
 crates/modules/stack/rustbox-stack
 
-crates/platform/rustbox-platform-apple
-crates/platform/rustbox-platform-android
+crates/platform/rustbox-platform-linux       # current
+crates/platform/rustbox-platform-windows     # current
+crates/platform/rustbox-platform-apple       # planned
+crates/platform/rustbox-platform-android     # planned
 ```
 
 `rustbox-stack` remains the platform-independent contract crate and currently
@@ -151,13 +156,13 @@ unsupported stubs on non-matching targets when included in the workspace.
 
 ## 5. Capability Contracts
 
-The existing `PacketDeviceProvider` and `NetworkControl` contracts are too
-coarse for real use. Extend them by adding typed data while preserving the
-outer dependency direction.
+Keep the existing typed `PacketDeviceProvider` and `NetworkControl` dependency
+direction. Complete their platform operations without moving OS behavior into
+portable crates.
 
 ### 5.1 Packet Device
 
-Recommended host-api model:
+The host-api model follows this shape:
 
 ```rust
 pub struct PacketDeviceConfig {
@@ -186,7 +191,7 @@ insertion, DNS settings, and proxy settings are `NetworkControl` work.
 
 ### 5.2 Network Control
 
-Replace the current text-only transaction with typed, reversible operations:
+Continue expanding typed, reversible operations as platform support lands:
 
 ```rust
 pub struct NetworkTransaction {
@@ -239,6 +244,11 @@ pub struct ProcessInfo {
 `ProcessLookup` should be used by a `MetadataEnricher`. The router sees only
 enriched `FlowMeta` fields. Process metadata is best effort and cacheable; route
 validation must not require it to be available on every platform.
+
+TLS SNI and HTTP Host are different: they require bounded access to the flow
+payload. They must use the inspection contract defined in `docs/architecture.md`,
+including timeout, byte budget, and replay of every consumed byte. Do not widen
+`MetadataEnricher` to hide arbitrary stream reads behind a metadata-only name.
 
 ### 5.4 Egress Protection
 
@@ -393,7 +403,8 @@ PacketDevice read loop
     -> parse IP packet
     -> feed ipstack
     -> accepted TCP socket becomes FlowPayload::Stream
-    -> UDP endpoint map becomes FlowPayload::Datagram
+    -> UDP endpoint map becomes a fixed-destination DatagramSession
+    -> dispatch each accepted session without awaiting its relay lifetime
     -> outbound responses are written back as IP packets
 ```
 
@@ -402,7 +413,11 @@ Implementation notes:
 - Keep TCP state, retransmission, and window handling inside the stack adapter.
 - Keep DNS hijack as a route/hijack service above the stack, not as ad hoc UDP
   packet parsing in `rustbox-kernel`.
-- Use a bounded session table keyed by 5-tuple.
+- Use a bounded session table keyed by 5-tuple, with idle timeout and explicit
+  capacity eviction.
+- Keep a multiplexed SOCKS5 UDP `DatagramEndpoint` outside the routed session
+  abstraction. Each real destination becomes its own routed session; the
+  `UDP ASSOCIATE` placeholder address is never used as the final route target.
 - Emit observability events for packet-device open, stack attach, sessions
   created, sessions expired, and packet drops.
 - Provide a fake packet device test harness before real OS integration.
@@ -557,22 +572,17 @@ policy selected by the application.
 
 ## 11. Composition
 
-Composition should become platform-aware without making the core platform-aware:
+Composition remains platform-aware without making the core platform-aware. The
+composition root receives concrete host/platform capabilities and passes only
+portable contracts to modules:
 
 ```rust
-pub struct PlatformCapabilities {
+pub struct CompositionInputs {
+    pub host: Arc<TokioHost>,
     pub packet_devices: Option<Arc<dyn PacketDeviceProvider>>,
     pub network_control: Option<Arc<dyn NetworkControl>>,
+    pub transparent_proxy: Option<Arc<dyn TransparentProxyProvider>>,
     pub process_lookup: Option<Arc<dyn ProcessLookup>>,
-}
-```
-
-the internal RustBox assembly can grow into:
-
-```rust
-pub struct RuntimeComposition {
-    pub runtime: Arc<dyn RuntimeCapabilities>,
-    pub platform: PlatformCapabilities,
     pub observability: Arc<dyn ObservabilitySink>,
 }
 ```
@@ -584,7 +594,7 @@ fail before starting any service.
 
 ## 12. Testing Strategy
 
-Required tests before real OS rollout:
+Required regression and remaining rollout tests:
 
 | Layer | Test type |
 |---|---|
@@ -608,24 +618,20 @@ cargo test -p rustbox-platform-windows -- --ignored
 
 ## 13. Implementation Order
 
-Recommended order:
+The original platform bring-up steps are substantially complete. The remaining
+order is aligned with the shared data-plane upgrade in `docs/architecture.md`:
 
-1. Expand portable types: `IpCidr`, `InterfaceRef`, `ProcessInfo`,
-   `ConnectionKey`, and route include/exclude models.
-2. Expand `rustbox-host-api` with typed `PacketDeviceConfig`,
-   `NetworkTransaction`, `NetworkLease`, `ProcessLookup`, and egress policy.
-3. Add config variants for `tun` and `transparent`, with validation but planned
-   composition errors.
-4. Add `rustbox-inbound-tun` service with fake providers and no real OS code.
-5. Implement the `ipstack` adapter behind the existing `NetworkStack` boundary.
-6. Add Linux TUN MVP: packet device and basic route additions first, then
-   address/MTU/rule leases through rtnetlink/nftables.
-7. Add Windows Wintun MVP: packet device and basic route additions first, then
-   address/MTU and WFP-backed adapters.
-8. Add Linux redirect/TPROXY transparent inbound.
-9. Add process lookup enrichers per platform.
-10. Add Android and Apple borrowed-device/host-extension bridges.
-11. Add strict-route leak protection and platform HTTP proxy support.
+1. Route TUN and transparent flows through the shared dispatcher so long-lived
+   relays cannot block session acceptance.
+2. Make UDP session ownership explicit and test concurrent destinations, idle
+   expiry, capacity eviction, and shutdown.
+3. Wire FakeIP/DNS reverse lookup and bounded SNI/HTTP inspection before routing.
+4. Add process lookup enrichers per platform.
+5. Complete Linux address/MTU/rule leases, automatic nftables/TPROXY rules, and
+   egress loop protection.
+6. Complete Windows address/MTU and WFP-backed transparent adapters.
+7. Add Android and Apple borrowed-device/host-extension bridges.
+8. Add strict-route leak protection and platform HTTP proxy support.
 
 This order keeps every platform-specific step behind already-tested portable
 contracts.
@@ -644,9 +650,8 @@ Remaining decisions:
   direct platform APIs for full rollback and strict-route behavior.
 - How much process metadata should be stored in `FlowMeta` versus a separate
   metadata bag once route rules become richer.
-- Whether transparent proxy should start Linux-only and expose unsupported
-  diagnostics on other platforms, or start as a host-supplied capability for all
-  platforms.
+- Whether Windows transparent interception should first expose a host-supplied
+  WFP capability or ship a built-in WFP backend.
 
 ---
 
@@ -659,10 +664,13 @@ The following invariants must hold throughout the implementation:
 2. `rustbox-route` stays pure and performs no process lookup, DNS lookup, or
    network control.
 3. `rustbox-stack` owns packet-to-flow translation; kernel receives only
-   `FlowPayload::Stream` or `FlowPayload::Datagram`.
+   `FlowPayload::Stream` or a fixed-destination datagram session. Multiplexed
+   datagram endpoints are sessionized before route selection.
 4. Platform support is declared through capability matrices and validated during
    composition.
 5. Network control changes are applied only during explicit lifecycle start and
    reverted during stop.
 6. Unsupported platform features return structured capability diagnostics, not
    hidden fallback behavior.
+7. Stack and transparent accept loops never await the complete relay lifetime
+   of an accepted flow.

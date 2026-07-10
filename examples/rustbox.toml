@@ -79,7 +79,9 @@ password = "test-password"
 # VMess/VLESS/Trojan are accepted by the config pipeline so GUI/FFI/file
 # frontends can converge on the shape before their data-plane modules land.
 # Starting a runtime with those outbounds returns a clear composition error.
-# AnyTLS now has a working TCP and UDP-over-TCP outbound.
+# AnyTLS uses the pinned protocol-compatible anytls 0.2.3 client. TCP is
+# continuously tested against sing-box; UDP-over-TCP has module round-trip
+# coverage. See docs/anytls-support.md.
 # [[outbounds]]
 # id = "vmess-out"
 # type = "vmess"
