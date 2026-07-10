@@ -324,7 +324,7 @@ async fn dial_server(
         .map_err(|err| io::Error::other(err.message))?;
     let connector = TlsConnector::from(tls_config);
     let mut tls_stream = connector
-        .connect(server_name, RustBoxAsyncStream::new(stream))
+        .connect(server_name, SharedByteStream::new(stream))
         .await?;
 
     let padding_length = {
@@ -451,11 +451,19 @@ impl ServerCertVerifier for NoCertificateVerification {
     }
 }
 
-struct RustBoxAsyncStream {
+type ReadFuture = Pin<Box<dyn Future<Output = (Vec<u8>, io::Result<usize>)> + Send>>;
+type WriteFuture = Pin<Box<dyn Future<Output = io::Result<usize>> + Send>>;
+type CloseFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
+type DatagramSendFuture = Pin<Box<dyn Future<Output = io::Result<usize>> + Send>>;
+type DatagramRecvFuture = Pin<Box<dyn Future<Output = io::Result<(Vec<u8>, Endpoint)>> + Send>>;
+
+/// `anytls::AsyncReadWrite` additionally requires `Sync`; ordinary byte-stream
+/// consumers do not, so the synchronization stays local to this adapter.
+struct SharedByteStream {
     inner: Mutex<Box<dyn ByteStream>>,
 }
 
-impl RustBoxAsyncStream {
+impl SharedByteStream {
     fn new(inner: Box<dyn ByteStream>) -> Self {
         Self {
             inner: Mutex::new(inner),
@@ -463,57 +471,37 @@ impl RustBoxAsyncStream {
     }
 }
 
-impl AsyncRead for RustBoxAsyncStream {
+impl AsyncRead for SharedByteStream {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let unfilled = buf.initialize_unfilled();
-        let mut stream = self.inner.lock().expect("anytls stream mutex poisoned");
-        match Pin::new(&mut **stream).poll_read(cx, unfilled) {
-            Poll::Ready(Ok(read)) => {
-                buf.advance(read);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error_to_std(err))),
-            Poll::Pending => Poll::Pending,
-        }
+        let mut inner = self.inner.lock().expect("anytls stream mutex poisoned");
+        Pin::new(&mut **inner).poll_read(cx, buf)
     }
 }
 
-impl AsyncWrite for RustBoxAsyncStream {
+impl AsyncWrite for SharedByteStream {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let mut stream = self.inner.lock().expect("anytls stream mutex poisoned");
-        Pin::new(&mut **stream)
-            .poll_write(cx, buf)
-            .map_err(io_error_to_std)
+        let mut inner = self.inner.lock().expect("anytls stream mutex poisoned");
+        Pin::new(&mut **inner).poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut stream = self.inner.lock().expect("anytls stream mutex poisoned");
-        Pin::new(&mut **stream)
-            .poll_flush(cx)
-            .map_err(io_error_to_std)
+        let mut inner = self.inner.lock().expect("anytls stream mutex poisoned");
+        Pin::new(&mut **inner).poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut stream = self.inner.lock().expect("anytls stream mutex poisoned");
-        Pin::new(&mut **stream)
-            .poll_close(cx)
-            .map_err(io_error_to_std)
+        let mut inner = self.inner.lock().expect("anytls stream mutex poisoned");
+        Pin::new(&mut **inner).poll_shutdown(cx)
     }
 }
-
-type ReadFuture = Pin<Box<dyn Future<Output = (Vec<u8>, io::Result<usize>)> + Send>>;
-type WriteFuture = Pin<Box<dyn Future<Output = io::Result<usize>> + Send>>;
-type CloseFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
-type DatagramSendFuture = Pin<Box<dyn Future<Output = io::Result<usize>> + Send>>;
-type DatagramRecvFuture = Pin<Box<dyn Future<Output = io::Result<(Vec<u8>, Endpoint)>> + Send>>;
 
 struct AnyTlsSessionStream {
     session: Arc<Session>,
@@ -535,15 +523,15 @@ impl AnyTlsSessionStream {
     }
 }
 
-impl ByteStream for AnyTlsSessionStream {
+impl AsyncRead for AnyTlsSessionStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         if self.read.is_none() {
             let session = self.session.clone();
-            let capacity = buf.len();
+            let capacity = buf.remaining();
             self.read = Some(Box::pin(async move {
                 let mut bytes = vec![0_u8; capacity];
                 let result = session.read(&mut bytes).await;
@@ -555,22 +543,24 @@ impl ByteStream for AnyTlsSessionStream {
         match future.as_mut().poll(cx) {
             Poll::Ready((bytes, Ok(read))) => {
                 self.read = None;
-                buf[..read].copy_from_slice(&bytes[..read]);
-                Poll::Ready(Ok(read))
+                buf.put_slice(&bytes[..read]);
+                Poll::Ready(Ok(()))
             }
             Poll::Ready((_, Err(err))) => {
                 self.read = None;
-                Poll::Ready(Err(std_io_error(err)))
+                Poll::Ready(Err(err))
             }
             Poll::Pending => Poll::Pending,
         }
     }
+}
 
+impl AsyncWrite for AnyTlsSessionStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
+    ) -> Poll<io::Result<usize>> {
         if self.write.is_none() {
             let session = self.session.clone();
             let bytes = buf.to_vec();
@@ -581,17 +571,17 @@ impl ByteStream for AnyTlsSessionStream {
         match future.as_mut().poll(cx) {
             Poll::Ready(result) => {
                 self.write = None;
-                Poll::Ready(result.map_err(std_io_error))
+                Poll::Ready(result)
             }
             Poll::Pending => Poll::Pending,
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.closed {
             return Poll::Ready(Ok(()));
         }
@@ -612,7 +602,7 @@ impl ByteStream for AnyTlsSessionStream {
                 if result.is_ok() {
                     self.closed = true;
                 }
-                Poll::Ready(result.map_err(std_io_error))
+                Poll::Ready(result)
             }
             Poll::Pending => Poll::Pending,
         }
@@ -800,17 +790,6 @@ fn std_io_error(err: io::Error) -> IoError {
         _ => IoErrorKind::Other,
     };
     IoError::new(kind, err.to_string())
-}
-
-fn io_error_to_std(err: IoError) -> io::Error {
-    let kind = match err.kind {
-        IoErrorKind::Closed => io::ErrorKind::UnexpectedEof,
-        IoErrorKind::Interrupted => io::ErrorKind::Interrupted,
-        IoErrorKind::InvalidInput => io::ErrorKind::InvalidInput,
-        IoErrorKind::Unsupported => io::ErrorKind::Unsupported,
-        IoErrorKind::Other => io::ErrorKind::Other,
-    };
-    io::Error::new(kind, err.message)
 }
 
 #[cfg(test)]

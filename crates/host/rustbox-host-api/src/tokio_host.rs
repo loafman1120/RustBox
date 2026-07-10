@@ -11,7 +11,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::ReadBuf;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 /// RustBox 默认使用的 Tokio 网络、时钟、随机数和任务实现。
@@ -58,7 +58,7 @@ impl NetworkProvider for TokioHost {
                         .map_err(net_error)?
                 }
             };
-            Ok(Box::new(TokioTcpStream { inner: stream }) as Box<dyn ByteStream>)
+            Ok(Box::new(stream) as Box<dyn ByteStream>)
         })
     }
 
@@ -130,49 +130,10 @@ impl StreamListener for TokioTcpListener {
         Box::pin(async move {
             let (stream, peer) = self.inner.accept().await.map_err(net_error)?;
             Ok((
-                Box::new(TokioTcpStream { inner: stream }) as Box<dyn ByteStream>,
+                Box::new(stream) as Box<dyn ByteStream>,
                 socket_addr_to_endpoint(peer),
             ))
         })
-    }
-}
-
-struct TokioTcpStream {
-    inner: TcpStream,
-}
-
-impl ByteStream for TokioTcpStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner).poll_flush(cx).map_err(io_error)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_shutdown(cx)
-            .map_err(io_error)
     }
 }
 

@@ -8,7 +8,8 @@ use rustbox_config::{
     CompiledRouteMatcher, CompiledRouteRule, ConfigCompiler, ConfigError, LogicalModeConfig,
     SourceConfig,
 };
-use rustbox_control::{EngineSnapshot, EngineState};
+use rustbox_control::{ControlState, EngineCommand, EngineSnapshot, EngineState};
+use rustbox_control_api::{ControlApiConfig, ControlApiState};
 use rustbox_host_api::{
     NoopObservabilitySink, ObservabilitySink, TokioHost, TransparentProxyProvider,
 };
@@ -21,6 +22,7 @@ use rustbox_inbound_transparent::{
 };
 use rustbox_inbound_tun::{TunInbound, TunInboundConfig as RuntimeTunInboundConfig};
 use rustbox_kernel::{Engine, EngineError, FlowSink, Service, ServiceContext, ServiceError};
+use rustbox_observability::ObservabilityStore;
 use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
 use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
@@ -30,7 +32,11 @@ use rustbox_route::{
     LogicalMode, RouteConditions, RouteMatcher, RouteRule, RouteRuleSet, RouteTable,
 };
 use rustbox_types::{Endpoint, RouteDecision};
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 /// 内部运行图构造器。外部调用方应使用 [`RustBox`]。
 struct RuntimeGraphBuilder {
@@ -326,6 +332,49 @@ impl Default for RuntimeGraphBuilder {
     }
 }
 
+/// Shared application options used by CLI, FFI, and embedded hosts.
+pub struct RustBoxOptions {
+    observability: Arc<dyn ObservabilitySink>,
+    control_grpc: Option<ControlGrpcOptions>,
+}
+
+struct ControlGrpcOptions {
+    config: ControlApiConfig,
+    observability: Arc<ObservabilityStore>,
+}
+
+impl RustBoxOptions {
+    pub fn with_observability(mut self, observability: Arc<dyn ObservabilitySink>) -> Self {
+        self.observability = observability;
+        self
+    }
+
+    /// Enable the native control gRPC service as part of the RustBox lifecycle.
+    ///
+    /// The supplied store should also be included in `observability` so data-plane
+    /// events are visible through the control API.
+    pub fn with_control_grpc(
+        mut self,
+        config: ControlApiConfig,
+        observability: Arc<ObservabilityStore>,
+    ) -> Self {
+        self.control_grpc = Some(ControlGrpcOptions {
+            config,
+            observability,
+        });
+        self
+    }
+}
+
+impl Default for RustBoxOptions {
+    fn default() -> Self {
+        Self {
+            observability: Arc::new(NoopObservabilitySink),
+            control_grpc: None,
+        }
+    }
+}
+
 /// CLI、FFI 和嵌入式宿主共用的 RustBox 接口。
 ///
 /// 构造函数完成配置校验和运行图装配；`start`、`stop` 和 `reload` 负责生命周期。
@@ -335,6 +384,7 @@ pub struct RustBox {
     observability: Arc<dyn ObservabilitySink>,
     runtime: ComposedRuntime,
     snapshot: EngineSnapshot,
+    control_grpc: Option<ControlGrpcService>,
 }
 
 /// 共享 RustBox 生命周期接口返回的错误。
@@ -342,13 +392,30 @@ pub type RustBoxError = ComposeError;
 
 impl RustBox {
     pub fn new(source: SourceConfig) -> Result<Self, RustBoxError> {
-        Self::with_observability(source, Arc::new(NoopObservabilitySink))
+        Self::with_options(source, RustBoxOptions::default())
     }
 
     pub fn with_observability(
         source: SourceConfig,
         observability: Arc<dyn ObservabilitySink>,
     ) -> Result<Self, RustBoxError> {
+        Self::with_options(
+            source,
+            RustBoxOptions::default().with_observability(observability),
+        )
+    }
+
+    pub fn with_options(
+        source: SourceConfig,
+        options: RustBoxOptions,
+    ) -> Result<Self, RustBoxError> {
+        if let Some(control) = &options.control_grpc {
+            control
+                .config
+                .validate()
+                .map_err(|error| ComposeError::Control(error.message))?;
+        }
+        let observability = options.observability;
         let runtime = RuntimeGraphBuilder::with_observability(observability.clone())
             .compose_source(source.clone())?;
         let snapshot = EngineSnapshot {
@@ -357,11 +424,15 @@ impl RustBox {
             inbound_count: runtime.service_count(),
             outbound_count: runtime.engine().outbound_count(),
         };
+        let control_grpc = options
+            .control_grpc
+            .map(|options| ControlGrpcService::new(options, snapshot.clone()));
         Ok(Self {
             source,
             observability,
             runtime,
             snapshot,
+            control_grpc,
         })
     }
 
@@ -391,6 +462,18 @@ impl RustBox {
         &self.snapshot
     }
 
+    pub fn control_grpc_addr(&self) -> Option<SocketAddr> {
+        self.control_grpc.as_ref().map(|service| service.listen())
+    }
+
+    /// Wait for the next coarse control command issued through the configured API.
+    pub async fn next_control_command(&mut self) -> Option<EngineCommand> {
+        match &mut self.control_grpc {
+            Some(service) => service.next_command().await,
+            None => None,
+        }
+    }
+
     pub async fn start(&mut self) -> Result<(), RustBoxError> {
         if self.snapshot.state == EngineState::Running {
             return Err(ComposeError::State(
@@ -409,9 +492,14 @@ impl RustBox {
         }
         if let Err(error) = self.runtime.start("rustbox").await {
             self.snapshot.state = EngineState::Failed;
+            self.sync_control_snapshot();
             return Err(error);
         }
         self.snapshot.state = EngineState::Running;
+        self.sync_control_snapshot();
+        if let Some(control) = &mut self.control_grpc {
+            control.start();
+        }
         Ok(())
     }
 
@@ -420,11 +508,20 @@ impl RustBox {
             return Ok(());
         }
         self.snapshot.state = EngineState::Stopping;
-        if let Err(error) = self.runtime.stop().await {
-            self.snapshot.state = EngineState::Failed;
-            return Err(error);
-        }
-        self.snapshot.state = EngineState::Stopped;
+        self.sync_control_snapshot();
+        let runtime_result = self.runtime.stop().await;
+        self.snapshot.state = if runtime_result.is_ok() {
+            EngineState::Stopped
+        } else {
+            EngineState::Failed
+        };
+        self.sync_control_snapshot();
+        let control_result = match &mut self.control_grpc {
+            Some(control) => control.stop().await,
+            None => Ok(()),
+        };
+        runtime_result?;
+        control_result?;
         Ok(())
     }
 
@@ -449,6 +546,84 @@ impl RustBox {
             return Err(error);
         }
         Ok(())
+    }
+
+    fn sync_control_snapshot(&self) {
+        if let Some(control) = &self.control_grpc {
+            control.replace_snapshot(self.snapshot.clone());
+        }
+    }
+}
+
+struct ControlGrpcService {
+    config: ControlApiConfig,
+    state: Arc<Mutex<ControlState>>,
+    observability: Arc<ObservabilityStore>,
+    command_tx: mpsc::UnboundedSender<EngineCommand>,
+    command_rx: mpsc::UnboundedReceiver<EngineCommand>,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: Option<JoinHandle<Result<(), rustbox_control_api::ControlApiError>>>,
+}
+
+impl ControlGrpcService {
+    fn new(options: ControlGrpcOptions, snapshot: EngineSnapshot) -> Self {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        Self {
+            config: options.config,
+            state: Arc::new(Mutex::new(ControlState::new(snapshot))),
+            observability: options.observability,
+            command_tx,
+            command_rx,
+            shutdown: None,
+            task: None,
+        }
+    }
+
+    fn listen(&self) -> SocketAddr {
+        self.config.listen
+    }
+
+    fn replace_snapshot(&self, snapshot: EngineSnapshot) {
+        if let Ok(mut state) = self.state.lock() {
+            state.replace_snapshot(snapshot);
+        }
+    }
+
+    fn start(&mut self) {
+        if self.task.is_some() {
+            return;
+        }
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let state = ControlApiState::new(self.observability.clone(), self.state.clone())
+            .with_command_sender(self.command_tx.clone());
+        let config = self.config.clone();
+        self.shutdown = Some(shutdown_tx);
+        self.task = Some(tokio::spawn(async move {
+            rustbox_control_api::serve_grpc(config, state, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        }));
+    }
+
+    async fn stop(&mut self) -> Result<(), ComposeError> {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        let Some(task) = self.task.take() else {
+            return Ok(());
+        };
+        match task.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(ComposeError::Control(error.to_string())),
+            Err(error) => Err(ComposeError::Control(format!(
+                "control gRPC task failed: {error}"
+            ))),
+        }
+    }
+
+    async fn next_command(&mut self) -> Option<EngineCommand> {
+        self.command_rx.recv().await
     }
 }
 
@@ -490,6 +665,7 @@ impl ComposedRuntime {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ComposeError {
     Config(ConfigError),
+    Control(String),
     Engine(EngineError),
     Service(ServiceError),
     State(String),
@@ -635,6 +811,54 @@ mod tests {
 
         assert_eq!(runtime.engine().outbound_count(), 1);
         assert_eq!(runtime.service_count(), 1);
+    }
+
+    #[test]
+    fn validates_control_grpc_options_during_construction() {
+        let options = RustBoxOptions::default().with_control_grpc(
+            ControlApiConfig {
+                listen: SocketAddr::from(([0, 0, 0, 0], 0)),
+                ..ControlApiConfig::default()
+            },
+            Arc::new(ObservabilityStore::default()),
+        );
+
+        let error = match RustBox::with_options(
+            SourceConfig::default_http_proxy(Endpoint::localhost_v4(0)),
+            options,
+        ) {
+            Ok(_) => panic!("expected public unauthenticated control API to be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            ComposeError::Control(message) if message.contains("bearer token")
+        ));
+    }
+
+    #[tokio::test]
+    async fn owns_control_grpc_lifecycle() {
+        let config = ControlApiConfig {
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            ..ControlApiConfig::default()
+        };
+        let expected_listen = config.listen;
+        let options = RustBoxOptions::default()
+            .with_control_grpc(config, Arc::new(ObservabilityStore::default()));
+        let mut runtime = RustBox::with_options(
+            SourceConfig::default_http_proxy(Endpoint::localhost_v4(0)),
+            options,
+        )
+        .expect("compose with control gRPC");
+
+        assert_eq!(runtime.control_grpc_addr(), Some(expected_listen));
+        runtime
+            .start()
+            .await
+            .expect("start runtime and control gRPC");
+        runtime.stop().await.expect("stop runtime and control gRPC");
+        assert_eq!(runtime.snapshot().state, EngineState::Stopped);
     }
 
     #[test]

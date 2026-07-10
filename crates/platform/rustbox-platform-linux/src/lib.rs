@@ -364,7 +364,7 @@ impl TransparentStreamListener for LinuxTransparentTcpListener {
             })?;
             let original_destination = original_destination(&stream)?;
             Ok(AcceptedTransparentStream {
-                stream: Box::new(LinuxTransparentTcpStream { inner: stream }),
+                stream: Box::new(stream),
                 peer: socket_addr_to_endpoint(peer),
                 original_destination,
             })
@@ -402,47 +402,6 @@ fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxy
                 u16::from_be(addr.sin6_port),
             ))
         }
-    }
-}
-
-#[cfg(target_os = "linux")]
-struct LinuxTransparentTcpStream {
-    inner: TcpStream,
-}
-
-#[cfg(target_os = "linux")]
-impl rustbox_io::ByteStream for LinuxTransparentTcpStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner).poll_flush(cx).map_err(io_error)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_shutdown(cx)
-            .map_err(io_error)
     }
 }
 

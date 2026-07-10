@@ -8,6 +8,7 @@ license.workspace = true
 rustbox-host-api = { path = "../rustbox-host-api" }
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
+tokio = { version = "1", features = ["io-util"] }
 
 [lints]
 workspace = true

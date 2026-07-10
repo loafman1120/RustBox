@@ -10,7 +10,7 @@ use ipstack::{IpStack, IpStackConfig, IpStackStream};
 use rustbox_host_api::{
     BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind, PacketDevice};
+use rustbox_io::{DatagramSocket, IoError, IoErrorKind, PacketDevice};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink};
 use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network};
 use std::net::{IpAddr, SocketAddr};
@@ -168,7 +168,7 @@ fn flow_from_ipstack_stream(inbound: InboundId, stream: IpStackStream) -> Result
             let destination = socket_addr_to_endpoint(stream.peer_addr());
             Ok(Flow {
                 meta: flow_meta(inbound, Network::Tcp, source, destination),
-                payload: FlowPayload::Stream(Box::new(IpStackByteStream { inner: stream })),
+                payload: FlowPayload::Stream(Box::new(stream)),
             })
         }
         IpStackStream::Udp(stream) => {
@@ -256,45 +256,6 @@ impl AsyncWrite for PacketDeviceAsyncIo {
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
-    }
-}
-
-struct IpStackByteStream {
-    inner: ipstack::IpStackTcpStream,
-}
-
-impl ByteStream for IpStackByteStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner).poll_flush(cx).map_err(io_error)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_shutdown(cx)
-            .map_err(io_error)
     }
 }
 

@@ -9,6 +9,7 @@ rustbox-host-api = { path = "../../host/rustbox-host-api" }
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-route = { path = "../rustbox-route" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
+tokio = { version = "1", features = ["io-util"] }
 
 [dev-dependencies]
 rustbox-test-host = { path = "../../host/rustbox-test-host" }

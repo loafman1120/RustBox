@@ -19,6 +19,7 @@ use rustbox_types::{
 };
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const MAX_HEADER_BYTES: usize = 8192;
 
@@ -533,41 +534,37 @@ impl PrefixedByteStream {
     }
 }
 
-impl ByteStream for PrefixedByteStream {
+impl AsyncRead for PrefixedByteStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, rustbox_io::IoError>> {
-        if self.offset < self.prefix.len() {
-            let len = (self.prefix.len() - self.offset).min(buf.len());
-            buf[..len].copy_from_slice(&self.prefix[self.offset..self.offset + len]);
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.offset < self.prefix.len() && buf.remaining() > 0 {
+            let len = (self.prefix.len() - self.offset).min(buf.remaining());
+            buf.put_slice(&self.prefix[self.offset..self.offset + len]);
             self.offset += len;
-            return Poll::Ready(Ok(len));
+            return Poll::Ready(Ok(()));
         }
         Pin::new(&mut *self.inner).poll_read(cx, buf)
     }
+}
 
+impl AsyncWrite for PrefixedByteStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<Result<usize, rustbox_io::IoError>> {
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut *self.inner).poll_write(cx, buf)
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), rustbox_io::IoError>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut *self.inner).poll_flush(cx)
     }
 
-    fn poll_close(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), rustbox_io::IoError>> {
-        Pin::new(&mut *self.inner).poll_close(cx)
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.inner).poll_shutdown(cx)
     }
 }
 

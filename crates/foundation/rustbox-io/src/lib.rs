@@ -1,31 +1,17 @@
 //! 代理模块共享的异步 I/O 契约。
 //!
-//! 这些 trait 用来统一 TCP、TLS、代理隧道、测试内存流和平台包设备，不用于
-//! 替换 Tokio runtime。
+//! 字节流直接使用 Tokio `AsyncRead + AsyncWrite`；这里只为常用的 trait object
+//! 组合保留一个轻量标记 trait。数据报和包设备仍有各自的消息边界契约。
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use rustbox_types::Endpoint;
-use std::future::poll_fn;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// 面向 TCP/TLS/代理隧道等有序字节流的最小异步接口。
-pub trait ByteStream: Send + Unpin {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>>;
+/// 可装入 trait object 的 Tokio 有序字节流。
+pub trait ByteStream: AsyncRead + AsyncWrite + Send + Unpin {}
 
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>>;
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>>;
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>>;
-}
+impl<T> ByteStream for T where T: AsyncRead + AsyncWrite + Send + Unpin + ?Sized {}
 
 /// 面向 UDP 等无连接数据报的接口，和字节流保持独立。
 pub trait DatagramSocket: Send + Unpin {
@@ -87,26 +73,38 @@ pub enum IoErrorKind {
     Other,
 }
 
-/// 将 `ByteStream` 的 poll 接口包装成 async 读操作，供模块代码复用。
+/// 兼容现有模块错误模型的 Tokio 读操作。
 pub async fn stream_read(stream: &mut dyn ByteStream, buf: &mut [u8]) -> Result<usize, IoError> {
-    poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, buf)).await
+    stream.read(buf).await.map_err(IoError::from)
 }
 
-/// 写完整个缓冲区，并在末尾 flush，避免各协议模块重复实现写循环。
-pub async fn stream_write_all(stream: &mut dyn ByteStream, mut buf: &[u8]) -> Result<(), IoError> {
-    while !buf.is_empty() {
-        let written = poll_fn(|cx| Pin::new(&mut *stream).poll_write(cx, buf)).await?;
-        if written == 0 {
-            return Err(IoError::new(
-                IoErrorKind::Closed,
-                "stream write returned zero",
-            ));
-        }
-        buf = &buf[written..];
-    }
-    poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx)).await
+/// 写完整个缓冲区，并在末尾 flush。
+pub async fn stream_write_all(stream: &mut dyn ByteStream, buf: &[u8]) -> Result<(), IoError> {
+    stream.write_all(buf).await.map_err(IoError::from)?;
+    stream.flush().await.map_err(IoError::from)
 }
 
 pub async fn stream_close(stream: &mut dyn ByteStream) -> Result<(), IoError> {
-    poll_fn(|cx| Pin::new(&mut *stream).poll_close(cx)).await
+    stream.shutdown().await.map_err(IoError::from)
+}
+
+impl From<std::io::Error> for IoError {
+    fn from(error: std::io::Error) -> Self {
+        let kind = match error.kind() {
+            std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::UnexpectedEof => IoErrorKind::Closed,
+            std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => {
+                IoErrorKind::Interrupted
+            }
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+                IoErrorKind::InvalidInput
+            }
+            std::io::ErrorKind::Unsupported => IoErrorKind::Unsupported,
+            _ => IoErrorKind::Other,
+        };
+        Self::new(kind, error.to_string())
+    }
 }

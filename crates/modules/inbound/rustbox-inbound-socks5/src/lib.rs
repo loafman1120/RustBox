@@ -475,7 +475,7 @@ async fn mixed_accept_loop(
 }
 
 type CommandProtocol = fast_socks5::server::Socks5ServerProtocol<
-    RustBoxAsyncStream,
+    Box<dyn ByteStream>,
     fast_socks5::server::states::CommandRead,
 >;
 
@@ -553,10 +553,9 @@ async fn handle_connection(
     peer: Endpoint,
     stream: Box<dyn ByteStream>,
 ) -> Result<(), ServiceError> {
-    let async_stream = RustBoxAsyncStream::new(stream);
     let proto = match &ctx.credentials {
         Some(credentials) => {
-            match Socks5ServerProtocol::accept_password_auth(async_stream, |username, password| {
+            match Socks5ServerProtocol::accept_password_auth(stream, |username, password| {
                 username == credentials.username && password == credentials.password
             })
             .await
@@ -577,7 +576,7 @@ async fn handle_connection(
                 }
             }
         }
-        None => match Socks5ServerProtocol::accept_no_auth(async_stream).await {
+        None => match Socks5ServerProtocol::accept_no_auth(stream).await {
             Ok(proto) => proto,
             Err(err) => {
                 ctx.observability
@@ -620,8 +619,7 @@ async fn handle_connect(
     let stream = proto
         .reply_success(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
         .await
-        .map_err(|err| ServiceError::new(err.to_string()))?
-        .into_inner();
+        .map_err(|err| ServiceError::new(err.to_string()))?;
 
     let flow = Flow {
         meta: flow_meta(ctx.inbound_id, peer, target, ctx.next_flow_id, Network::Tcp),
@@ -657,8 +655,7 @@ async fn handle_udp_associate(
     let stream = proto
         .reply_success(relay_addr)
         .await
-        .map_err(|err| ServiceError::new(err.to_string()))?
-        .into_inner();
+        .map_err(|err| ServiceError::new(err.to_string()))?;
 
     let state = Arc::new(UdpAssociationState::new());
     spawn_udp_control_watcher(Arc::clone(&ctx.spawner), stream, Arc::clone(&state))?;
@@ -921,92 +918,37 @@ impl PrefixedByteStream {
     }
 }
 
-impl ByteStream for PrefixedByteStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        if self.offset < self.prefix.len() {
-            let len = (self.prefix.len() - self.offset).min(buf.len());
-            buf[..len].copy_from_slice(&self.prefix[self.offset..self.offset + len]);
-            self.offset += len;
-            return Poll::Ready(Ok(len));
-        }
-        Pin::new(&mut *self.inner).poll_read(cx, buf)
-    }
-
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        Pin::new(&mut *self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut *self.inner).poll_flush(cx)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut *self.inner).poll_close(cx)
-    }
-}
-
-struct RustBoxAsyncStream {
-    inner: Box<dyn ByteStream>,
-}
-
-impl RustBoxAsyncStream {
-    fn new(inner: Box<dyn ByteStream>) -> Self {
-        Self { inner }
-    }
-
-    fn into_inner(self) -> Box<dyn ByteStream> {
-        self.inner
-    }
-}
-
-impl AsyncRead for RustBoxAsyncStream {
+impl AsyncRead for PrefixedByteStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let before = buf.filled().len();
-        let dst = buf.initialize_unfilled();
-        match Pin::new(&mut *self.inner).poll_read(cx, dst) {
-            Poll::Ready(Ok(read)) => {
-                buf.set_filled(before + read);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error_to_std(err))),
-            Poll::Pending => Poll::Pending,
+        if self.offset < self.prefix.len() && buf.remaining() > 0 {
+            let len = (self.prefix.len() - self.offset).min(buf.remaining());
+            buf.put_slice(&self.prefix[self.offset..self.offset + len]);
+            self.offset += len;
+            return Poll::Ready(Ok(()));
         }
+        Pin::new(&mut *self.inner).poll_read(cx, buf)
     }
 }
 
-impl AsyncWrite for RustBoxAsyncStream {
+impl AsyncWrite for PrefixedByteStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut *self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error_to_std)
+        Pin::new(&mut *self.inner).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.inner)
-            .poll_flush(cx)
-            .map_err(io_error_to_std)
+        Pin::new(&mut *self.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.inner)
-            .poll_close(cx)
-            .map_err(io_error_to_std)
+        Pin::new(&mut *self.inner).poll_shutdown(cx)
     }
 }
 
@@ -1050,17 +992,6 @@ fn ip_to_std(ip: IpAddress) -> IpAddr {
 
 fn io_error(err: io::Error) -> IoError {
     IoError::new(IoErrorKind::Other, err.to_string())
-}
-
-fn io_error_to_std(err: IoError) -> io::Error {
-    let kind = match err.kind {
-        IoErrorKind::Closed => io::ErrorKind::UnexpectedEof,
-        IoErrorKind::Interrupted => io::ErrorKind::Interrupted,
-        IoErrorKind::InvalidInput => io::ErrorKind::InvalidInput,
-        IoErrorKind::Unsupported => io::ErrorKind::Unsupported,
-        IoErrorKind::Other => io::ErrorKind::Other,
-    };
-    io::Error::new(kind, err.message)
 }
 
 #[cfg(test)]

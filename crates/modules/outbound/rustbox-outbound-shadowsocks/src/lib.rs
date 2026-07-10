@@ -24,7 +24,7 @@ use shadowsocks::relay::udprelay::proxy_socket::ProxySocket;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::ReadBuf;
 
 /// Upstream Shadowsocks proxy outbound.
 pub struct ShadowsocksOutbound {
@@ -105,11 +105,11 @@ impl Outbound for ShadowsocksOutbound {
                     .map_err(|err| OutboundError::new(err.message))?;
                 let stream = ProxyClientStream::from_stream(
                     self.context.clone(),
-                    RustBoxAsyncStream::new(server_stream),
+                    server_stream,
                     &self.server,
                     endpoint_to_address(&target),
                 );
-                Ok(Box::new(AsyncIoByteStream::new(stream)) as Box<dyn ByteStream>)
+                Ok(Box::new(stream) as Box<dyn ByteStream>)
             }
             .await;
 
@@ -277,107 +277,6 @@ impl DatagramSocket for ShadowsocksDatagramSocket {
     }
 }
 
-struct RustBoxAsyncStream {
-    inner: Box<dyn ByteStream>,
-}
-
-impl RustBoxAsyncStream {
-    fn new(inner: Box<dyn ByteStream>) -> Self {
-        Self { inner }
-    }
-}
-
-impl AsyncRead for RustBoxAsyncStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let before = buf.filled().len();
-        let dst = buf.initialize_unfilled();
-        match Pin::new(&mut *self.inner).poll_read(cx, dst) {
-            Poll::Ready(Ok(read)) => {
-                buf.set_filled(before + read);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error_to_std(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl AsyncWrite for RustBoxAsyncStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut *self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error_to_std)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.inner)
-            .poll_flush(cx)
-            .map_err(io_error_to_std)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.inner)
-            .poll_close(cx)
-            .map_err(io_error_to_std)
-    }
-}
-
-struct AsyncIoByteStream<T> {
-    inner: T,
-}
-
-impl<T> AsyncIoByteStream<T> {
-    fn new(inner: T) -> Self {
-        Self { inner }
-    }
-}
-
-impl<T> ByteStream for AsyncIoByteStream<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Unpin,
-{
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner).poll_flush(cx).map_err(io_error)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_shutdown(cx)
-            .map_err(io_error)
-    }
-}
-
 fn endpoint_to_address(endpoint: &Endpoint) -> Address {
     match &endpoint.host {
         Host::Domain(domain) => Address::DomainNameAddress(domain.clone(), endpoint.port),
@@ -418,17 +317,6 @@ fn io_error(err: io::Error) -> IoError {
         _ => IoErrorKind::Other,
     };
     IoError::new(kind, err.to_string())
-}
-
-fn io_error_to_std(err: IoError) -> io::Error {
-    let kind = match err.kind {
-        IoErrorKind::Closed => io::ErrorKind::UnexpectedEof,
-        IoErrorKind::Interrupted => io::ErrorKind::Interrupted,
-        IoErrorKind::InvalidInput => io::ErrorKind::InvalidInput,
-        IoErrorKind::Unsupported => io::ErrorKind::Unsupported,
-        IoErrorKind::Other => io::ErrorKind::Other,
-    };
-    io::Error::new(kind, err.message)
 }
 
 #[cfg(test)]

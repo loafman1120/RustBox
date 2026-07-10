@@ -224,9 +224,10 @@ mod tests {
     use core::pin::Pin;
     use core::task::{Context, Poll};
     use rustbox_host_api::{AcceptedTransparentStream, TransparentProxyError};
-    use rustbox_io::{ByteStream, IoError};
     use rustbox_kernel::{FlowOutcome, FlowSink};
+    use std::io;
     use std::sync::Mutex;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     #[test]
     fn starts_with_transparent_provider() {
@@ -323,28 +324,30 @@ mod tests {
     #[allow(dead_code)]
     struct EmptyStream;
 
-    impl ByteStream for EmptyStream {
+    impl AsyncRead for EmptyStream {
         fn poll_read(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            _buf: &mut [u8],
-        ) -> Poll<Result<usize, IoError>> {
-            Poll::Ready(Ok(0))
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
+    }
 
+    impl AsyncWrite for EmptyStream {
         fn poll_write(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
             buf: &[u8],
-        ) -> Poll<Result<usize, IoError>> {
+        ) -> Poll<io::Result<usize>> {
             Poll::Ready(Ok(buf.len()))
         }
 
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
 
-        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
     }

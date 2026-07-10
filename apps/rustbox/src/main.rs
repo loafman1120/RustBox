@@ -1,16 +1,15 @@
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
-use rustbox::RustBox;
+use rustbox::{RustBox, RustBoxOptions};
 use rustbox_config_file::load_toml_file;
-use rustbox_control::{ControlState, EngineCommand, EngineState};
-use rustbox_control_api::{AuthPolicy, ControlApiConfig, ControlApiState};
+use rustbox_control::EngineCommand;
+use rustbox_control_api::{AuthPolicy, ControlApiConfig};
 use rustbox_observability::{
     CompositeObservabilitySink, ConsoleObservabilitySink, FileObservabilitySink, LevelFilter,
     ObservabilityStore,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
 
 /// 应用入口只负责选择配置来源、建立组合根、启动和响应 Ctrl-C。
 #[tokio::main]
@@ -18,7 +17,7 @@ async fn main() {
     let cli = Cli::parse();
     let control_api_config = control_api_config_from_cli(&cli.control)
         .unwrap_or_else(|err| Cli::command().error(ErrorKind::ValueValidation, err).exit());
-    let (mut runtime, listen, observability_store) = match cli.command {
+    let (mut runtime, listen) = match cli.command {
         CliCommand::PlatformCapabilities => {
             print_platform_capabilities();
             return;
@@ -43,46 +42,30 @@ async fn main() {
             });
             let observability = observability_from_file(&file_config)
                 .unwrap_or_else(|err| panic!("configure observability: {err}"));
+            let mut options = RustBoxOptions::default().with_observability(observability.sink);
+            if let Some(config) = control_api_config {
+                options = options.with_control_grpc(config, observability.store);
+            }
             (
-                RustBox::with_observability(file_config.source, observability.sink)
-                    .expect("compose config file"),
+                RustBox::with_options(file_config.source, options).expect("compose config file"),
                 "configured proxy graph started",
-                observability.store,
             )
         }
     };
     runtime.start().await.expect("start configured proxy graph");
 
-    let snapshot = runtime.snapshot().clone();
-    let inbound_count = snapshot.inbound_count;
-    let outbound_count = snapshot.outbound_count;
-    let control_state = Arc::new(Mutex::new(ControlState::new(snapshot)));
-
-    let (command_tx, mut command_rx) = mpsc::unbounded_channel();
-    let control_api_task = if let Some(config) = control_api_config {
-        let listen = config.listen;
-        let state = ControlApiState::new(observability_store, Arc::clone(&control_state))
-            .with_command_sender(command_tx);
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            rustbox_control_api::serve_grpc(config, state, async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-        });
+    if let Some(listen) = runtime.control_grpc_addr() {
         println!("RustBox control gRPC listening on {listen}");
-        Some((shutdown_tx, task))
-    } else {
-        None
-    };
+    }
 
     println!("RustBox {listen}");
+    let control_enabled = runtime.control_grpc_addr().is_some();
     let stop_reason = tokio::select! {
         result = tokio::signal::ctrl_c() => {
             result.expect("wait for ctrl-c");
             "Ctrl-C"
         }
-        command = command_rx.recv(), if control_api_task.is_some() => {
+        command = runtime.next_control_command(), if control_enabled => {
             match command {
                 Some(EngineCommand::Stop) => "control API stop command",
                 Some(_) => "control API command",
@@ -93,23 +76,6 @@ async fn main() {
 
     eprintln!("RustBox stopping after {stop_reason}");
     runtime.stop().await.expect("stop configured proxy graph");
-
-    if let Ok(mut state) = control_state.lock() {
-        let mut snapshot = state.snapshot().clone();
-        snapshot.state = EngineState::Stopped;
-        snapshot.inbound_count = inbound_count;
-        snapshot.outbound_count = outbound_count;
-        state.replace_snapshot(snapshot);
-    }
-
-    if let Some((shutdown_tx, task)) = control_api_task {
-        let _ = shutdown_tx.send(());
-        match task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => eprintln!("RustBox control gRPC stopped with error: {err}"),
-            Err(err) => eprintln!("RustBox control gRPC task failed: {err}"),
-        }
-    }
 }
 
 #[derive(Debug, Parser)]

@@ -43,6 +43,9 @@ rustbox.reload(next_source_config).await?;
 rustbox.stop().await?;
 ```
 
+需要共享进程服务时使用 `RustBoxOptions`。例如控制 gRPC 的监听配置、观测存储、
+命令通道、任务和 shutdown 都由 `RustBox` 持有；CLI 只把命令行参数翻译成 option。
+
 源码位于 `crates/rustbox`。内部运行图构造器不属于 CLI 或 FFI API。
 
 ## 配置
@@ -75,8 +78,8 @@ TOML / programmatic SourceConfig
 `RustBox` 是生命周期的唯一所有者：
 
 - `new`：校验配置并准备运行图；
-- `start`：启动所有 inbound 服务；
-- `stop`：按反向顺序停止服务；
+- `start`：启动所有 inbound 以及 option 启用的控制服务；
+- `stop`：按反向顺序停止数据面服务并回收控制服务任务；
 - `reload`：准备新图，并在需要时停止旧图、启动新图；
 - `snapshot`：向 CLI、FFI、控制 API 返回同一种状态。
 
@@ -92,5 +95,6 @@ C 调用方没有 Tokio runtime，因此 FFI 只额外持有一个 Tokio `Runtim
 - 配置校验不在各 inbound/outbound 中重复；
 - 平台路由、TUN 和透明代理操作留在对应平台实现；
 - CLI 与 FFI 不直接操作内部 `Engine` 或 service 列表。
+- CLI 不持有共享服务的任务句柄、命令通道或 shutdown sender。
 
 除此之外，优先选择直接依赖和普通函数调用。

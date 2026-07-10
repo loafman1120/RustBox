@@ -19,7 +19,7 @@ use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::ReadBuf;
 use tokio::net::UdpSocket;
 
 /// 上游 SOCKS5 代理出站。
@@ -91,13 +91,10 @@ impl Outbound for Socks5Outbound {
                         username: credentials.username.clone(),
                         password: credentials.password.clone(),
                     });
-            let mut socks_stream = Socks5Stream::use_stream(
-                RustBoxAsyncStream::new(proxy_stream),
-                auth,
-                SocksClientConfig::default(),
-            )
-            .await
-            .map_err(|err| OutboundError::new(err.to_string()))?;
+            let mut socks_stream =
+                Socks5Stream::use_stream(proxy_stream, auth, SocksClientConfig::default())
+                    .await
+                    .map_err(|err| OutboundError::new(err.to_string()))?;
             socks_stream
                 .request(
                     fast_socks5::Socks5Command::TCPConnect,
@@ -108,7 +105,7 @@ impl Outbound for Socks5Outbound {
 
             self.emit_result(flow_id, outbound, target_text, Ok(()))
                 .await?;
-            Ok(Box::new(AsyncIoByteStream::new(socks_stream)) as Box<dyn ByteStream>)
+            Ok(Box::new(socks_stream) as Box<dyn ByteStream>)
         })
     }
 
@@ -138,17 +135,14 @@ impl Outbound for Socks5Outbound {
             let datagram = match &self.credentials {
                 Some(credentials) => {
                     Socks5Datagram::use_socket_with_password(
-                        RustBoxAsyncStream::new(proxy_stream),
+                        proxy_stream,
                         udp_socket,
                         &credentials.username,
                         &credentials.password,
                     )
                     .await
                 }
-                None => {
-                    Socks5Datagram::use_socket(RustBoxAsyncStream::new(proxy_stream), udp_socket)
-                        .await
-                }
+                None => Socks5Datagram::use_socket(proxy_stream, udp_socket).await,
             }
             .map_err(|err| OutboundError::new(err.to_string()))?;
 
@@ -215,12 +209,12 @@ impl Socks5Outbound {
 }
 
 struct Socks5DatagramSocket {
-    inner: Socks5Datagram<RustBoxAsyncStream>,
+    inner: Socks5Datagram<Box<dyn ByteStream>>,
     recv_buf: Vec<u8>,
 }
 
 impl Socks5DatagramSocket {
-    fn new(inner: Socks5Datagram<RustBoxAsyncStream>) -> Self {
+    fn new(inner: Socks5Datagram<Box<dyn ByteStream>>) -> Self {
         Self {
             inner,
             recv_buf: vec![0; 65_535],
@@ -293,107 +287,6 @@ impl DatagramSocket for Socks5DatagramSocket {
     }
 }
 
-struct RustBoxAsyncStream {
-    inner: Box<dyn ByteStream>,
-}
-
-impl RustBoxAsyncStream {
-    fn new(inner: Box<dyn ByteStream>) -> Self {
-        Self { inner }
-    }
-}
-
-impl AsyncRead for RustBoxAsyncStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let before = buf.filled().len();
-        let dst = buf.initialize_unfilled();
-        match Pin::new(&mut *self.inner).poll_read(cx, dst) {
-            Poll::Ready(Ok(read)) => {
-                buf.set_filled(before + read);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error_to_std(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl AsyncWrite for RustBoxAsyncStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut *self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error_to_std)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.inner)
-            .poll_flush(cx)
-            .map_err(io_error_to_std)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.inner)
-            .poll_close(cx)
-            .map_err(io_error_to_std)
-    }
-}
-
-struct AsyncIoByteStream<T> {
-    inner: T,
-}
-
-impl<T> AsyncIoByteStream<T> {
-    fn new(inner: T) -> Self {
-        Self { inner }
-    }
-}
-
-impl<T> ByteStream for AsyncIoByteStream<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Unpin,
-{
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_write(cx, buf)
-            .map_err(io_error)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner).poll_flush(cx).map_err(io_error)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.inner)
-            .poll_shutdown(cx)
-            .map_err(io_error)
-    }
-}
-
 async fn bind_udp_for_target(target: &Endpoint) -> io::Result<UdpSocket> {
     let bind = match &target.host {
         Host::Ip(IpAddress::V6(_)) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
@@ -449,17 +342,6 @@ fn io_error(err: io::Error) -> IoError {
         _ => IoErrorKind::Other,
     };
     IoError::new(kind, err.to_string())
-}
-
-fn io_error_to_std(err: IoError) -> io::Error {
-    let kind = match err.kind {
-        IoErrorKind::Closed => io::ErrorKind::UnexpectedEof,
-        IoErrorKind::Interrupted => io::ErrorKind::Interrupted,
-        IoErrorKind::InvalidInput => io::ErrorKind::InvalidInput,
-        IoErrorKind::Unsupported => io::ErrorKind::Unsupported,
-        IoErrorKind::Other => io::ErrorKind::Other,
-    };
-    io::Error::new(kind, err.message)
 }
 
 #[cfg(test)]

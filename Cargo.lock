@@ -2711,12 +2711,14 @@ version = "0.1.0"
 dependencies = [
  "rustbox-config",
  "rustbox-control",
+ "rustbox-control-api",
  "rustbox-host-api",
  "rustbox-inbound-http",
  "rustbox-inbound-socks5",
  "rustbox-inbound-transparent",
  "rustbox-inbound-tun",
  "rustbox-kernel",
+ "rustbox-observability",
  "rustbox-outbound-anytls",
  "rustbox-outbound-direct",
  "rustbox-outbound-http",
@@ -2727,6 +2729,7 @@ dependencies = [
  "rustbox-route",
  "rustbox-stack",
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]
@@ -2858,6 +2861,7 @@ dependencies = [
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]
@@ -2885,6 +2889,7 @@ name = "rustbox-io"
 version = "0.1.0"
 dependencies = [
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]
@@ -2896,6 +2901,7 @@ dependencies = [
  "rustbox-route",
  "rustbox-test-host",
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]
@@ -3043,6 +3049,7 @@ dependencies = [
  "rustbox-host-api",
  "rustbox-io",
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]

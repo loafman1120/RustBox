@@ -8,7 +8,7 @@ use core::task::{Context, Poll};
 use rustbox_host_api::{
     BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind, stream_close};
+use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind, stream_close};
 use rustbox_route::Router;
 use rustbox_types::{Endpoint, FlowId, FlowMeta, Network, OutboundId, RejectReason, RouteDecision};
 use std::collections::HashMap;
@@ -397,33 +397,15 @@ pub async fn relay_stream(
     mut inbound: Box<dyn ByteStream>,
     mut outbound: Box<dyn ByteStream>,
 ) -> Result<RelayStats, RelayError> {
-    let mut inbound_to_outbound = CopyDirection::new();
-    let mut outbound_to_inbound = CopyDirection::new();
-
-    let result = poll_fn(|cx| {
-        let first =
-            poll_copy_direction(cx, &mut *inbound, &mut *outbound, &mut inbound_to_outbound);
-        if let Poll::Ready(Err(err)) = first {
-            return Poll::Ready(Err(err));
-        }
-
-        let second =
-            poll_copy_direction(cx, &mut *outbound, &mut *inbound, &mut outbound_to_inbound);
-        if let Poll::Ready(Err(err)) = second {
-            return Poll::Ready(Err(err));
-        }
-
-        if inbound_to_outbound.done && outbound_to_inbound.done {
-            Poll::Ready(Ok(RelayStats {
-                inbound_to_outbound_bytes: inbound_to_outbound.bytes,
-                outbound_to_inbound_bytes: outbound_to_inbound.bytes,
-            }))
-        } else {
-            Poll::Pending
-        }
-    })
-    .await
-    .map_err(|err| RelayError::new(err.message));
+    let result = tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
+        .await
+        .map(
+            |(inbound_to_outbound_bytes, outbound_to_inbound_bytes)| RelayStats {
+                inbound_to_outbound_bytes,
+                outbound_to_inbound_bytes,
+            },
+        )
+        .map_err(|err| RelayError::new(err.to_string()));
 
     let _ = stream_close(&mut *inbound).await;
     let _ = stream_close(&mut *outbound).await;
@@ -551,76 +533,6 @@ fn poll_datagram_direction(
             }
             Poll::Ready(Err(err)) => return Poll::Ready(Err(RelayError::new(err.message))),
             Poll::Pending => return Poll::Ready(Ok(DatagramPoll::Pending)),
-        }
-    }
-}
-
-struct CopyDirection {
-    buf: [u8; 8192],
-    pos: usize,
-    cap: usize,
-    done: bool,
-    bytes: u64,
-}
-
-impl CopyDirection {
-    fn new() -> Self {
-        Self {
-            buf: [0; 8192],
-            pos: 0,
-            cap: 0,
-            done: false,
-            bytes: 0,
-        }
-    }
-}
-
-fn poll_copy_direction(
-    cx: &mut Context<'_>,
-    reader: &mut dyn ByteStream,
-    writer: &mut dyn ByteStream,
-    state: &mut CopyDirection,
-) -> Poll<Result<(), IoError>> {
-    if state.done {
-        return Poll::Ready(Ok(()));
-    }
-
-    loop {
-        if state.pos < state.cap {
-            let written =
-                match Pin::new(&mut *writer).poll_write(cx, &state.buf[state.pos..state.cap]) {
-                    Poll::Ready(Ok(0)) => {
-                        return Poll::Ready(Err(IoError::new(
-                            IoErrorKind::Closed,
-                            "relay write returned zero",
-                        )));
-                    }
-                    Poll::Ready(Ok(written)) => written,
-                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                    Poll::Pending => return Poll::Pending,
-                };
-            state.pos += written;
-            state.bytes += written as u64;
-            continue;
-        }
-
-        state.pos = 0;
-        state.cap = 0;
-        match Pin::new(&mut *reader).poll_read(cx, &mut state.buf) {
-            Poll::Ready(Ok(0)) => match Pin::new(&mut *writer).poll_flush(cx) {
-                Poll::Ready(Ok(())) => {
-                    state.done = true;
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                Poll::Pending => return Poll::Pending,
-            },
-            Poll::Ready(Ok(read)) => {
-                state.cap = read;
-                continue;
-            }
-            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-            Poll::Pending => return Poll::Pending,
         }
     }
 }

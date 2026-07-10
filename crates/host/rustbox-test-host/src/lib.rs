@@ -8,10 +8,12 @@ use rustbox_host_api::{
     BoxFuture, Clock, Entropy, EntropyError, HostInstant, NetError, NetworkProvider,
     StreamListener, TcpBind, TcpConnect, UdpBind,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
+use rustbox_io::{ByteStream, DatagramSocket};
 use rustbox_types::Endpoint;
 use std::collections::VecDeque;
+use std::io;
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// 可注入内存流和虚拟时钟的测试宿主。
 #[derive(Clone, Default)]
@@ -129,7 +131,7 @@ impl StreamListener for EmptyListener {
 pub struct MemoryStream {
     read: VecDeque<u8>,
     written: Vec<u8>,
-    closed: bool,
+    write_closed: bool,
 }
 
 impl MemoryStream {
@@ -137,7 +139,7 @@ impl MemoryStream {
         Self {
             read: data.into().into(),
             written: Vec::new(),
-            closed: false,
+            write_closed: false,
         }
     }
 
@@ -146,46 +148,47 @@ impl MemoryStream {
     }
 }
 
-impl ByteStream for MemoryStream {
+impl AsyncRead for MemoryStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        if self.closed {
-            return Poll::Ready(Err(IoError::new(IoErrorKind::Closed, "stream is closed")));
-        }
-
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let mut count = 0;
-        while count < buf.len() {
+        while count < buf.remaining() {
             let Some(byte) = self.read.pop_front() else {
                 break;
             };
-            buf[count] = byte;
+            buf.put_slice(&[byte]);
             count += 1;
         }
-        Poll::Ready(Ok(count))
+        Poll::Ready(Ok(()))
     }
+}
 
+impl AsyncWrite for MemoryStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        if self.closed {
-            return Poll::Ready(Err(IoError::new(IoErrorKind::Closed, "stream is closed")));
+    ) -> Poll<io::Result<usize>> {
+        if self.write_closed {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "stream is closed",
+            )));
         }
 
         self.written.extend_from_slice(buf);
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        self.closed = true;
+    fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.write_closed = true;
         Poll::Ready(Ok(()))
     }
 }

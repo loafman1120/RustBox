@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 rustbox-types = { path = "../rustbox-types" }
+tokio = { version = "1", features = ["io-util"] }
 
 [lints]
 workspace = true

@@ -10,11 +10,12 @@ use rustbox_host_api::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, stream_write_all};
+use rustbox_io::{ByteStream, DatagramSocket, stream_write_all};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, OutboundId};
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const MAX_CONNECT_RESPONSE_BYTES: usize = 16 * 1024;
 
@@ -268,41 +269,43 @@ struct HttpTunnelStream {
     pending: Vec<u8>,
 }
 
-impl ByteStream for HttpTunnelStream {
+impl AsyncRead for HttpTunnelStream {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        if !self.pending.is_empty() {
-            let len = self.pending.len().min(buf.len());
-            buf[..len].copy_from_slice(&self.pending[..len]);
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.pending.is_empty() && buf.remaining() > 0 {
+            let len = self.pending.len().min(buf.remaining());
+            buf.put_slice(&self.pending[..len]);
             self.pending.drain(..len);
-            return Poll::Ready(Ok(len));
+            return Poll::Ready(Ok(()));
         }
         std::pin::Pin::new(&mut *self.inner).poll_read(cx, buf)
     }
+}
 
+impl AsyncWrite for HttpTunnelStream {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
+    ) -> Poll<std::io::Result<usize>> {
         std::pin::Pin::new(&mut *self.inner).poll_write(cx, buf)
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<(), IoError>> {
+    ) -> Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut *self.inner).poll_flush(cx)
     }
 
-    fn poll_close(
+    fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<(), IoError>> {
-        std::pin::Pin::new(&mut *self.inner).poll_close(cx)
+    ) -> Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.inner).poll_shutdown(cx)
     }
 }
 
