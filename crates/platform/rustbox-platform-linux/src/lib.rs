@@ -33,8 +33,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::task::{Context, Poll};
 #[cfg(target_os = "linux")]
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-#[cfg(target_os = "linux")]
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(target_os = "linux")]
 use tun_rs::{DeviceBuilder, Layer, SyncDevice};
