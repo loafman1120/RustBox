@@ -1,57 +1,24 @@
-# RustBox Observability Architecture
+# RustBox Observability
 
-> **Document status:** Current implementation and target direction
-> **Last updated:** 2026-07-10
-> **Related documents:** `docs/architecture.md`, `docs/current-architecture.md`, `docs/config-ffi-architecture.md`
+> 2026-07-10 · 见 `architecture.md`
 
-This document defines how RustBox records, exposes, and exports runtime
-observability without coupling the portable proxy core to a concrete logging,
-metrics, API, or telemetry backend.
+核心规则：kernel 只 emit event → adapter 记录/导出 → 控制 API 查询快照。kernel 不感知最终消费端。
 
----
+## 当前实现
 
-## 1. Goals
-
-RustBox observability must support:
-
-1. Structured events from the kernel and modules.
-2. Low-cost counters for services, flows, routes, outbounds, diagnostics, and
-   traffic bytes.
-3. Per-flow connection statistics for API, GUI, FFI, and tests.
-4. Bounded event queries for local control APIs.
-5. Console, recording, file, platform-native, and remote telemetry sinks.
-6. Future HTTP/gRPC control APIs without making gRPC part of the kernel.
-
-The key rule is:
-
-```text
-core emits events -> observability adapter records/exports -> control API queries snapshots
-```
-
-The kernel does not know whether the final consumer is stderr, a file, ETW,
-Android logcat, Apple unified logging, OpenTelemetry, a local HTTP endpoint, or
-a gRPC control plane.
-
----
-
-## 2. Current Implementation
-
-The current code implements the following pieces:
-
-| Piece | Location | Purpose |
+| 组件 | 位置 | 用途 |
 |---|---|---|
-| Event contract | `rustbox-host-api::Event`, `EventKind`, `ObservabilitySink` | Portable capability boundary |
-| Console sink | `ConsoleObservabilitySink` | CLI stderr/stdout output with `RUSTBOX_LOG` filtering |
-| Recording sink | `RecordingObservabilitySink` | Tests and embedding assertions |
-| Composite sink | `CompositeObservabilitySink` | Fan-out to multiple sinks |
-| Queryable store | `ObservabilityStore` | Metrics, connection stats, bounded event API |
-| File sink | `FileObservabilitySink` | Append structured text events to a host file |
-| Platform bridge | `PlatformLogSink` + `PlatformLogBackend` | Adapter point for ETW/logcat/os_log/syslog-like backends |
-| Remote bridge | `RemoteTelemetrySink` + `TelemetryExporter` | Adapter point for HTTP/gRPC/OTLP/custom telemetry exporters |
-| Control API | `rustbox-control-api` | Native gRPC snapshots, event queries, and stop command |
+| Event 契约 | `ObservabilitySink`, `Event`, `EventKind` | 可移植边界 |
+| Console sink | `ConsoleObservabilitySink` | CLI 输出，`RUSTBOX_LOG` 过滤 |
+| Recording sink | `RecordingObservabilitySink` | 测试断言 |
+| Composite sink | `CompositeObservabilitySink` | 多 sink 扇出 |
+| Store | `ObservabilityStore` | metrics、连接统计、事件查询 |
+| File sink | `FileObservabilitySink` | 追加结构化文本 |
+| Platform bridge | `PlatformLogSink` + `PlatformLogBackend` | ETW/logcat/os_log 适配点 |
+| Remote bridge | `RemoteTelemetrySink` + `TelemetryExporter` | OTLP/HTTP/gRPC 适配点 |
+| gRPC API | `rustbox-control-api` | 快照、事件查询、stop 命令 |
 
-`rustbox-app run --config` currently wires console output and optional file output
-from TOML:
+TOML 配置：
 
 ```toml
 [observability]
@@ -59,229 +26,60 @@ level = "info"
 file = "target/rustbox.log"
 ```
 
-Platform and remote telemetry are implemented as host-facing adapter traits.
-The concrete ETW/logcat/os_log/OTLP clients should live in platform or product
-output implementations, not in the flow kernel.
-
----
-
-## 3. Event Flow
+## 事件流
 
 ```mermaid
 flowchart LR
-    CORE["kernel / modules"]
-    EVENT["Event + EventKind"]
-    SINK["ObservabilitySink"]
-    FANOUT["Composite sink"]
-    CONSOLE["Console"]
-    STORE["ObservabilityStore"]
-    FILE["File"]
-    PLATFORM["PlatformLogSink"]
-    REMOTE["RemoteTelemetrySink"]
-    API["HTTP / gRPC / FFI query layer"]
-
-    CORE --> EVENT --> SINK --> FANOUT
-    FANOUT --> CONSOLE
-    FANOUT --> STORE
-    FANOUT --> FILE
-    FANOUT --> PLATFORM
-    FANOUT --> REMOTE
-    STORE --> API
+    CORE["kernel / modules"] --> EVENT["Event"] --> SINK["ObservabilitySink"]
+    SINK --> FANOUT["Composite"]
+    FANOUT --> CONSOLE["Console"]
+    FANOUT --> STORE["ObservabilityStore"]
+    FANOUT --> FILE["File"]
+    FANOUT --> PLATFORM["PlatformLogSink"]
+    FANOUT --> REMOTE["RemoteTelemetrySink"]
+    STORE --> API["HTTP / gRPC / FFI"]
 ```
 
-`ObservabilityStore` is the source of truth for API-facing metrics and recent
-events. API servers should query it by value and should not hold mutable kernel
-references.
+## Metrics & 连接统计
 
----
+当前指标：服务启停、连接接纳、flow 生命周期、路由决策、出站连接成败、relay byte 总计、诊断计数。
 
-## 4. Metrics
+连接统计按 `FlowId` 索引：source、destination、network、state (active/completed/failed)、双向 bytes、outcome。
 
-The current metrics snapshot includes:
+**已知差距**：活跃长连接无持续更新 byte counter。目标方案：低成本 counted stream wrapper + `SessionRegistry`，不逐 buffer 生成格式化日志。
 
-| Metric | Meaning |
-|---|---|
-| `services_started`, `services_stopped` | Service lifecycle count |
-| `connections_accepted` | Listener accept count |
-| `flows_accepted`, `flows_active`, `flows_completed`, `flows_failed` | Flow lifecycle count |
-| `routes_selected` | Router decision count |
-| `outbound_connect_attempts`, `outbound_connect_successes`, `outbound_connect_failures` | Direct outbound connection count |
-| `inbound_to_outbound_bytes`, `outbound_to_inbound_bytes` | Stream relay byte totals |
-| `diagnostics` | Diagnostic event count |
+目标 `SessionRegistry` 每会话保存：ID、元数据快照、逻辑/concrete outbound、原子 byte/packet/drop 计数、取消句柄。有界、显式保留策略、不暴露 socket。
 
-Traffic bytes are emitted as a structured `TrafficRecorded` event after relay
-completion. The store aggregates this into process-wide metrics and the matching
-flow's connection stats.
+## 查询 API
 
-This means active long-lived flows do not currently expose continuously updated
-byte counters. The target architecture adds low-cost counted stream/datagram
-wrappers and a `SessionRegistry`; it does not emit one formatted event per
-buffer.
-
-High-frequency byte accounting should remain event or counter based. It must not
-perform synchronous formatted logging for every data-plane buffer.
-
----
-
-## 5. Connection Statistics
-
-Connection stats are keyed by `FlowId` and currently contain:
-
-```text
-flow_id
-source
-destination
-network
-state: active | completed | failed
-inbound_to_outbound_bytes
-outbound_to_inbound_bytes
-outcome
-error
+```
+ObservabilityStore::metrics()     → MetricsSnapshot
+ObservabilityStore::connections() → Vec<ConnectionStats>
+ObservabilityStore::snapshot()    → ObservabilitySnapshot
+ObservabilityStore::query_events(level, target, flow_id, limit) → Vec<Event>
 ```
 
-The current state machine is:
+gRPC 映射：`GetMetrics`、`ListConnections`、`QueryEvents`、`GetObservabilitySnapshot`、`GetEngineSnapshot`、`Stop`。
 
-```mermaid
-stateDiagram-v2
-    [*] --> Active: FlowAccepted
-    Active --> Completed: FlowCompleted
-    Active --> Failed: FlowFailed
-```
+## Sink 策略
 
-Target UDP sessions use the same lifecycle state model, but keep datagram packet,
-byte, drop, idle-expiry, and capacity-eviction counters distinct from stream
-relay counters.
-
-## 5.1 Target Session Registry
-
-`ObservabilityStore` remains the event/query store. A separate runtime-owned
-`SessionRegistry` holds the minimum live control state:
-
-```text
-FlowId / SessionId
-metadata snapshot and selected logical/concrete outbound
-created_at / last_active_at
-atomic byte counters; UDP packet/drop counters
-cancellation handle
-```
-
-The registry must be bounded, remove completed sessions according to an explicit
-retention policy, and never expose sockets or mutable engine references. Relay
-completion publishes the final event and outcome; periodic API reads obtain
-live counters directly from a snapshot. `stop`, reload draining, and control API
-connection cancellation all use the same supervisor-owned cancellation path.
-
----
-
-## 6. Query API Shape
-
-The in-process query API is intentionally small:
-
-```text
-ObservabilityStore::metrics() -> MetricsSnapshot
-ObservabilityStore::connections() -> Vec<ConnectionStats>
-ObservabilityStore::snapshot() -> ObservabilitySnapshot
-ObservabilityStore::query_events(ObservabilityQuery) -> Vec<Event>
-```
-
-`ObservabilityQuery` supports:
-
-- minimum event level
-- target prefix
-- flow id
-- result limit
-
-This is enough for the first gRPC/FFI control layers:
-
-```text
-RustBoxControl/GetMetrics                -> MetricsSnapshot
-RustBoxControl/ListConnections           -> Vec<ConnectionStats>
-RustBoxControl/QueryEvents               -> query_events(...)
-RustBoxControl/GetObservabilitySnapshot  -> ObservabilitySnapshot
-RustBoxControl/GetEngineSnapshot         -> EngineSnapshot
-RustBoxControl/Stop                      -> EngineCommand::Stop
-```
-
-The implemented protobuf transport lives in `rustbox-control-api`. Future HTTP
-or compatibility layers should translate to the same store and command model
-later.
-
----
-
-## 7. sing-box Control API Reference
-
-sing-box keeps runtime observation and control in service-level APIs rather
-than in protocol modules:
-
-- The current sing-box API service is documented as a gRPC server for observing
-  and controlling a running instance, with bearer-token gRPC metadata
-  authentication.
-- Its Clash API compatibility service exposes a RESTful `external_controller`
-  with an optional secret and dashboard-related settings.
-
-RustBox should follow the architectural lesson, not the exact API surface:
-
-```text
-observability store + control commands
-        -> RustBox-native HTTP/gRPC API
-        -> optional compatibility frontends
-```
-
-Compatibility APIs must translate into RustBox snapshots and commands. They
-must not get privileged access to kernel internals.
-
-References:
-
-- https://sing-box.sagernet.org/configuration/service/api/
-- https://sing-box.sagernet.org/configuration/experimental/clash-api/
-
----
-
-## 8. Sink Policy
-
-| Sink | Current status | Rule |
+| Sink | 状态 | 规则 |
 |---|---|---|
-| No-op | Implemented | Library default |
-| Console | Implemented | CLI default |
-| Recording | Implemented | Tests and embedding |
-| Metrics/query store | Implemented | API source of truth |
-| File | Implemented | Host file append sink |
-| Platform native | Adapter implemented | Concrete backend belongs to platform/product crates |
-| Remote telemetry | Adapter implemented | Concrete exporter belongs to product/integration crates |
-| gRPC control API | Implemented | Native RustBox service |
+| No-op | 已实现 | 库默认 |
+| Console | 已实现 | CLI 默认 |
+| Recording | 已实现 | 测试/嵌入 |
+| Store | 已实现 | API 数据源 |
+| File | 已实现 | 主机文件追加 |
+| Platform native | 适配器已实现 | 具体后端在 platform/product crate |
+| Remote telemetry | 适配器已实现 | 具体导出器在 integration crate |
+| gRPC API | 已实现 | 原生 RustBox 服务 |
 
-Multiple sinks should be combined with `CompositeObservabilitySink`. A slow or
-remote sink should use buffering in its own adapter; the portable event
-capability should not become a backpressure mechanism for the relay path.
+慢/远程 sink 应在自身适配器内缓冲，不在 relay 路径引入背压。
 
----
+## 安全
 
-## 9. Security Rules
-
-External control APIs must apply these rules:
-
-- Bind to loopback by default.
-- Require a secret/token before listening on non-loopback addresses.
-- Redact credentials from events before exporting remote telemetry.
-- Bound event history and query result sizes.
-- Rate-limit expensive API queries.
-- Treat remote telemetry failures as observability failures, not data-plane
-  failures.
-
-File logging should be opt-in and should fail startup if the configured file
-cannot be opened.
-
----
-
-## 10. Planned Extensions
-
-Recommended order:
-
-1. Add HTTP and Clash REST compatibility frontends over the same store/command
-   model.
-2. Add richer protobuf/JSON DTOs when route/outbound control commands become
-   executable.
-3. Add a platform crate backend for Windows ETW or Event Log.
-4. Add an OTLP exporter crate using `RemoteTelemetrySink`.
-5. Add redaction policy to event construction before any remote exporter is
-   enabled by default.
+- 默认 bind loopback；非 loopback 需 secret/token
+- 凭证不得出现在远程遥测事件中
+- 事件历史和查询结果有界
+- 昂贵查询限速
+- 远程遥测失败视为观测失败，不影响数据面

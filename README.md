@@ -55,8 +55,8 @@ See `examples/rustbox.toml`. Inbound types: `http-connect`, `socks5`, `mixed`.
 Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `anytls`.
 
 The `anytls` outbound uses the pinned, protocol-compatible `anytls 0.2.3`
-client and is continuously tested against a sing-box AnyTLS server. See the
-[AnyTLS support contract](docs/anytls-support.md).
+client and is continuously tested against a sing-box AnyTLS server. See
+[架构文档 §AnyTLS](docs/architecture.md).
 
 ## Verify
 
