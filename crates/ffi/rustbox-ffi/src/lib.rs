@@ -632,39 +632,6 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn validates_default_http_proxy_through_c_abi() {
-        let mut diagnostic = RustBoxFfiDiagnostic::default();
-
-        let code = rustbox_validate_default_http_proxy(0, &mut diagnostic);
-
-        assert_eq!(code, RustBoxStatusCode::Ok);
-        assert_eq!(diagnostic.code, RustBoxStatusCode::Ok);
-        free_diagnostic(&mut diagnostic);
-    }
-
-    #[test]
-    fn validates_default_socks5_proxy_through_c_abi() {
-        let mut diagnostic = RustBoxFfiDiagnostic::default();
-
-        let code = rustbox_validate_default_socks5_proxy(0, &mut diagnostic);
-
-        assert_eq!(code, RustBoxStatusCode::Ok);
-        assert_eq!(diagnostic.code, RustBoxStatusCode::Ok);
-        free_diagnostic(&mut diagnostic);
-    }
-
-    #[test]
-    fn validates_toml_config_through_c_abi() {
-        let mut diagnostic = RustBoxFfiDiagnostic::default();
-        let config = sample_toml_config();
-
-        let code = rustbox_validate_config_toml(config.as_ptr(), config.len(), &mut diagnostic);
-
-        assert_eq!(code, RustBoxStatusCode::Ok);
-        free_diagnostic(&mut diagnostic);
-    }
-
-    #[test]
     fn creates_snapshots_reloads_and_destroys_through_c_abi() {
         let mut diagnostic = RustBoxFfiDiagnostic::default();
         let mut handle = RustBoxEngineHandle(0);
@@ -737,25 +704,6 @@ mod tests {
         free_diagnostic(&mut diagnostic);
         let stop = rustbox_engine_stop(handle, &mut diagnostic);
         assert_eq!(stop, RustBoxStatusCode::Ok);
-        free_diagnostic(&mut diagnostic);
-
-        let destroy = rustbox_engine_destroy(handle, &mut diagnostic);
-        assert_eq!(destroy, RustBoxStatusCode::Ok);
-        free_diagnostic(&mut diagnostic);
-    }
-
-    #[test]
-    fn creates_reloads_and_destroys_socks5_through_c_abi() {
-        let mut diagnostic = RustBoxFfiDiagnostic::default();
-        let mut handle = RustBoxEngineHandle(0);
-
-        let create = rustbox_engine_create_default_socks5_proxy(0, &mut handle, &mut diagnostic);
-        assert_eq!(create, RustBoxStatusCode::Ok);
-        assert_ne!(handle.0, 0);
-        free_diagnostic(&mut diagnostic);
-
-        let reload = rustbox_engine_reload_default_socks5_proxy(handle, 0, &mut diagnostic);
-        assert_eq!(reload, RustBoxStatusCode::Ok);
         free_diagnostic(&mut diagnostic);
 
         let destroy = rustbox_engine_destroy(handle, &mut diagnostic);

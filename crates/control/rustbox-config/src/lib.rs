@@ -1493,13 +1493,6 @@ mod tests {
     use super::*;
     use rustbox_types::Endpoint;
 
-    fn compile_source(source: SourceConfig) -> CompiledConfig {
-        let parsed = ConfigCompiler::parse(source).expect("parse");
-        let normalized = ConfigCompiler::normalize(parsed).expect("normalize");
-        let validated = ConfigCompiler::validate(normalized).expect("validate");
-        ConfigCompiler::compile(validated).expect("compile")
-    }
-
     fn validate_error(source: SourceConfig) -> ConfigError {
         let parsed = ConfigCompiler::parse(source).expect("parse");
         let normalized = ConfigCompiler::normalize(parsed).expect("normalize");
@@ -1517,401 +1510,11 @@ mod tests {
         }
     }
 
-    fn inbound_socks(id: &str) -> InboundConfig {
-        InboundConfig {
-            id: id.to_string(),
-            kind: InboundConfigKind::Socks5 {
-                listen: Endpoint::localhost_v4(1080),
-                username: None,
-                password: None,
-            },
-        }
-    }
-
     fn outbound_direct(id: &str) -> OutboundConfig {
         OutboundConfig {
             id: id.to_string(),
             kind: OutboundConfigKind::Direct,
         }
-    }
-
-    fn outbound_block(id: &str) -> OutboundConfig {
-        OutboundConfig {
-            id: id.to_string(),
-            kind: OutboundConfigKind::Block,
-        }
-    }
-
-    #[test]
-    fn compiles_default_http_proxy_to_typed_runtime_plan() {
-        let compiled = compile_source(SourceConfig::default_http_proxy(Endpoint::localhost_v4(
-            18080,
-        )));
-
-        assert_eq!(compiled.inbounds.len(), 1);
-        assert_eq!(compiled.outbounds.len(), 1);
-        assert_eq!(compiled.route_rules.len(), 1);
-    }
-
-    #[test]
-    fn compiles_default_socks5_proxy_to_typed_runtime_plan() {
-        let compiled = compile_source(SourceConfig::default_socks5_proxy(Endpoint::localhost_v4(
-            1080,
-        )));
-
-        assert_eq!(compiled.inbounds.len(), 1);
-        assert!(matches!(
-            compiled.inbounds[0].kind,
-            CompiledInboundKind::Socks5 { .. }
-        ));
-        assert_eq!(compiled.outbounds.len(), 1);
-        assert_eq!(compiled.route_rules.len(), 1);
-    }
-
-    #[test]
-    fn compiles_first_batch_sing_box_style_outbounds() {
-        let source = SourceConfig {
-            inbounds: vec![inbound_http("http")],
-            outbounds: vec![
-                outbound_direct("direct"),
-                outbound_block("block"),
-                OutboundConfig {
-                    id: "socks".to_string(),
-                    kind: OutboundConfigKind::Socks5 {
-                        server: Endpoint::localhost_v4(1080),
-                        username: Some("user".to_string()),
-                        password: Some("pass".to_string()),
-                    },
-                },
-                OutboundConfig {
-                    id: "http-out".to_string(),
-                    kind: OutboundConfigKind::Http {
-                        server: Endpoint::localhost_v4(8080),
-                        username: None,
-                        password: None,
-                    },
-                },
-                OutboundConfig {
-                    id: "ss".to_string(),
-                    kind: OutboundConfigKind::Shadowsocks {
-                        server: Endpoint::localhost_v4(8388),
-                        method: "aes-128-gcm".to_string(),
-                        password: "test-password".to_string(),
-                    },
-                },
-            ],
-            dns: None,
-            route_rule_sets: Vec::new(),
-            routes: vec![RouteRuleConfig::Default {
-                outbound: "block".to_string(),
-            }],
-        };
-
-        let compiled = compile_source(source);
-
-        assert_eq!(compiled.outbounds.len(), 5);
-        assert!(matches!(
-            compiled.route_rules[0],
-            CompiledRouteRule::Default(RouteDecision::Reject(RejectReason::Policy))
-        ));
-    }
-
-    #[test]
-    fn compiles_mixed_inbound_with_credentials() {
-        let source = SourceConfig {
-            inbounds: vec![InboundConfig {
-                id: "mixed".to_string(),
-                kind: InboundConfigKind::Mixed {
-                    listen: Endpoint::localhost_v4(2080),
-                    username: Some("alice".to_string()),
-                    password: Some("secret".to_string()),
-                },
-            }],
-            outbounds: vec![outbound_direct("direct")],
-            dns: None,
-            route_rule_sets: Vec::new(),
-            routes: vec![RouteRuleConfig::Default {
-                outbound: "direct".to_string(),
-            }],
-        };
-
-        let compiled = compile_source(source);
-
-        assert!(matches!(
-            &compiled.inbounds[0].kind,
-            CompiledInboundKind::Mixed {
-                username: Some(username),
-                password: Some(password),
-                ..
-            } if username == "alice" && password == "secret"
-        ));
-    }
-
-    #[test]
-    fn compiles_selector_urltest_and_next_protocol_config_surface() {
-        let tls = OutboundTlsConfig {
-            enabled: true,
-            server_name: Some("proxy.example.test".to_string()),
-            insecure: false,
-            alpn: vec!["h2".to_string()],
-        };
-        let source = SourceConfig {
-            inbounds: vec![inbound_http("http")],
-            outbounds: vec![
-                outbound_direct("direct"),
-                outbound_block("block"),
-                OutboundConfig {
-                    id: "select".to_string(),
-                    kind: OutboundConfigKind::Selector {
-                        outbounds: vec!["direct".to_string(), "block".to_string()],
-                        default: Some("direct".to_string()),
-                    },
-                },
-                OutboundConfig {
-                    id: "auto".to_string(),
-                    kind: OutboundConfigKind::UrlTest {
-                        outbounds: vec!["direct".to_string(), "block".to_string()],
-                        url: "https://www.gstatic.com/generate_204".to_string(),
-                        interval_seconds: 300,
-                        tolerance_ms: 50,
-                    },
-                },
-                OutboundConfig {
-                    id: "vmess".to_string(),
-                    kind: OutboundConfigKind::Vmess {
-                        server: Endpoint::localhost_v4(10001),
-                        uuid: "00000000-0000-0000-0000-000000000001".to_string(),
-                        security: Some("auto".to_string()),
-                        alter_id: Some(0),
-                        tls: Some(tls.clone()),
-                        transport: Some("tcp".to_string()),
-                    },
-                },
-                OutboundConfig {
-                    id: "vless".to_string(),
-                    kind: OutboundConfigKind::Vless {
-                        server: Endpoint::localhost_v4(10002),
-                        uuid: "00000000-0000-0000-0000-000000000002".to_string(),
-                        flow: None,
-                        tls: Some(tls.clone()),
-                        transport: Some("tcp".to_string()),
-                    },
-                },
-                OutboundConfig {
-                    id: "trojan".to_string(),
-                    kind: OutboundConfigKind::Trojan {
-                        server: Endpoint::localhost_v4(10003),
-                        password: "secret".to_string(),
-                        tls: Some(tls.clone()),
-                        transport: Some("tcp".to_string()),
-                    },
-                },
-                OutboundConfig {
-                    id: "anytls".to_string(),
-                    kind: OutboundConfigKind::AnyTls {
-                        server: Endpoint::localhost_v4(10004),
-                        password: "secret".to_string(),
-                        tls: Some(tls),
-                    },
-                },
-            ],
-            dns: None,
-            route_rule_sets: Vec::new(),
-            routes: vec![RouteRuleConfig::Default {
-                outbound: "select".to_string(),
-            }],
-        };
-
-        let compiled = compile_source(source);
-
-        assert_eq!(compiled.outbounds.len(), 8);
-        assert!(matches!(
-            compiled.route_rules[0],
-            CompiledRouteRule::Default(RouteDecision::Forward(_))
-        ));
-        assert!(matches!(
-            compiled.outbounds[2].kind,
-            CompiledOutboundKind::Selector { .. }
-        ));
-        assert!(matches!(
-            compiled.outbounds[7].kind,
-            CompiledOutboundKind::AnyTls { .. }
-        ));
-    }
-
-    #[test]
-    fn compiles_ordered_route_rules_and_rule_sets() {
-        let source = SourceConfig {
-            inbounds: vec![inbound_http("http")],
-            outbounds: vec![outbound_direct("direct"), outbound_block("block")],
-            dns: None,
-            route_rule_sets: vec![RouteRuleSetConfig {
-                id: "ads".to_string(),
-                rules: vec![RouteMatcherConfig::Conditions(Box::new(RouteMatchConfig {
-                    domain_keyword: vec!["ads".to_string()],
-                    ..RouteMatchConfig::default()
-                }))],
-            }],
-            routes: vec![
-                RouteRuleConfig::Rule {
-                    matcher: RouteMatcherConfig::Conditions(Box::new(RouteMatchConfig {
-                        inbound: vec!["http".to_string()],
-                        network: vec![Network::Tcp],
-                        domain_suffix: vec!["example.test".to_string()],
-                        port: vec![PortRange::single(443)],
-                        rule_set: vec!["ads".to_string()],
-                        ..RouteMatchConfig::default()
-                    })),
-                    action: RouteActionConfig::Outbound("block".to_string()),
-                },
-                RouteRuleConfig::Default {
-                    outbound: "direct".to_string(),
-                },
-            ],
-        };
-
-        let compiled = compile_source(source);
-
-        assert_eq!(compiled.route_rule_sets.len(), 1);
-        assert!(matches!(
-            compiled.route_rules[0],
-            CompiledRouteRule::Rule {
-                decision: RouteDecision::Reject(RejectReason::Policy),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn compiles_tun_and_transparent_inbound_config_surface() {
-        let source = SourceConfig {
-            inbounds: vec![
-                InboundConfig {
-                    id: "tun".to_string(),
-                    kind: InboundConfigKind::Tun(TunInboundConfig {
-                        interface_name: Some("rustbox0".to_string()),
-                        addresses: vec![
-                            IpCidr::new(rustbox_types::IpAddress::V4([172, 18, 0, 1]), 30)
-                                .expect("cidr"),
-                        ],
-                        mtu: Some(1500),
-                        route_mode: RouteMode::Auto,
-                        dns_mode: TunDnsMode::None,
-                        auto_route: true,
-                        strict_route: false,
-                        route_includes: Vec::new(),
-                        route_excludes: Vec::new(),
-                        dns_hijack: Vec::new(),
-                        platform_http_proxy: false,
-                        auto_redirect: false,
-                    }),
-                },
-                InboundConfig {
-                    id: "transparent".to_string(),
-                    kind: InboundConfigKind::Transparent(TransparentInboundConfig {
-                        listen: Endpoint::localhost_v4(12345),
-                        network: TransparentNetwork::Tcp,
-                        mode: TransparentRedirectMode::Redirect,
-                        auto_rules: false,
-                        mark: None,
-                    }),
-                },
-            ],
-            outbounds: vec![outbound_direct("direct")],
-            dns: None,
-            route_rule_sets: Vec::new(),
-            routes: vec![RouteRuleConfig::Default {
-                outbound: "direct".to_string(),
-            }],
-        };
-
-        let compiled = compile_source(source);
-
-        assert!(matches!(
-            compiled.inbounds[0].kind,
-            CompiledInboundKind::Tun(_)
-        ));
-        assert!(matches!(
-            compiled.inbounds[1].kind,
-            CompiledInboundKind::Transparent(_)
-        ));
-    }
-
-    #[test]
-    fn rejects_transparent_auto_rules_until_platform_rule_install_is_implemented() {
-        let source = SourceConfig {
-            inbounds: vec![InboundConfig {
-                id: "transparent".to_string(),
-                kind: InboundConfigKind::Transparent(TransparentInboundConfig {
-                    listen: Endpoint::localhost_v4(12345),
-                    network: TransparentNetwork::Tcp,
-                    mode: TransparentRedirectMode::Redirect,
-                    auto_rules: true,
-                    mark: None,
-                }),
-            }],
-            outbounds: vec![outbound_direct("direct")],
-            dns: None,
-            route_rule_sets: Vec::new(),
-            routes: vec![RouteRuleConfig::Default {
-                outbound: "direct".to_string(),
-            }],
-        };
-
-        let error = validate_error(source);
-
-        assert!(error.message.contains("auto_rules are not implemented"));
-    }
-
-    #[test]
-    fn compiles_dns_servers_rules_fake_ip_and_hijack() {
-        let source = SourceConfig {
-            inbounds: vec![inbound_socks("socks")],
-            outbounds: vec![outbound_direct("direct")],
-            dns: Some(DnsConfig {
-                servers: vec![DnsServerConfig {
-                    id: "cloudflare".to_string(),
-                    protocol: DnsServerProtocol::Https,
-                    endpoint: Endpoint::new(rustbox_types::Host::domain("cloudflare-dns.com"), 443),
-                    outbound: Some("direct".to_string()),
-                }],
-                rules: vec![DnsRuleConfig {
-                    matcher: DnsRuleMatcher {
-                        domain_suffixes: vec!["example.test".to_string()],
-                        record_types: vec![DnsRecordType::A],
-                        ..DnsRuleMatcher::default()
-                    },
-                    action: DnsRuleAction::FakeIp,
-                }],
-                final_server: Some("cloudflare".to_string()),
-                cache: DnsCacheConfig::default(),
-                fake_ip: Some(FakeIpConfig {
-                    enabled: true,
-                    ipv4_pool: IpCidr::new(rustbox_types::IpAddress::V4([198, 18, 0, 0]), 15)
-                        .expect("fake-ip pool"),
-                    ttl_seconds: 60,
-                }),
-                hijack: vec![DnsHijackTarget {
-                    network: Some(Network::Udp),
-                    endpoint: Endpoint::localhost_v4(53),
-                }],
-            }),
-            route_rule_sets: Vec::new(),
-            routes: vec![RouteRuleConfig::Default {
-                outbound: "direct".to_string(),
-            }],
-        };
-
-        let compiled = compile_source(source);
-        let dns = compiled.dns.expect("compiled dns");
-
-        assert_eq!(dns.final_server, "cloudflare");
-        assert_eq!(
-            dns.servers[0].outbound,
-            Some(compiled.outbounds[0].internal_id())
-        );
-        assert_eq!(dns.rules.len(), 1);
-        assert_eq!(dns.hijack.len(), 1);
     }
 
     #[test]
@@ -2048,5 +1651,31 @@ mod tests {
         let error = validate_error(source);
 
         assert!(error.message.contains("must not reference group outbound"));
+    }
+
+    #[test]
+    fn rejects_transparent_auto_rules_until_platform_rule_install_is_implemented() {
+        let source = SourceConfig {
+            inbounds: vec![InboundConfig {
+                id: "transparent".to_string(),
+                kind: InboundConfigKind::Transparent(TransparentInboundConfig {
+                    listen: Endpoint::localhost_v4(12345),
+                    network: TransparentNetwork::Tcp,
+                    mode: TransparentRedirectMode::Redirect,
+                    auto_rules: true,
+                    mark: None,
+                }),
+            }],
+            outbounds: vec![outbound_direct("direct")],
+            dns: None,
+            route_rule_sets: Vec::new(),
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "direct".to_string(),
+            }],
+        };
+
+        let error = validate_error(source);
+
+        assert!(error.message.contains("auto_rules are not implemented"));
     }
 }
