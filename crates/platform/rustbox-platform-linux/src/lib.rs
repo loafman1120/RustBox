@@ -147,11 +147,6 @@ fn network_control_status_message() -> &'static str {
 }
 
 #[cfg(target_os = "linux")]
-fn network_control_status_message() -> &'static str {
-    "Linux network control is limited to AddRoute through net-route"
-}
-
-#[cfg(target_os = "linux")]
 fn process_lookup_status_message() -> &'static str {
     "Linux process lookup uses ss process ownership data"
 }
