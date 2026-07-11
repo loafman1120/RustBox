@@ -1,6 +1,7 @@
 param(
     [switch]$MockSocksServer,
     [int]$ListenPort = 19081,
+    [string]$ListenAddress = "127.0.0.1",
     [string]$Marker = "rustbox-ci-tun-smoke-ok"
 )
 
@@ -21,11 +22,11 @@ function Read-Exact {
 
 function Start-MockSocksServer {
     $Listener = [System.Net.Sockets.TcpListener]::new(
-        [System.Net.IPAddress]::Loopback,
+        [System.Net.IPAddress]::Parse($ListenAddress),
         $ListenPort
     )
     $Listener.Start()
-    Write-Output "READY 127.0.0.1:$ListenPort"
+    Write-Output "READY ${ListenAddress}:$ListenPort"
     try {
         while ($true) {
             $Client = $Listener.AcceptTcpClient()
@@ -110,6 +111,30 @@ $BinPath = if ($env:RUSTBOX_BIN) { $env:RUSTBOX_BIN } else { $DefaultBin }
 $TargetAddress = "198.18.0.2"
 $Processes = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
+function Get-PrimaryIPv4Address {
+    foreach ($Interface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+        if ($Interface.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up -or
+            $Interface.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Loopback -or
+            $Interface.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Tunnel -or
+            $Interface.Name -match "(?i)(tun|vpn)" -or
+            $Interface.Description -match "(?i)(tun|vpn)") {
+            continue
+        }
+        $Properties = $Interface.GetIPProperties()
+        $HasIPv4Gateway = $Properties.GatewayAddresses | Where-Object {
+            $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and
+            -not $_.Address.Equals([System.Net.IPAddress]::Any)
+        }
+        if (-not $HasIPv4Gateway) { continue }
+        $Address = $Properties.UnicastAddresses | Where-Object {
+            $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and
+            -not [System.Net.IPAddress]::IsLoopback($_.Address)
+        } | Select-Object -First 1
+        if ($Address) { return $Address.Address.ToString() }
+    }
+    throw "no active non-loopback IPv4 interface with a default gateway was found"
+}
+
 function Wait-ForLog {
     param(
         [string]$Path,
@@ -161,14 +186,20 @@ try {
     if (-not (Test-Path $BinPath)) { throw "RustBox binary not found: $BinPath" }
     $Curl = (Get-Command @("curl.exe", "curl") -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     $Pwsh = (Get-Process -Id $PID).Path
+    $MockAddress = if ($env:RUSTBOX_TUN_MOCK_ADDRESS) {
+        $env:RUSTBOX_TUN_MOCK_ADDRESS
+    } else {
+        Get-PrimaryIPv4Address
+    }
+    Write-Host "[tun-smoke] mock endpoint: ${MockAddress}:$ListenPort"
 
     Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item $LogsDir -ItemType Directory -Force | Out-Null
 
     $MockOut = Join-Path $LogsDir "mock-socks.log"
     $MockErr = Join-Path $LogsDir "mock-socks-error.log"
-    $MockProcess = Start-LoggedProcess $Pwsh @("-NoLogo", "-NoProfile", "-File", $PSCommandPath, "-MockSocksServer", "-ListenPort", "$ListenPort", "-Marker", $Marker) $MockOut $MockErr
-    Wait-ForLog $MockOut "READY 127.0.0.1:$ListenPort" "mock SOCKS5" $MockProcess
+    $MockProcess = Start-LoggedProcess $Pwsh @("-NoLogo", "-NoProfile", "-File", $PSCommandPath, "-MockSocksServer", "-ListenAddress", $MockAddress, "-ListenPort", "$ListenPort", "-Marker", $Marker) $MockOut $MockErr
+    Wait-ForLog $MockOut "READY ${MockAddress}:$ListenPort" "mock SOCKS5" $MockProcess
 
     @"
 schema_version = 1
@@ -184,14 +215,14 @@ addresses = ["172.18.0.1/30"]
 mtu = 1500
 auto_route = true
 strict_route = true
-route_excludes = ["127.0.0.0/8"]
+route_excludes = ["$MockAddress/32"]
 platform_http_proxy = false
 auto_redirect = false
 
 [[outbounds]]
 id = "mock"
 type = "socks5"
-server = "127.0.0.1:$ListenPort"
+server = "$MockAddress`:$ListenPort"
 
 [[routes]]
 type = "default"

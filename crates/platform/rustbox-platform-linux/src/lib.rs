@@ -249,6 +249,7 @@ async fn apply_linux_route_transaction(
         .await
         .map_err(|err| network_control_io_error("list routes", err))?;
     let mut routes = Vec::with_capacity(transaction.operations.len());
+    let mut route_operations = Vec::with_capacity(transaction.operations.len());
     let mut deferred = Vec::new();
     for operation in &transaction.operations {
         match operation {
@@ -257,14 +258,20 @@ async fn apply_linux_route_transaction(
                 gateway,
                 interface,
                 metric,
-            } => routes.push(route_from_add_route(
-                *destination,
-                *gateway,
-                interface,
-                *metric,
-            )?),
+            } => {
+                routes.push(route_from_add_route(
+                    *destination,
+                    *gateway,
+                    interface,
+                    *metric,
+                )?);
+                route_operations.push(operation.clone());
+            }
             NetworkOperation::PreserveRoute { destination } => {
-                routes.push(preserved_route(*destination, &existing)?);
+                if !has_exact_route(*destination, &existing) {
+                    routes.push(preserved_route(*destination, &existing)?);
+                    route_operations.push(operation.clone());
+                }
             }
             NetworkOperation::SetInterfaceDns { .. }
             | NetworkOperation::SetPlatformHttpProxy(_) => deferred.push(operation.clone()),
@@ -293,9 +300,10 @@ async fn apply_linux_route_transaction(
         applied_deferred.push(operation.clone());
     }
 
+    route_operations.extend(applied_deferred);
     Ok(NetworkLease {
         id: NEXT_NETWORK_LEASE_ID.fetch_add(1, Ordering::Relaxed),
-        operations: transaction.operations,
+        operations: route_operations,
         active: true,
     })
 }
@@ -351,6 +359,14 @@ fn route_contains(route: &Route, address: std::net::IpAddr) -> bool {
         }
         _ => false,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn has_exact_route(destination: rustbox_types::IpCidr, routes: &[Route]) -> bool {
+    let address = std_ip_address(destination.address);
+    routes
+        .iter()
+        .any(|route| route.prefix == destination.prefix_len && route_contains(route, address))
 }
 
 async fn release_linux_network_lease(lease: NetworkLease) -> Result<(), NetworkControlError> {
@@ -875,6 +891,21 @@ mod tests {
         );
         assert_eq!(route.ifindex, Some(9));
         assert_eq!(route.metric, Some(5));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn recognizes_an_existing_exact_exclusion_route() {
+        let destination = IpCidr::new(IpAddress::V4([192, 0, 2, 7]), 32).expect("host route");
+        let routes = vec![
+            Route::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 7)),
+                32,
+            )
+            .with_ifindex(9),
+        ];
+
+        assert!(has_exact_route(destination, &routes));
     }
 
     #[test]
