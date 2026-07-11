@@ -877,6 +877,7 @@ mod tests {
     async fn anytls_outbound_rejects_empty_password() {
         let host = Arc::new(TokioHost::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
+        // lgtm[rust/hard-coded-cryptographic-value]: intentional empty password for validation test
         let error = match AnyTlsOutbound::new(
             outbound_id,
             Endpoint::localhost_v4(443),
