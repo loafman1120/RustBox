@@ -15,3 +15,10 @@ Current adapted components:
 - Trojan request header and SOCKS5-style destination encoding.
 - Plain VLESS request/response headers and destination encoding.
 - VMess AEAD header, KDF, body record crypto, and relay framing.
+
+## anytls-rs
+
+RustBox vendors the full library implementation of `ssrlive/anytls-rs` version
+`0.2.3`, including its protocol core, client, server-session runtime, and UOT
+support. The vendored package is built as the workspace crate `rustbox-anytls`
+and remains available under the upstream MIT license.

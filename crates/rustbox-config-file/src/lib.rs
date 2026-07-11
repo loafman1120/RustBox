@@ -4,12 +4,12 @@
 //! `rustbox-config` 模型。运行时模块和内核不依赖文件解析。
 
 use rustbox_config::{
-    DnsCacheConfig, DnsConfig, DnsHijackTarget, DnsRecordType, DnsRuleAction, DnsRuleConfig,
-    DnsRuleMatcher, DnsServerConfig, DnsServerProtocol, FakeIpConfig, InboundConfig,
-    InboundConfigKind, LogicalModeConfig, OutboundConfig, OutboundConfigKind, OutboundTlsConfig,
-    RouteActionConfig, RouteMatchConfig, RouteMatcherConfig, RouteMode, RouteRuleConfig,
-    RouteRuleSetConfig, SourceConfig, TransparentInboundConfig, TransparentNetwork,
-    TransparentRedirectMode, TunDnsMode, TunInboundConfig,
+    AnyTlsInboundTlsConfig, DnsCacheConfig, DnsConfig, DnsHijackTarget, DnsRecordType,
+    DnsRuleAction, DnsRuleConfig, DnsRuleMatcher, DnsServerConfig, DnsServerProtocol, FakeIpConfig,
+    InboundConfig, InboundConfigKind, LogicalModeConfig, OutboundConfig, OutboundConfigKind,
+    OutboundTlsConfig, RouteActionConfig, RouteMatchConfig, RouteMatcherConfig, RouteMode,
+    RouteRuleConfig, RouteRuleSetConfig, SourceConfig, TransparentInboundConfig,
+    TransparentNetwork, TransparentRedirectMode, TunDnsMode, TunInboundConfig,
 };
 use rustbox_types::{Endpoint, IpCidr, Network, PortRange, RejectReason};
 use serde::Deserialize;
@@ -158,6 +158,13 @@ enum TomlInboundConfig {
         username: Option<String>,
         password: Option<String>,
     },
+    AnyTls {
+        id: String,
+        #[serde_as(as = "DisplayFromStr")]
+        listen: Endpoint,
+        password: String,
+        tls: TomlAnyTlsInboundTlsConfig,
+    },
     Tun {
         id: String,
         interface_name: Option<String>,
@@ -194,6 +201,15 @@ enum TomlInboundConfig {
         auto_rules: bool,
         mark: Option<u32>,
     },
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlAnyTlsInboundTlsConfig {
+    certificate_path: String,
+    private_key_path: String,
+    #[serde(default)]
+    alpn: Vec<String>,
 }
 
 impl TomlInboundConfig {
@@ -236,6 +252,23 @@ impl TomlInboundConfig {
                     listen,
                     username,
                     password,
+                },
+            }),
+            Self::AnyTls {
+                id,
+                listen,
+                password,
+                tls,
+            } => Ok(InboundConfig {
+                id,
+                kind: InboundConfigKind::AnyTls {
+                    listen,
+                    password,
+                    tls: AnyTlsInboundTlsConfig {
+                        certificate_path: tls.certificate_path,
+                        private_key_path: tls.private_key_path,
+                        alpn: tls.alpn,
+                    },
                 },
             }),
             Self::Tun {
@@ -1533,6 +1566,40 @@ outbound = "direct"
             endpoint.host,
             Host::Ip(IpAddress::V6(Ipv6Addr::LOCALHOST.octets()))
         );
+    }
+
+    #[test]
+    fn parses_anytls_server_inbound() {
+        let config = parse_toml_str(
+            r#"
+schema_version = 1
+
+[[inbounds]]
+id = "anytls-server"
+type = "any-tls"
+listen = "0.0.0.0:8443"
+password = "secret"
+tls = { certificate_path = "server.crt", private_key_path = "server.key", alpn = ["h2"] }
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[routes]]
+type = "default"
+outbound = "direct"
+"#,
+        )
+        .expect("parse AnyTLS inbound");
+
+        assert!(matches!(
+            &config.source.inbounds[0].kind,
+            InboundConfigKind::AnyTls { password, tls, .. }
+                if password == "secret"
+                    && tls.certificate_path == "server.crt"
+                    && tls.private_key_path == "server.key"
+                    && tls.alpn == ["h2"]
+        ));
     }
 
     #[test]

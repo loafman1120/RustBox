@@ -13,6 +13,7 @@ use rustbox_control_api::{ControlApiConfig, ControlApiState};
 use rustbox_host_api::{
     NoopObservabilitySink, ObservabilitySink, TokioHost, TransparentProxyProvider,
 };
+use rustbox_inbound_anytls::{AnyTlsInbound, AnyTlsServerConfig};
 use rustbox_inbound_http::{HttpInboundCredentials, HttpProxyInbound};
 use rustbox_inbound_socks5::{
     MixedInbound, MixedInboundCredentials, Socks5Inbound, Socks5InboundCredentials,
@@ -367,6 +368,41 @@ impl RuntimeGraphBuilder {
                         inbound = inbound
                             .with_credentials(Socks5InboundCredentials { username, password });
                     }
+                    services.push(Box::new(inbound));
+                }
+                CompiledInboundKind::AnyTls {
+                    listen,
+                    password,
+                    tls,
+                } => {
+                    let certificate_pem =
+                        std::fs::read_to_string(&tls.certificate_path).map_err(|error| {
+                            ComposeError::Config(ConfigError::new(format!(
+                                "read AnyTLS certificate `{}`: {error}",
+                                tls.certificate_path
+                            )))
+                        })?;
+                    let private_key_pem =
+                        std::fs::read_to_string(&tls.private_key_path).map_err(|error| {
+                            ComposeError::Config(ConfigError::new(format!(
+                                "read AnyTLS private key `{}`: {error}",
+                                tls.private_key_path
+                            )))
+                        })?;
+                    let inbound = AnyTlsInbound::new(
+                        inbound.id,
+                        listen,
+                        AnyTlsServerConfig {
+                            password,
+                            certificate_pem,
+                            private_key_pem,
+                            alpn: tls.alpn,
+                        },
+                        self.host.clone(),
+                        self.host.clone(),
+                        sink.clone(),
+                    )
+                    .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?;
                     services.push(Box::new(inbound));
                 }
                 CompiledInboundKind::Transparent(config) => {

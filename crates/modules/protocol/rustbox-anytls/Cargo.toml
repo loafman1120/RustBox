@@ -1,0 +1,37 @@
+[package]
+name = "rustbox-anytls"
+version = "0.2.3"
+edition.workspace = true
+license = "MIT"
+description = "Vendored AnyTLS client, server, protocol engine, and UOT implementation for RustBox"
+repository = "https://github.com/ssrlive/anytls-rs"
+autobins = false
+
+[lib]
+name = "anytls"
+path = "src/lib.rs"
+
+[features]
+default = ["client", "server"]
+core = []
+runtime = ["core", "dep:async-trait", "dep:futures", "dep:tokio"]
+uot = ["dep:socks5-impl", "dep:tokio"]
+client = ["runtime", "uot", "dep:indexmap"]
+server = ["runtime", "uot", "dep:rcgen", "dep:rustls"]
+
+[dependencies]
+async-trait = { version = "0.1.89", optional = true }
+bytes = "1.11.1"
+futures = { version = "0.3.32", optional = true }
+indexmap = { version = "2.14.0", optional = true }
+log = "0.4.29"
+md5 = "0.8.0"
+parking_lot = "0.12.5"
+rand = "0.10.1"
+rcgen = { version = "0.14.7", optional = true }
+rustls = { version = "0.23.39", optional = true }
+socks5-impl = { version = "0.8.1", features = ["server"], optional = true }
+tokio = { version = "1.52.1", features = ["io-util", "macros", "rt", "sync", "time"], optional = true }
+
+[lints]
+workspace = true

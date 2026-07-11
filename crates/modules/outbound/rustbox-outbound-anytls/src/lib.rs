@@ -43,7 +43,7 @@ const UOT_SENTINEL: &str = "sp.v2.udp-over-tcp.arpa";
 
 /// Peer implementation profile covered by RustBox's unit and process-level
 /// end-to-end tests.
-pub const SUPPORTED_ANYTLS_PROFILE: &str = "canonical-anytls-v2/anytls-crate-0.2.3";
+pub const SUPPORTED_ANYTLS_PROFILE: &str = "canonical-anytls-v2/rustbox-anytls-0.2.3";
 
 /// TLS policy used by an AnyTLS outbound.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -894,10 +894,10 @@ mod tests {
     #[test]
     fn supported_profile_matches_the_exact_dependency_pin() {
         let manifest = include_str!("../Cargo.toml");
-        assert_eq!(manifest.matches("version = \"=0.2.3\"").count(), 2);
+        assert_eq!(manifest.matches("package = \"rustbox-anytls\"").count(), 2);
         assert_eq!(
             SUPPORTED_ANYTLS_PROFILE,
-            "canonical-anytls-v2/anytls-crate-0.2.3"
+            "canonical-anytls-v2/rustbox-anytls-0.2.3"
         );
     }
 

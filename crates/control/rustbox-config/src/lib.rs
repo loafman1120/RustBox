@@ -112,6 +112,12 @@ pub enum InboundConfigKind {
         username: Option<String>,
         password: Option<String>,
     },
+    /// AnyTLS 服务端入口，同时支持普通 TCP 流与 UOT datagram mode。
+    AnyTls {
+        listen: Endpoint,
+        password: String,
+        tls: AnyTlsInboundTlsConfig,
+    },
     /// TUN packet-device inbound. The packet-to-flow stack is composed by the
     /// runtime/platform layer, not by the config model.
     Tun(TunInboundConfig),
@@ -142,6 +148,13 @@ pub struct TransparentInboundConfig {
     pub mode: TransparentRedirectMode,
     pub auto_rules: bool,
     pub mark: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnyTlsInboundTlsConfig {
+    pub certificate_path: String,
+    pub private_key_path: String,
+    pub alpn: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,6 +353,11 @@ pub enum CompiledInboundKind {
         listen: Endpoint,
         username: Option<String>,
         password: Option<String>,
+    },
+    AnyTls {
+        listen: Endpoint,
+        password: String,
+        tls: AnyTlsInboundTlsConfig,
     },
     Tun(TunInboundConfig),
     Transparent(TransparentInboundConfig),
@@ -636,6 +654,18 @@ impl ConfigCompiler {
                 } => {
                     validate_optional_credentials("socks5 inbound", logical_id, username, password)?
                 }
+                InboundConfigKind::AnyTls { password, tls, .. } => {
+                    if password.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "anytls inbound `{logical_id}` password must not be empty"
+                        )));
+                    }
+                    if tls.certificate_path.is_empty() || tls.private_key_path.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "anytls inbound `{logical_id}` requires certificate_path and private_key_path"
+                        )));
+                    }
+                }
                 InboundConfigKind::Tun(config) => validate_tun_inbound(logical_id, config)?,
                 InboundConfigKind::Transparent(config) => {
                     validate_transparent_inbound(logical_id, config)?
@@ -738,6 +768,15 @@ impl ConfigCompiler {
                         listen: listen.clone(),
                         username: username.clone(),
                         password: password.clone(),
+                    },
+                    InboundConfigKind::AnyTls {
+                        listen,
+                        password,
+                        tls,
+                    } => CompiledInboundKind::AnyTls {
+                        listen: listen.clone(),
+                        password: password.clone(),
+                        tls: tls.clone(),
                     },
                     InboundConfigKind::Tun(config) => CompiledInboundKind::Tun(config.clone()),
                     InboundConfigKind::Transparent(config) => {

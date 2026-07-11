@@ -1,24 +1,27 @@
 [package]
-name = "rustbox-outbound-anytls"
+name = "rustbox-inbound-anytls"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-anytls = { package = "rustbox-anytls", path = "../../protocol/rustbox-anytls", default-features = false, features = ["client"] }
+anytls = { package = "rustbox-anytls", path = "../../protocol/rustbox-anytls", default-features = false, features = ["server"] }
 rustbox-host-api = { path = "../../../host/rustbox-host-api" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 rustls = "0.23.40"
+rustls-pemfile = "2.2"
 sha2 = "0.11.0"
-tokio = { version = "1", features = ["io-util", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "sync"] }
 tokio-rustls = "0.26.4"
-webpki-roots = "1"
 
 [dev-dependencies]
-anytls = { package = "rustbox-anytls", path = "../../protocol/rustbox-anytls", default-features = false, features = ["client", "server"] }
 rcgen = "0.14.8"
+rustbox-outbound-anytls = { path = "../../outbound/rustbox-outbound-anytls" }
+rustbox-outbound-direct = { path = "../../outbound/rustbox-outbound-direct" }
+rustbox-route = { path = "../../../kernel/rustbox-route" }
+rustbox-test-host = { path = "../../../host/rustbox-test-host" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [lints]
