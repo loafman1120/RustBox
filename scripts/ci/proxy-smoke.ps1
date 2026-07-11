@@ -278,6 +278,7 @@ schema_version = 1
 
 [observability]
 level = "debug"
+output = "console-and-file"
 file = "$EventsPath"
 
 [[inbounds]]
