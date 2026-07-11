@@ -157,6 +157,9 @@ jobs:
           - http
           - shadowsocks
           - anytls
+          - vmess
+          - vless
+          - trojan
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

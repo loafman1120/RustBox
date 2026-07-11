@@ -212,7 +212,7 @@ pub enum OutboundConfigKind {
         /// 延迟容差毫秒数。
         tolerance_ms: u16,
     },
-    /// VMess 上游代理的配置表面。数据面模块仍待实现。
+    /// VMess AEAD 上游代理。
     Vmess {
         server: Endpoint,
         uuid: String,
@@ -221,7 +221,7 @@ pub enum OutboundConfigKind {
         tls: Option<OutboundTlsConfig>,
         transport: Option<String>,
     },
-    /// VLESS 上游代理的配置表面。数据面模块仍待实现。
+    /// VLESS 上游代理；当前数据面支持普通 TCP 模式。
     Vless {
         server: Endpoint,
         uuid: String,
@@ -229,7 +229,7 @@ pub enum OutboundConfigKind {
         tls: Option<OutboundTlsConfig>,
         transport: Option<String>,
     },
-    /// Trojan 上游代理的配置表面。数据面模块仍待实现。
+    /// Trojan TLS 上游代理。
     Trojan {
         server: Endpoint,
         password: String,

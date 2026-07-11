@@ -8,7 +8,7 @@ license.workspace = true
 prost = "0.14.1"
 rustbox-control = { path = "../rustbox-control" }
 rustbox-host-api = { path = "../../host/rustbox-host-api" }
-rustbox-observability = { path = "../../observability/rustbox-observability" }
+rustbox-observability = { path = "../../rustbox-observability" }
 tokio = { version = "1", features = ["net", "sync"] }
 tonic = { version = "0.14.6", features = ["transport"] }
 tonic-prost = "0.14.2"

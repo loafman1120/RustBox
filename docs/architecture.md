@@ -30,16 +30,16 @@ CLI / FFI / Rust embedding
 |---|---|
 | `apps/rustbox` | CLI |
 | `crates/rustbox` | 公共 `RustBox` API、装配、进程服务生命周期 |
-| `crates/ffi/rustbox-ffi` | C ABI、句柄表、Tokio 桥接 |
-| `crates/config/rustbox-config-file` | TOML → `SourceConfig` |
+| `crates/rustbox-ffi` | C ABI、句柄表、Tokio 桥接 |
+| `crates/rustbox-config-file` | TOML → `SourceConfig` |
 | `crates/control/rustbox-config` | 校验与编译 |
 | `crates/kernel/*` | flow、路由、relay、engine |
 | `crates/modules/*` | inbound、outbound、DNS、TUN、transport |
 | `crates/host/rustbox-host-api` | Tokio host、平台契约 |
 | `crates/platform/*` | Linux / Windows TUN、路由、透明代理 |
-| `crates/observability/*` | 结构化事件及输出 |
+| `crates/rustbox-observability` | 结构化事件及输出 |
 
-已删除 `rustbox-runtime-tokio`（Tokio 现在是普通依赖）。待评估移除的 crate：`rustbox-registry`、`rustbox-plugin`、`rustbox-reload`（仅有模型，无运行时调用）。
+已删除 `rustbox-runtime-tokio`（Tokio 现在是普通依赖）。待评估移除的 crate：`rustbox-registry`（目前主要提供模块注册与能力模型）。
 
 ## 公共 API
 

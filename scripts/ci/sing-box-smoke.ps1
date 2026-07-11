@@ -7,7 +7,7 @@
     type, then verifies RustBox can route outbound traffic through it.
 
     CI matrix parameter (set via env):
-      RUSTBOX_SBOX_OUTBOUND = socks5 | http | shadowsocks | anytls
+      RUSTBOX_SBOX_OUTBOUND = socks5 | http | shadowsocks | anytls | vmess | vless | trojan
 #>
 [CmdletBinding()]
 param()
@@ -27,6 +27,9 @@ $Marker = "rustbox-singbox-e2e-ok"
 $SsMethod = "aes-128-gcm"
 $SsPassword = "test-ss-password-123"
 $AnyTlsPassword = "test-anytls-password"
+$VmUuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+$VlUuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+$TrojanPassword = "test-trojan-password"
 
 function Write-CiLog {
     param([string]$Message)
@@ -183,6 +186,27 @@ function Get-SingBoxConfig {
 {"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"anytls","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"name":"rustbox","password":"$AnyTlsPassword"}],"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
 "@
         }
+        "vmess" {
+            $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
+            $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"vmess","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"uuid":"$VmUuid","alterId":0}],"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
+        "vless" {
+            $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
+            $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"vless","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"uuid":"$VlUuid"}],"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
+        "trojan" {
+            $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
+            $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"trojan","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"password":"$TrojanPassword"}],"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
         default { throw "unsupported outbound type: $OutboundType" }
     }
 }
@@ -264,6 +288,62 @@ type = "default"
 outbound = "sbox"
 "@
         }
+        "vmess" {
+            return $common + @"
+
+[[outbounds]]
+id = "sbox"
+type = "vmess"
+server = "127.0.0.1:$SboxInboundPort"
+uuid = "$VmUuid"
+security = "auto"
+alter_id = 0
+
+[outbounds.tls]
+enabled = true
+insecure = true
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
+        "vless" {
+            return $common + @"
+
+[[outbounds]]
+id = "sbox"
+type = "vless"
+server = "127.0.0.1:$SboxInboundPort"
+uuid = "$VlUuid"
+
+[outbounds.tls]
+enabled = true
+insecure = true
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
+        "trojan" {
+            return $common + @"
+
+[[outbounds]]
+id = "sbox"
+type = "trojan"
+server = "127.0.0.1:$SboxInboundPort"
+password = "$TrojanPassword"
+
+[outbounds.tls]
+enabled = true
+insecure = true
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
         default { throw "unsupported outbound type: $OutboundType" }
     }
 }
@@ -301,7 +381,7 @@ try {
     $WwwDir = Join-Path $WorkDir "www"
     New-Item -ItemType Directory -Path $LogsDir, $WwwDir -Force | Out-Null
 
-    if ($OutboundType -eq "anytls") {
+    if ($OutboundType -in @("anytls", "vmess", "vless", "trojan")) {
         $tlsDir = Join-Path $WorkDir "tls"
         New-Item -ItemType Directory -Path $tlsDir -Force | Out-Null
         Write-CiLog "generating TLS certificate"

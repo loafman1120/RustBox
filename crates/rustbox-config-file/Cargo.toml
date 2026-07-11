@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rustbox-config = { path = "../../control/rustbox-config" }
-rustbox-types = { path = "../../foundation/rustbox-types" }
+rustbox-config = { path = "../control/rustbox-config" }
+rustbox-types = { path = "../foundation/rustbox-types" }
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"
 toml = "0.8"

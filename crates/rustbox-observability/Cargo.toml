@@ -1,14 +1,14 @@
 [package]
-name = "rustbox-reload"
+name = "rustbox-observability"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rustbox-config = { path = "../../control/rustbox-config" }
+rustbox-host-api = { path = "../host/rustbox-host-api" }
 
 [dev-dependencies]
-rustbox-types = { path = "../../foundation/rustbox-types" }
+rustbox-types = { path = "../foundation/rustbox-types" }
 
 [lints]
 workspace = true

@@ -2,12 +2,12 @@
 resolver = "3"
 members = [
     "apps/rustbox",
-    "crates/config/rustbox-config-file",
+    "crates/rustbox-config-file",
     "crates/rustbox",
     "crates/control/rustbox-config",
     "crates/control/rustbox-control",
     "crates/control/rustbox-control-api",
-    "crates/ffi/rustbox-ffi",
+    "crates/rustbox-ffi",
     "crates/foundation/rustbox-types",
     "crates/foundation/rustbox-io",
     "crates/host/rustbox-host-api",
@@ -26,13 +26,14 @@ members = [
     "crates/modules/outbound/rustbox-outbound-http",
     "crates/modules/outbound/rustbox-outbound-shadowsocks",
     "crates/modules/outbound/rustbox-outbound-socks5",
+    "crates/modules/outbound/rustbox-outbound-trojan",
+    "crates/modules/outbound/rustbox-outbound-vless",
+    "crates/modules/outbound/rustbox-outbound-vmess",
     "crates/modules/stack/rustbox-stack",
     "crates/modules/transport/rustbox-transport",
-    "crates/observability/rustbox-observability",
+    "crates/rustbox-observability",
     "crates/platform/rustbox-platform-linux",
     "crates/platform/rustbox-platform-windows",
-    "crates/plugin/rustbox-plugin",
-    "crates/reload/rustbox-reload",
 ]
 
 [workspace.package]

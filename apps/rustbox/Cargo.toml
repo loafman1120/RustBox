@@ -6,11 +6,11 @@ license.workspace = true
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
-rustbox-config-file = { path = "../../crates/config/rustbox-config-file" }
+rustbox-config-file = { path = "../../crates/rustbox-config-file" }
 rustbox = { path = "../../crates/rustbox" }
 rustbox-control = { path = "../../crates/control/rustbox-control" }
 rustbox-control-api = { path = "../../crates/control/rustbox-control-api" }
-rustbox-observability = { path = "../../crates/observability/rustbox-observability" }
+rustbox-observability = { path = "../../crates/rustbox-observability" }
 rustbox-platform-linux = { path = "../../crates/platform/rustbox-platform-linux" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
 

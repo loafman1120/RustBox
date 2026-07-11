@@ -28,6 +28,9 @@ use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
 use rustbox_outbound_shadowsocks::ShadowsocksOutbound;
 use rustbox_outbound_socks5::{Socks5Credentials, Socks5Outbound};
+use rustbox_outbound_trojan::{TrojanOutbound, TrojanTlsConfig};
+use rustbox_outbound_vless::{VlessOutbound, VlessTlsConfig};
+use rustbox_outbound_vmess::{VmessOutbound, VmessTlsConfig};
 use rustbox_route::{
     LogicalMode, RouteConditions, RouteMatcher, RouteRule, RouteRuleSet, RouteTable,
 };
@@ -166,23 +169,116 @@ impl RuntimeGraphBuilder {
                 CompiledOutboundKind::Selector { .. } | CompiledOutboundKind::UrlTest { .. } => {
                     // Group outbounds are compiled to their current child route decision.
                 }
-                CompiledOutboundKind::Vmess { .. } => {
-                    return Err(ComposeError::Config(ConfigError::new(format!(
-                        "vmess outbound `{}` is parsed but its data plane is not implemented yet",
-                        outbound.logical_id
-                    ))));
+                CompiledOutboundKind::Vmess {
+                    server,
+                    uuid,
+                    security,
+                    alter_id,
+                    tls,
+                    transport,
+                } => {
+                    if alter_id.is_some_and(|value| value != 0) {
+                        return Err(ComposeError::Config(ConfigError::new(format!(
+                            "vmess outbound `{}` supports only alter_id=0 AEAD",
+                            outbound.logical_id
+                        ))));
+                    }
+                    if transport.as_deref().is_some_and(|value| value != "tcp") {
+                        return Err(ComposeError::Config(ConfigError::new(format!(
+                            "vmess outbound `{}` currently supports only tcp transport",
+                            outbound.logical_id
+                        ))));
+                    }
+                    let tls = tls.as_ref();
+                    let runtime_outbound = VmessOutbound::new(
+                        outbound.id,
+                        server.clone(),
+                        uuid,
+                        security.as_deref(),
+                        VmessTlsConfig {
+                            enabled: tls.is_some_and(|value| value.enabled),
+                            server_name: tls.and_then(|value| value.server_name.clone()),
+                            insecure: tls.is_some_and(|value| value.insecure),
+                            alpn: tls.map(|value| value.alpn.clone()).unwrap_or_default(),
+                        },
+                        self.host.clone(),
+                    )
+                    .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?;
+                    builder = builder
+                        .register_outbound(Box::new(runtime_outbound))
+                        .map_err(ComposeError::Engine)?;
                 }
-                CompiledOutboundKind::Vless { .. } => {
-                    return Err(ComposeError::Config(ConfigError::new(format!(
-                        "vless outbound `{}` is parsed but its data plane is not implemented yet",
-                        outbound.logical_id
-                    ))));
+                CompiledOutboundKind::Vless {
+                    server,
+                    uuid,
+                    flow,
+                    tls,
+                    transport,
+                } => {
+                    if flow.as_deref().is_some_and(|value| !value.is_empty()) {
+                        return Err(ComposeError::Config(ConfigError::new(format!(
+                            "vless outbound `{}` currently supports only plain VLESS without Vision flow",
+                            outbound.logical_id
+                        ))));
+                    }
+                    if transport.as_deref().is_some_and(|value| value != "tcp") {
+                        return Err(ComposeError::Config(ConfigError::new(format!(
+                            "vless outbound `{}` currently supports only tcp transport",
+                            outbound.logical_id
+                        ))));
+                    }
+                    let tls = tls.as_ref();
+                    let runtime_outbound = VlessOutbound::new(
+                        outbound.id,
+                        server.clone(),
+                        uuid,
+                        VlessTlsConfig {
+                            enabled: tls.is_some_and(|value| value.enabled),
+                            server_name: tls.and_then(|value| value.server_name.clone()),
+                            insecure: tls.is_some_and(|value| value.insecure),
+                            alpn: tls.map(|value| value.alpn.clone()).unwrap_or_default(),
+                        },
+                        self.host.clone(),
+                    )
+                    .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?;
+                    builder = builder
+                        .register_outbound(Box::new(runtime_outbound))
+                        .map_err(ComposeError::Engine)?;
                 }
-                CompiledOutboundKind::Trojan { .. } => {
-                    return Err(ComposeError::Config(ConfigError::new(format!(
-                        "trojan outbound `{}` is parsed but its data plane is not implemented yet",
-                        outbound.logical_id
-                    ))));
+                CompiledOutboundKind::Trojan {
+                    server,
+                    password,
+                    tls,
+                    transport,
+                } => {
+                    if transport.as_deref().is_some_and(|value| value != "tcp") {
+                        return Err(ComposeError::Config(ConfigError::new(format!(
+                            "trojan outbound `{}` currently supports only tcp transport",
+                            outbound.logical_id
+                        ))));
+                    }
+                    if tls.as_ref().is_some_and(|value| !value.enabled) {
+                        return Err(ComposeError::Config(ConfigError::new(format!(
+                            "trojan outbound `{}` requires TLS",
+                            outbound.logical_id
+                        ))));
+                    }
+                    let tls = tls.as_ref();
+                    let runtime_outbound = TrojanOutbound::new(
+                        outbound.id,
+                        server.clone(),
+                        password,
+                        TrojanTlsConfig {
+                            server_name: tls.and_then(|value| value.server_name.clone()),
+                            insecure: tls.is_some_and(|value| value.insecure),
+                            alpn: tls.map(|value| value.alpn.clone()).unwrap_or_default(),
+                        },
+                        self.host.clone(),
+                    )
+                    .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?;
+                    builder = builder
+                        .register_outbound(Box::new(runtime_outbound))
+                        .map_err(ComposeError::Engine)?;
                 }
                 CompiledOutboundKind::AnyTls {
                     server,
@@ -967,7 +1063,7 @@ mod tests {
         assert_eq!(runtime.service_count(), 1);
     }
 
-    fn configuration_only_outbounds() -> Vec<(&'static str, OutboundConfigKind)> {
+    fn implemented_protocol_outbounds() -> Vec<(&'static str, OutboundConfigKind)> {
         vec![
             (
                 "vmess",
@@ -1003,8 +1099,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_configuration_only_protocols_at_composition() {
-        for (protocol, kind) in configuration_only_outbounds() {
+    fn composes_vmess_vless_and_trojan_runtime_graphs() {
+        for (protocol, kind) in implemented_protocol_outbounds() {
             let source = SourceConfig {
                 inbounds: vec![inbound_http("http")],
                 outbounds: vec![OutboundConfig {
@@ -1018,20 +1114,11 @@ mod tests {
                 }],
             };
 
-            let error = match RuntimeGraphBuilder::new().compose_source(source) {
-                Ok(_) => panic!("expected {protocol} data plane to be rejected"),
-                Err(error) => error,
-            };
-
-            assert!(
-                matches!(
-                    error,
-                    ComposeError::Config(ConfigError { ref message })
-                        if message.contains(&format!("{protocol} outbound `{protocol}`"))
-                            && message.contains("data plane is not implemented yet")
-                ),
-                "unexpected composition error for {protocol}: {error:?}"
-            );
+            let runtime = RuntimeGraphBuilder::new()
+                .compose_source(source)
+                .unwrap_or_else(|error| panic!("compose {protocol}: {error:?}"));
+            assert_eq!(runtime.engine().outbound_count(), 1, "{protocol}");
+            assert_eq!(runtime.service_count(), 1, "{protocol}");
         }
     }
 

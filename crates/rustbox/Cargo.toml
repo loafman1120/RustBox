@@ -19,7 +19,10 @@ rustbox-outbound-anytls = { path = "../modules/outbound/rustbox-outbound-anytls"
 rustbox-outbound-http = { path = "../modules/outbound/rustbox-outbound-http" }
 rustbox-outbound-shadowsocks = { path = "../modules/outbound/rustbox-outbound-shadowsocks" }
 rustbox-outbound-socks5 = { path = "../modules/outbound/rustbox-outbound-socks5" }
-rustbox-observability = { path = "../observability/rustbox-observability" }
+rustbox-outbound-trojan = { path = "../modules/outbound/rustbox-outbound-trojan" }
+rustbox-outbound-vless = { path = "../modules/outbound/rustbox-outbound-vless" }
+rustbox-outbound-vmess = { path = "../modules/outbound/rustbox-outbound-vmess" }
+rustbox-observability = { path = "../rustbox-observability" }
 rustbox-platform-linux = { path = "../platform/rustbox-platform-linux" }
 rustbox-platform-windows = { path = "../platform/rustbox-platform-windows" }
 rustbox-route = { path = "../kernel/rustbox-route" }

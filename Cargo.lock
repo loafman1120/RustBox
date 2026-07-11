@@ -142,7 +142,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
- "sha2",
+ "sha2 0.11.0",
  "socket2 0.6.4",
  "socks5-impl",
  "tokio",
@@ -645,6 +645,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -2702,6 +2711,9 @@ dependencies = [
  "rustbox-outbound-http",
  "rustbox-outbound-shadowsocks",
  "rustbox-outbound-socks5",
+ "rustbox-outbound-trojan",
+ "rustbox-outbound-vless",
+ "rustbox-outbound-vmess",
  "rustbox-platform-linux",
  "rustbox-platform-windows",
  "rustbox-route",
@@ -2901,7 +2913,7 @@ dependencies = [
  "rustbox-kernel",
  "rustbox-types",
  "rustls",
- "sha2",
+ "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
@@ -2957,6 +2969,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustbox-outbound-trojan"
+version = "0.1.0"
+dependencies = [
+ "rustbox-host-api",
+ "rustbox-io",
+ "rustbox-kernel",
+ "rustbox-types",
+ "rustls",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "rustbox-outbound-vless"
+version = "0.1.0"
+dependencies = [
+ "rustbox-host-api",
+ "rustbox-io",
+ "rustbox-kernel",
+ "rustbox-types",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "uuid",
+ "webpki-roots",
+]
+
+[[package]]
+name = "rustbox-outbound-vmess"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "chacha20poly1305",
+ "crc32fast",
+ "hmac",
+ "md-5",
+ "rand 0.9.4",
+ "rustbox-host-api",
+ "rustbox-io",
+ "rustbox-kernel",
+ "rustbox-types",
+ "rustls",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "uuid",
+ "webpki-roots",
+]
+
+[[package]]
 name = "rustbox-platform-linux"
 version = "0.1.0"
 dependencies = [
@@ -2981,23 +3047,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustbox-plugin"
-version = "0.1.0"
-dependencies = [
- "rustbox-registry",
-]
-
-[[package]]
 name = "rustbox-registry"
 version = "0.1.0"
-
-[[package]]
-name = "rustbox-reload"
-version = "0.1.0"
-dependencies = [
- "rustbox-config",
- "rustbox-types",
-]
 
 [[package]]
 name = "rustbox-route"
@@ -3289,6 +3340,17 @@ name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",

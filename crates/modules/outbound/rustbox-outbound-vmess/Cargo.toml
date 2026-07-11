@@ -1,0 +1,31 @@
+[package]
+name = "rustbox-outbound-vmess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+crc32fast = "1"
+hmac = "0.12"
+md-5 = "0.10"
+rand = "0.9"
+rustbox-host-api = { path = "../../../host/rustbox-host-api" }
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+rustls = "0.23.40"
+sha2 = "0.10"
+tokio = { version = "1", features = ["io-util", "rt"] }
+tokio-rustls = "0.26.4"
+tracing = "0.1"
+uuid = "1"
+webpki-roots = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
