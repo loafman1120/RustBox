@@ -86,7 +86,13 @@ function Start-MockSocksServer {
                 $Stream.Flush()
                 Write-Output "RESPONDED $Marker"
             } catch {
-                Write-Error "mock connection failed: $($_.Exception.GetBaseException().Message)"
+                # Invalid or unsupported clients must not terminate the server. In
+                # particular, Windows emits background UDP traffic as soon as a
+                # full-tunnel route appears, and a SOCKS UDP ASSOCIATE may reach
+                # this deliberately TCP-only mock before the actual test request.
+                [Console]::Error.WriteLine(
+                    "mock connection ignored: $($_.Exception.GetBaseException().Message)"
+                )
             } finally {
                 $Client.Dispose()
             }
@@ -214,7 +220,8 @@ interface_name = "rustbox-ci"
 addresses = ["172.18.0.1/30"]
 mtu = 1500
 auto_route = true
-strict_route = true
+strict_route = false
+route_includes = ["$TargetAddress/32"]
 route_excludes = ["$MockAddress/32"]
 platform_http_proxy = false
 auto_redirect = false
