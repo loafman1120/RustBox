@@ -2,6 +2,7 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes128Gcm, KeyInit, Nonce};
 use chacha20poly1305::ChaCha20Poly1305;
 use md5::{Digest, Md5};
+use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::header::Security;
@@ -16,19 +17,18 @@ struct DerivedKeys {
     write_iv: [u8; 12],
     read_key: Vec<u8>,
     read_iv: [u8; 12],
+    response_key: [u8; 16],
+    response_iv: [u8; 16],
 }
 
 fn derive_keys(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> DerivedKeys {
-    let mut key_iv = [0u8; 32];
-    key_iv[..16].copy_from_slice(req_key);
-    key_iv[16..].copy_from_slice(req_iv);
+    let response_key_hash = Sha256::digest(req_key);
+    let response_iv_hash = Sha256::digest(req_iv);
+    let response_key: [u8; 16] = response_key_hash[..16].try_into().unwrap();
+    let response_iv: [u8; 16] = response_iv_hash[..16].try_into().unwrap();
 
     let (write_key, write_iv) = match security {
-        Security::Aes128Gcm => {
-            let k = kdf16(&key_iv, &[b"VMess Body AEAD Key"]);
-            let iv = kdf12(&key_iv, &[b"VMess Body AEAD IV"]);
-            (k.to_vec(), iv)
-        }
+        Security::Aes128Gcm => (req_key.to_vec(), req_iv[..12].try_into().unwrap()),
         Security::ChaCha20Poly1305 => {
             let mut hasher = Md5::new();
             hasher.update(req_key);
@@ -39,26 +39,17 @@ fn derive_keys(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> Der
             let mut k = Vec::with_capacity(32);
             k.extend_from_slice(&md5_1);
             k.extend_from_slice(&md5_2);
-            let iv = kdf12(&key_iv, &[b"VMess Body AEAD IV"]);
+            let iv = req_iv[..12].try_into().unwrap();
             (k, iv)
         }
         Security::None => (Vec::new(), [0u8; 12]),
     };
 
-    // Response keys: swap req_key/req_iv
-    let mut resp_key_iv = [0u8; 32];
-    resp_key_iv[..16].copy_from_slice(req_iv);
-    resp_key_iv[16..].copy_from_slice(req_key);
-
     let (read_key, read_iv) = match security {
-        Security::Aes128Gcm => {
-            let k = kdf16(&resp_key_iv, &[b"VMess Body AEAD Key"]);
-            let iv = kdf12(&resp_key_iv, &[b"VMess Body AEAD IV"]);
-            (k.to_vec(), iv)
-        }
+        Security::Aes128Gcm => (response_key.to_vec(), response_iv[..12].try_into().unwrap()),
         Security::ChaCha20Poly1305 => {
             let mut hasher = Md5::new();
-            hasher.update(req_iv);
+            hasher.update(response_key);
             let md5_1: [u8; 16] = hasher.finalize().into();
             let mut hasher2 = Md5::new();
             hasher2.update(md5_1);
@@ -66,7 +57,7 @@ fn derive_keys(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> Der
             let mut k = Vec::with_capacity(32);
             k.extend_from_slice(&md5_1);
             k.extend_from_slice(&md5_2);
-            let iv = kdf12(&resp_key_iv, &[b"VMess Body AEAD IV"]);
+            let iv = response_iv[..12].try_into().unwrap();
             (k, iv)
         }
         Security::None => (Vec::new(), [0u8; 12]),
@@ -77,6 +68,8 @@ fn derive_keys(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> Der
         write_iv,
         read_key,
         read_iv,
+        response_key,
+        response_iv,
     }
 }
 
@@ -136,6 +129,8 @@ pub struct BodyCipher {
     read_iv: [u8; 12],
     write_counter: u16,
     read_counter: u16,
+    response_key: [u8; 16],
+    response_iv: [u8; 16],
 }
 
 impl BodyCipher {
@@ -152,6 +147,8 @@ impl BodyCipher {
             read_iv: keys.read_iv,
             write_counter: 0,
             read_counter: 0,
+            response_key: keys.response_key,
+            response_iv: keys.response_iv,
         }
     }
 
@@ -167,8 +164,7 @@ impl BodyCipher {
     fn write_nonce(&mut self) -> [u8; 12] {
         let mut nonce = self.write_iv;
         let counter_be = self.write_counter.to_be_bytes();
-        nonce[0] ^= counter_be[0];
-        nonce[1] ^= counter_be[1];
+        nonce[..2].copy_from_slice(&counter_be);
         self.write_counter = self.write_counter.wrapping_add(1);
         nonce
     }
@@ -176,8 +172,7 @@ impl BodyCipher {
     fn read_nonce(&mut self) -> [u8; 12] {
         let mut nonce = self.read_iv;
         let counter_be = self.read_counter.to_be_bytes();
-        nonce[0] ^= counter_be[0];
-        nonce[1] ^= counter_be[1];
+        nonce[..2].copy_from_slice(&counter_be);
         self.read_counter = self.read_counter.wrapping_add(1);
         nonce
     }
@@ -231,6 +226,53 @@ impl BodyCipher {
 
     pub fn max_plaintext() -> usize {
         MAX_PLAINTEXT
+    }
+
+    pub async fn read_response_header<R: AsyncRead + Unpin>(
+        &self,
+        reader: &mut R,
+        expected: u8,
+    ) -> std::io::Result<()> {
+        let length_key = kdf16(&self.response_key, &[b"AEAD Resp Header Len Key"]);
+        let length_iv = kdf12(&self.response_iv, &[b"AEAD Resp Header Len IV"]);
+        let mut encrypted_length = [0_u8; 18];
+        reader.read_exact(&mut encrypted_length).await?;
+        let length_cipher = Aes128Gcm::new_from_slice(&length_key).unwrap();
+        let length = length_cipher
+            .decrypt(Nonce::from_slice(&length_iv), encrypted_length.as_ref())
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid VMess response header length",
+                )
+            })?;
+        let length = usize::from(u16::from_be_bytes(length.try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid VMess response header length",
+            )
+        })?));
+
+        let payload_key = kdf16(&self.response_key, &[b"AEAD Resp Header Key"]);
+        let payload_iv = kdf12(&self.response_iv, &[b"AEAD Resp Header IV"]);
+        let mut encrypted = vec![0_u8; length + 16];
+        reader.read_exact(&mut encrypted).await?;
+        let payload_cipher = Aes128Gcm::new_from_slice(&payload_key).unwrap();
+        let header = payload_cipher
+            .decrypt(Nonce::from_slice(&payload_iv), encrypted.as_ref())
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid VMess response header",
+                )
+            })?;
+        if header.len() < 4 || header[0] != expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "VMess response validation byte mismatch",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -360,16 +402,12 @@ mod tests {
     }
 
     #[test]
-    fn aes_key_uses_kdf_not_md5() {
+    fn aes_uses_request_key_directly() {
         let (req_key, req_iv) = test_keys();
         let keys = derive_keys(Security::Aes128Gcm, &req_key, &req_iv);
         assert_eq!(keys.write_key.len(), 16, "aes key must be 16 bytes (KDF)");
-        // Verify it matches the KDF derivation
-        let mut key_iv = [0u8; 32];
-        key_iv[..16].copy_from_slice(&req_key);
-        key_iv[16..].copy_from_slice(&req_iv);
-        let expected = kdf16(&key_iv, &[b"VMess Body AEAD Key"]);
-        assert_eq!(keys.write_key.as_slice(), &expected);
+        assert_eq!(keys.write_key.as_slice(), &req_key);
+        assert_eq!(&keys.write_iv, &req_iv[..12]);
     }
 
     #[tokio::test]

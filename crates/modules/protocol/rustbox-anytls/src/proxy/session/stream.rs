@@ -72,9 +72,7 @@ impl Stream {
 
     pub async fn close(&self) -> std::io::Result<()> {
         log::debug!("Stream {} close requested", self.id);
-        use std::io::{Error, ErrorKind::BrokenPipe};
-        self.close_with_error(Some(Error::new(BrokenPipe, "Stream closed")))
-            .await
+        self.close_with_error(None).await
     }
 
     async fn mark_closed(&self, error: Option<std::io::Error>) -> std::io::Result<bool> {

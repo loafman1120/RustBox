@@ -18,13 +18,8 @@ pub fn spawn_vmess_relay(
     tokio::spawn(async move {
         let (mut rd, mut wr) = tokio::io::split(stream);
 
-        // Read and validate the 4-byte response header
-        let mut hdr = [0u8; 4];
-        if rd.read_exact(&mut hdr).await.is_err() {
-            return;
-        }
-        if hdr[0] != resp_v {
-            tracing::warn!("vmess: response validation byte mismatch");
+        if let Err(error) = read_cipher.read_response_header(&mut rd, resp_v).await {
+            tracing::warn!(%error, "vmess: invalid response header");
             return;
         }
 

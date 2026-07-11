@@ -35,15 +35,6 @@ impl PipeReader {
                     return Ok(len);
                 }
 
-                // If the pipe is closed and no data, return EOF or error
-                if inner.closed && inner.data_sender.is_none() {
-                    if let Some(err) = inner.read_error.take() {
-                        return Err(err);
-                    } else {
-                        return Ok(0);
-                    }
-                }
-
                 // If data_receiver is not available, wait until it's available or deadline triggers
                 if inner.data_receiver.is_none() {
                     let waiter = inner.read_waiter.clone();
@@ -175,4 +166,21 @@ pub fn pipe() -> (PipeReader, PipeWriter) {
         },
         PipeWriter { inner },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reader_drains_queued_data_before_eof_after_close() {
+        let (reader, writer) = pipe();
+        writer.write(b"response body").await.unwrap();
+        reader.close_with_error(None);
+
+        let mut body = [0_u8; 32];
+        let read = reader.read(&mut body).await.unwrap();
+        assert_eq!(&body[..read], b"response body");
+        assert_eq!(reader.read(&mut body).await.unwrap(), 0);
+    }
 }

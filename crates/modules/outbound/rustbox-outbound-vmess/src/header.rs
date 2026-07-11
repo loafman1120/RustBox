@@ -113,36 +113,47 @@ pub fn seal_request_header(
     // 4) Derive length encryption keys
     let length_key = kdf16(
         cmd_key,
-        &[b"VMess Header AEAD Key Length", &auth_id, &conn_nonce],
+        &[b"VMess Header AEAD Key_Length", &auth_id, &conn_nonce],
     );
     let length_iv = kdf12(
         cmd_key,
-        &[b"VMess Header AEAD Nonce Length", &auth_id, &conn_nonce],
+        &[b"VMess Header AEAD Nonce_Length", &auth_id, &conn_nonce],
     );
 
-    // 5) Encrypt the header
+    // 5) Encrypt the header. The separately encrypted length describes the
+    // plaintext header; the AEAD tag is not part of that value.
+    let header_len = u16::try_from(plaintext.len())
+        .map_err(|_| "vmess: request header is too large".to_string())?;
     let cipher = Aes128Gcm::new_from_slice(&header_key)
         .map_err(|e| format!("vmess: header cipher init: {e}"))?;
     let encrypted_header = cipher
-        .encrypt(Nonce::from_slice(&header_iv), plaintext.as_ref())
+        .encrypt(
+            Nonce::from_slice(&header_iv),
+            aes_gcm::aead::Payload {
+                msg: plaintext.as_ref(),
+                aad: &auth_id,
+            },
+        )
         .map_err(|e| format!("vmess: header encrypt: {e}"))?;
 
     // 6) Encrypt the length (2 bytes, big-endian)
-    let header_len = encrypted_header.len() as u16;
     let length_cipher = Aes128Gcm::new_from_slice(&length_key)
         .map_err(|e| format!("vmess: length cipher init: {e}"))?;
     let encrypted_length = length_cipher
         .encrypt(
             Nonce::from_slice(&length_iv),
-            header_len.to_be_bytes().as_ref(),
+            aes_gcm::aead::Payload {
+                msg: header_len.to_be_bytes().as_ref(),
+                aad: &auth_id,
+            },
         )
         .map_err(|e| format!("vmess: length encrypt: {e}"))?;
 
-    // 7) Assemble: auth_id(16) || conn_nonce(8) || encrypted_length(18) || encrypted_header(N+16)
+    // 7) Assemble: auth_id(16) || encrypted_length(18) || conn_nonce(8) || encrypted_header(N+16)
     let mut out = Vec::with_capacity(16 + 8 + encrypted_length.len() + encrypted_header.len());
     out.extend_from_slice(&auth_id);
-    out.extend_from_slice(&conn_nonce);
     out.extend_from_slice(&encrypted_length);
+    out.extend_from_slice(&conn_nonce);
     out.extend_from_slice(&encrypted_header);
 
     Ok(SealedHeader {
@@ -402,6 +413,30 @@ mod tests {
         assert!(sealed.bytes.len() >= 16 + 8 + 18 + 16, "header too short");
         assert_ne!(sealed.req_key, [0u8; 16], "req_key must be random");
         assert_ne!(sealed.req_iv, [0u8; 16], "req_iv must be random");
+
+        let auth_id: [u8; 16] = sealed.bytes[..16].try_into().unwrap();
+        let conn_nonce: [u8; 8] = sealed.bytes[34..42].try_into().unwrap();
+        let length_key = kdf16(
+            &ck,
+            &[b"VMess Header AEAD Key_Length", &auth_id, &conn_nonce],
+        );
+        let length_iv = kdf12(
+            &ck,
+            &[b"VMess Header AEAD Nonce_Length", &auth_id, &conn_nonce],
+        );
+        let length_cipher = Aes128Gcm::new_from_slice(&length_key).unwrap();
+        let encoded_length = length_cipher
+            .decrypt(
+                Nonce::from_slice(&length_iv),
+                aes_gcm::aead::Payload {
+                    msg: &sealed.bytes[16..34],
+                    aad: &auth_id,
+                },
+            )
+            .unwrap();
+        let plaintext_length = u16::from_be_bytes(encoded_length.try_into().unwrap()) as usize;
+        let encrypted_header_length = sealed.bytes.len() - 42;
+        assert_eq!(plaintext_length + 16, encrypted_header_length);
     }
 
     #[test]
