@@ -42,7 +42,7 @@ fn derive_keys(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> Der
             let iv = req_iv[..12].try_into().unwrap();
             (k, iv)
         }
-        Security::None => (Vec::new(), [0u8; 12]),
+        Security::None => (Vec::new(), rand::random()),
     };
 
     let (read_key, read_iv) = match security {
@@ -60,7 +60,7 @@ fn derive_keys(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> Der
             let iv = response_iv[..12].try_into().unwrap();
             (k, iv)
         }
-        Security::None => (Vec::new(), [0u8; 12]),
+        Security::None => (Vec::new(), rand::random()),
     };
 
     DerivedKeys {
