@@ -668,6 +668,7 @@ mod tests {
     use super::*;
     #[cfg(target_os = "windows")]
     use rustbox_host_api::InterfaceRef;
+    #[cfg(target_os = "windows")]
     use rustbox_host_api::{NetworkControlReason, RollbackPolicy};
     #[cfg(target_os = "windows")]
     use rustbox_types::{IpAddress, IpCidr};
@@ -761,6 +762,7 @@ mod tests {
         drop(lease);
     }
 
+    #[cfg(target_os = "windows")]
     fn block_on_ready<T>(future: impl core::future::Future<Output = T>) -> T {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
