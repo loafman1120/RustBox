@@ -26,6 +26,7 @@ rustbox-outbound-vmess = { path = "../modules/outbound/rustbox-outbound-vmess" }
 rustbox-observability = { path = "../rustbox-observability" }
 rustbox-platform-linux = { path = "../platform/rustbox-platform-linux" }
 rustbox-platform-windows = { path = "../platform/rustbox-platform-windows" }
+rustbox-platform-macos = { path = "../platform/rustbox-platform-macos" }
 rustbox-route = { path = "../kernel/rustbox-route" }
 rustbox-stack = { path = "../modules/stack/rustbox-stack" }
 rustbox-types = { path = "../foundation/rustbox-types" }

@@ -1,5 +1,5 @@
 [package]
-name = "rustbox-platform-windows"
+name = "rustbox-platform-macos"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,9 @@ rustbox-host-api = { path = "../../host/rustbox-host-api" }
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 
-[target.'cfg(target_os = "windows")'.dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
 net-route = "0.4.6"
 tun-rs = { version = "2.8.6", features = ["async"] }
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-tokio = { version = "1", features = ["rt"] }

@@ -27,6 +27,8 @@ pub struct TunInboundConfig {
     pub strict_route: bool,
     pub route_includes: Vec<IpCidr>,
     pub route_excludes: Vec<IpCidr>,
+    pub dns_servers: Vec<IpAddress>,
+    pub platform_proxy: Option<rustbox_host_api::PlatformProxyConfig>,
     pub platform_http_proxy: bool,
     pub auto_redirect: bool,
 }
@@ -42,6 +44,7 @@ pub struct TunInbound {
     observability: Arc<dyn ObservabilitySink>,
     started: AtomicBool,
     network_lease: Arc<Mutex<Option<rustbox_host_api::NetworkLease>>>,
+    stack_task: Option<rustbox_host_api::TaskHandle>,
 }
 
 impl TunInbound {
@@ -65,6 +68,7 @@ impl TunInbound {
             observability: Arc::new(NoopObservabilitySink),
             started: AtomicBool::new(false),
             network_lease: Arc::new(Mutex::new(None)),
+            stack_task: None,
         }
     }
 
@@ -126,27 +130,6 @@ impl Service for TunInbound {
                 .lock()
                 .expect("tun inbound network lease lock") = Some(network_lease);
 
-            if !self.config.route_excludes.is_empty() {
-                self.emit(
-                    EventLevel::Warn,
-                    EventKind::Diagnostic(format!(
-                        "tun/{} route_excludes are parsed but route exclusion planning is not implemented yet",
-                        self.id
-                    )),
-                )
-                .await;
-            }
-            if self.config.platform_http_proxy || self.config.auto_redirect {
-                self.emit(
-                    EventLevel::Warn,
-                    EventKind::Diagnostic(format!(
-                        "tun/{} platform_http_proxy/auto_redirect are parsed but platform planning is not implemented yet",
-                        self.id
-                    )),
-                )
-                .await;
-            }
-
             let mut stack = self
                 .stack
                 .take()
@@ -154,26 +137,47 @@ impl Service for TunInbound {
             let sink = self.sink.clone();
             let observability = self.observability.clone();
             let inbound_id = self.id;
-            self.spawner
-                .spawn(
-                    TaskName(format!("tun-inbound-stack-{inbound_id}")),
-                    Box::pin(async move {
-                        if let Err(err) = stack.attach(lease.device, sink).await {
-                            observability
-                                .emit(Event::new(
-                                    EventLevel::Error,
-                                    "rustbox.inbound.tun",
-                                    None,
-                                    EventKind::Diagnostic(format!(
-                                        "tun/{inbound_id} stack stopped: {}",
-                                        err.message
-                                    )),
+            let task = match self.spawner.spawn(
+                TaskName(format!("tun-inbound-stack-{inbound_id}")),
+                Box::pin(async move {
+                    if let Err(err) = stack.attach(lease.device, sink).await {
+                        observability
+                            .emit(Event::new(
+                                EventLevel::Error,
+                                "rustbox.inbound.tun",
+                                None,
+                                EventKind::Diagnostic(format!(
+                                    "tun/{inbound_id} stack stopped: {}",
+                                    err.message
+                                )),
+                            ))
+                            .await;
+                    }
+                }),
+            ) {
+                Ok(task) => task,
+                Err(err) => {
+                    let lease = self
+                        .network_lease
+                        .lock()
+                        .expect("tun inbound network lease lock")
+                        .take();
+                    if let Some(lease) = lease {
+                        self.network_control
+                            .release(lease)
+                            .await
+                            .map_err(|release| {
+                                ServiceError::new(format!(
+                                    "{}; network rollback failed: {}",
+                                    err.message, release.message
                                 ))
-                                .await;
-                        }
-                    }),
-                )
-                .map_err(|err| ServiceError::new(err.message))?;
+                            })?;
+                    }
+                    self.started.store(false, Ordering::SeqCst);
+                    return Err(ServiceError::new(err.message));
+                }
+            };
+            self.stack_task = Some(task);
 
             self.emit(
                 EventLevel::Info,
@@ -189,12 +193,21 @@ impl Service for TunInbound {
     fn stop(&mut self) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async {
             self.started.store(false, Ordering::SeqCst);
-            if let Some(mut lease) = self
+            if let Some(task) = self.stack_task.take() {
+                self.spawner
+                    .cancel(task)
+                    .map_err(|err| ServiceError::new(err.message))?;
+            }
+            let lease = self
                 .network_lease
                 .lock()
                 .expect("tun inbound network lease lock")
-                .take()
-            {
+                .take();
+            if let Some(mut lease) = lease {
+                self.network_control
+                    .release(lease.clone())
+                    .await
+                    .map_err(|err| ServiceError::new(err.message))?;
                 lease.active = false;
             }
             self.emit(
@@ -228,7 +241,11 @@ fn network_transaction(
             None => InterfaceRef::Name(info.name.clone()),
         };
         let includes = if config.route_includes.is_empty() {
-            default_route_includes(&config.addresses)
+            if config.strict_route {
+                strict_route_includes(&config.addresses)
+            } else {
+                default_route_includes(&config.addresses)
+            }
         } else {
             config.route_includes.clone()
         };
@@ -241,6 +258,22 @@ fn network_transaction(
                     interface: interface.clone(),
                     metric: Some(1),
                 }),
+        );
+        if !config.dns_servers.is_empty() {
+            operations.push(NetworkOperation::SetInterfaceDns {
+                interface: interface.clone(),
+                servers: config.dns_servers.clone(),
+            });
+        }
+        if let Some(proxy) = &config.platform_proxy {
+            operations.push(NetworkOperation::SetPlatformHttpProxy(proxy.clone()));
+        }
+        operations.extend(
+            config
+                .route_excludes
+                .iter()
+                .copied()
+                .map(|destination| NetworkOperation::PreserveRoute { destination }),
         );
     }
 
@@ -264,6 +297,27 @@ fn default_route_includes(addresses: &[IpCidr]) -> Vec<IpCidr> {
         .any(|address| matches!(address.address, IpAddress::V6(_)))
     {
         includes.push(IpCidr::new(IpAddress::V6([0; 16]), 0).expect("default v6 route"));
+    }
+    includes
+}
+
+fn strict_route_includes(addresses: &[IpCidr]) -> Vec<IpCidr> {
+    let mut includes = Vec::new();
+    if addresses
+        .iter()
+        .any(|address| matches!(address.address, IpAddress::V4(_)))
+    {
+        includes.push(IpCidr::new(IpAddress::V4([0, 0, 0, 0]), 1).expect("v4 lower half"));
+        includes.push(IpCidr::new(IpAddress::V4([128, 0, 0, 0]), 1).expect("v4 upper half"));
+    }
+    if addresses
+        .iter()
+        .any(|address| matches!(address.address, IpAddress::V6(_)))
+    {
+        includes.push(IpCidr::new(IpAddress::V6([0; 16]), 1).expect("v6 lower half"));
+        let mut upper = [0; 16];
+        upper[0] = 0x80;
+        includes.push(IpCidr::new(IpAddress::V6(upper), 1).expect("v6 upper half"));
     }
     includes
 }
@@ -304,6 +358,8 @@ mod tests {
                 strict_route: false,
                 route_includes: Vec::new(),
                 route_excludes: Vec::new(),
+                dns_servers: Vec::new(),
+                platform_proxy: None,
                 platform_http_proxy: false,
                 auto_redirect: false,
             },
@@ -332,6 +388,8 @@ mod tests {
             strict_route: false,
             route_includes: vec![IpCidr::new(IpAddress::V4([10, 0, 0, 0]), 8).expect("cidr")],
             route_excludes: Vec::new(),
+            dns_servers: Vec::new(),
+            platform_proxy: None,
             platform_http_proxy: false,
             auto_redirect: false,
         };
@@ -353,6 +411,111 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn stop_cancels_stack_and_releases_network_lease() {
+        let network_control = Arc::new(FakeNetworkControl::default());
+        let mut inbound = test_inbound(network_control.clone(), Arc::new(FakeSpawner));
+        block_on_ready(inbound.start(ServiceContext {
+            engine_name: "test",
+        }))
+        .expect("start");
+
+        block_on_ready(inbound.stop()).expect("stop");
+
+        assert_eq!(network_control.released.load(Ordering::SeqCst), 1);
+        assert!(inbound.network_lease().is_none());
+        assert!(!inbound.started.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn spawn_failure_rolls_back_network_lease_and_resets_started_state() {
+        let network_control = Arc::new(FakeNetworkControl::default());
+        let mut inbound = test_inbound(network_control.clone(), Arc::new(FailingSpawner));
+
+        let error = block_on_ready(inbound.start(ServiceContext {
+            engine_name: "test",
+        }))
+        .expect_err("spawn must fail");
+
+        assert!(error.message.contains("spawn rejected"));
+        assert_eq!(network_control.released.load(Ordering::SeqCst), 1);
+        assert!(inbound.network_lease().is_none());
+        assert!(!inbound.started.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn strict_route_uses_split_defaults_and_plans_dns_and_proxy() {
+        let mut config = test_tun_config();
+        config.auto_route = true;
+        config.strict_route = true;
+        config.route_mode = RouteMode::Strict;
+        config.dns_servers = vec![IpAddress::V4([172, 18, 0, 1])];
+        config.platform_proxy = Some(rustbox_host_api::PlatformProxyConfig {
+            listen: rustbox_types::Endpoint::localhost_v4(7890),
+            bypass: vec!["<local>".to_string()],
+        });
+        let transaction = network_transaction(
+            &config,
+            &PacketDeviceInfo {
+                name: "rustbox0".to_string(),
+                index: Some(9),
+                addresses: config.addresses.clone(),
+                mtu: config.mtu,
+            },
+        );
+
+        assert_eq!(transaction.operations.len(), 4);
+        assert!(transaction.operations.iter().any(|operation| matches!(
+            operation,
+            NetworkOperation::AddRoute { destination, .. } if destination.prefix_len == 1
+        )));
+        assert!(
+            transaction
+                .operations
+                .iter()
+                .any(|operation| matches!(operation, NetworkOperation::SetInterfaceDns { .. }))
+        );
+        assert!(
+            transaction
+                .operations
+                .iter()
+                .any(|operation| matches!(operation, NetworkOperation::SetPlatformHttpProxy(_)))
+        );
+    }
+
+    fn test_inbound(
+        network_control: Arc<FakeNetworkControl>,
+        spawner: Arc<dyn TaskSpawner>,
+    ) -> TunInbound {
+        TunInbound::new(
+            InboundId::new(core::num::NonZeroU64::new(9).expect("id")),
+            Arc::new(FakePacketDeviceProvider),
+            network_control,
+            spawner,
+            Box::new(FakeStack),
+            Arc::new(RejectingSink),
+            test_tun_config(),
+        )
+    }
+
+    fn test_tun_config() -> TunInboundConfig {
+        TunInboundConfig {
+            interface_name: Some("rustbox0".to_string()),
+            addresses: vec![IpCidr::new(IpAddress::V4([172, 18, 0, 1]), 30).expect("cidr")],
+            mtu: Some(1500),
+            route_mode: RouteMode::Manual,
+            dns_mode: TunDnsMode::None,
+            auto_route: false,
+            strict_route: false,
+            route_includes: Vec::new(),
+            route_excludes: Vec::new(),
+            dns_servers: Vec::new(),
+            platform_proxy: None,
+            platform_http_proxy: false,
+            auto_redirect: false,
+        }
     }
 
     #[derive(Default)]
@@ -380,6 +543,7 @@ mod tests {
     #[derive(Default)]
     struct FakeNetworkControl {
         transactions: Mutex<Vec<NetworkTransaction>>,
+        released: core::sync::atomic::AtomicUsize,
     }
 
     impl NetworkControl for FakeNetworkControl {
@@ -399,6 +563,11 @@ mod tests {
                 })
             })
         }
+
+        fn release(&self, _lease: NetworkLease) -> BoxFuture<'_, Result<(), NetworkControlError>> {
+            self.released.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
     }
 
     #[derive(Default)]
@@ -411,6 +580,26 @@ mod tests {
             _task: BoxFuture<'static, ()>,
         ) -> Result<TaskHandle, SpawnError> {
             Ok(TaskHandle { id: 1 })
+        }
+
+        fn cancel(&self, _handle: TaskHandle) -> Result<(), SpawnError> {
+            Ok(())
+        }
+    }
+
+    struct FailingSpawner;
+
+    impl TaskSpawner for FailingSpawner {
+        fn spawn(
+            &self,
+            _name: TaskName,
+            _task: BoxFuture<'static, ()>,
+        ) -> Result<TaskHandle, SpawnError> {
+            Err(SpawnError::new("spawn rejected"))
+        }
+
+        fn cancel(&self, _handle: TaskHandle) -> Result<(), SpawnError> {
+            Ok(())
         }
     }
 

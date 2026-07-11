@@ -7,9 +7,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_types::{Endpoint, Host, IpAddress};
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::io::ReadBuf;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -26,6 +27,7 @@ impl TokioHost {
             inner: Arc::new(TokioHostInner {
                 started_at: Instant::now(),
                 next_task_id: AtomicU64::new(1),
+                tasks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -40,6 +42,7 @@ impl Default for TokioHost {
 struct TokioHostInner {
     started_at: Instant,
     next_task_id: AtomicU64,
+    tasks: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
 }
 
 impl NetworkProvider for TokioHost {
@@ -112,8 +115,34 @@ impl TaskSpawner for TokioHost {
         task: BoxFuture<'static, ()>,
     ) -> Result<TaskHandle, SpawnError> {
         let id = self.inner.next_task_id.fetch_add(1, Ordering::Relaxed);
-        tokio::spawn(task);
+        let inner = self.inner.clone();
+        let task = tokio::spawn(async move {
+            task.await;
+            inner
+                .tasks
+                .lock()
+                .expect("TokioHost task registry lock")
+                .remove(&id);
+        });
+        self.inner
+            .tasks
+            .lock()
+            .expect("TokioHost task registry lock")
+            .insert(id, task.abort_handle());
         Ok(TaskHandle { id })
+    }
+
+    fn cancel(&self, handle: TaskHandle) -> Result<(), SpawnError> {
+        if let Some(task) = self
+            .inner
+            .tasks
+            .lock()
+            .expect("TokioHost task registry lock")
+            .remove(&handle.id)
+        {
+            task.abort();
+        }
+        Ok(())
     }
 }
 

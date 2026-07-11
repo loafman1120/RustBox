@@ -1,223 +1,115 @@
 # RustBox 架构
 
-> 目标架构与长期不变量 · 2026-07-10
+本文只记录稳定边界、关键数据流和近期演进方向；命令与配置示例见根目录 `README.md` 和 `examples/`。
+
+## 设计目标
+
+RustBox 是基于 Tokio 的模块化代理引擎。CLI、FFI 和未来 GUI 共用同一个 `RustBox` 生命周期，不各自维护引擎或配置编译逻辑。
 
 ```text
-CLI / FFI / Rust embedding
-          |
-          v
-       RustBox
-  new / start / stop / reload / snapshot
-          |
-          v
-  config + modules + kernel
-          |
-          v
-        Tokio
+CLI / FFI / embedding
+        │
+        ▼
+     RustBox ─── new / start / reload / snapshot / stop
+        │
+        ├── config + control + observability
+        └── kernel + modules + platform
+                         │
+                         ▼
+                       Tokio
 ```
 
-## 原则
+架构遵循四条规则：
 
-1. `apps/rustbox` 只做 CLI 参数、信号、option 翻译，不自行编译配置。
-2. `rustbox-ffi` 只做 ABI 翻译，不维护第二套引擎。
-3. Tokio 是唯一运行时，不为假设中的其他 runtime 加 adapter 层。
-4. 只在有真实替换需求时保留 trait：测试 host、平台差异、多态流。
-5. 无独立用途的 pass-through crate 应合并或删除。
+1. Tokio 是唯一运行时。
+2. 路由是纯计算，不执行 DNS、进程查询或网络 I/O。
+3. 平台能力留在 platform/host 边界，不能渗入可移植核心。
+4. trait 只用于确有多个实现的边界；无独立职责的 pass-through crate 应合并。
 
-## Crate 地图
+## 代码边界
 
-| 位置 | 职责 |
-|---|---|
-| `apps/rustbox` | CLI |
-| `crates/rustbox` | 公共 `RustBox` API、装配、进程服务生命周期 |
-| `crates/rustbox-ffi` | C ABI、句柄表、Tokio 桥接 |
-| `crates/rustbox-config-file` | TOML → `SourceConfig` |
-| `crates/control/rustbox-config` | 校验与编译 |
-| `crates/kernel/*` | flow、路由、relay、engine |
-| `crates/modules/*` | inbound、outbound、DNS、TUN、transport |
-| `crates/host/rustbox-host-api` | Tokio host、平台契约 |
-| `crates/platform/*` | Linux / Windows TUN、路由、透明代理 |
-| `crates/rustbox-observability` | 结构化事件及输出 |
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 应用 | `apps/rustbox` | CLI 参数、信号和输出 |
+| 公共入口 | `crates/rustbox`、`rustbox-ffi` | 引擎装配、生命周期、C ABI |
+| 控制与配置 | `crates/control/*`、`rustbox-config-file` | 解析、校验、编译、控制 API |
+| 内核 | `crates/kernel/*` | flow、路由、relay、运行图 |
+| 模块 | `crates/modules/*` | inbound、outbound、DNS、inspection、TUN stack、transport |
+| 主机与平台 | `crates/host/*`、`crates/platform/*` | Tokio host、TUN、路由、透明代理 |
+| 观测 | `rustbox-observability` | 事件、指标、连接快照及 sink |
 
-已删除 `rustbox-runtime-tokio`（Tokio 现在是普通依赖）。待评估移除的 crate：`rustbox-registry`（目前主要提供模块注册与能力模型）。
+允许的依赖方向是从上层装配到下层能力。协议模块不解析 CLI，FFI 不暴露 Rust 引用或 trait object，平台操作不进入 kernel/route。
 
-## 公共 API
-
-```rust
-let mut rustbox = RustBox::new(source_config)?;
-rustbox.start().await?;
-let snapshot = rustbox.snapshot();
-rustbox.reload(next_source_config).await?;
-rustbox.stop().await?;
-```
-
-控制 gRPC、观测存储、命令通道、任务、shutdown 由 `RustBox` 持有。CLI 只翻译参数。
-
-## 配置路径
+## 配置与生命周期
 
 ```text
-TOML / SourceConfig → parse → normalize → validate → compile → RustBox
+TOML → SourceConfig → normalize → validate → compile → RustBox
 ```
 
-文件解析与运行模型分开：FFI、GUI、测试可直接提供 `SourceConfig`。
+文件解析与运行模型分离，因此 FFI、GUI 和测试可直接提交 `SourceConfig`。
 
-## 生命周期
+- `new`：校验配置并准备运行图。
+- `start`：启动 inbound、后台任务和可选控制服务。
+- `reload`：构建新图；新 flow 使用新图，存量 flow 继续持有旧资源。
+- `snapshot`：向 CLI、FFI 和控制 API 提供统一只读状态。
+- `stop`：停接纳，停后台任务，排空或取消会话，最后回滚平台配置；操作必须有界且幂等。
 
-- `new` — 校验配置，准备运行图
-- `start` — 启动 inbound 和可选控制服务
-- `stop` — 反向停止数据面、回收控制任务、幂等回滚平台配置
-- `reload` — 准备新图，替换新建 flow 视图，存量 flow 持有旧图资源
-- `snapshot` — 统一状态供 CLI、FFI、控制 API
-
-## 目标数据面
+## 数据面
 
 ```mermaid
 flowchart LR
-    IN["HTTP / SOCKS5 / TUN / Transparent"]
-    DISPATCH["FlowDispatcher"]
-    UDP["UDP Sessionizer"]
-    INSPECT["Inspection Pipeline"]
-    ROUTE["Pure Router"]
-    GRAPH["Runtime Outbound Graph"]
-    RELAY["TCP / UDP Relay"]
-    DNS["DNS Runtime"]
-    SESSION["Session Registry"]
-    CONTROL["gRPC / FFI / GUI"]
-
-    IN --> DISPATCH
-    DISPATCH --> INSPECT
-    DISPATCH --> UDP --> INSPECT
-    DNS --> INSPECT
-    INSPECT --> ROUTE --> GRAPH --> RELAY
-    DISPATCH --> SESSION
-    RELAY --> SESSION
-    SESSION --> CONTROL
-    CONTROL --> GRAPH
+    IN["HTTP / SOCKS5 / TUN / Transparent"] --> D["Flow dispatcher"]
+    D --> I["Bounded inspection"] --> R["Pure router"]
+    R --> G["Runtime outbound graph"] --> X["TCP / UDP relay"]
+    DNS["DNS runtime"] --> I
+    D --> S["Session registry"]
+    X --> S
+    S --> C["gRPC / FFI / GUI"]
 ```
 
-### Flow 接纳
+TCP 路径：`accept → dispatch → inspection → route → outbound → relay → close`。
 
-`FlowDispatcher` 是并发唯一入口：接纳后立即返回 `FlowHandle`，在 supervisor 下启动 task，应用并发上限，过载时明确拒绝。relay future 不得阻塞 accept loop。
+UDP 将多目标入口 `DatagramEndpoint` 与已路由的固定目标 `DatagramSession` 分开；会话表必须有容量、空闲超时和淘汰策略。dispatcher 接纳后立即交给 supervisor，relay 不得阻塞 accept loop。
 
-### TCP 路径
+inspection 在字节和时间预算内补充不可变 `FlowMeta`。metadata enricher 可查询进程或 DNS，payload inspector 可读取并重放有限前缀以识别 TLS SNI / HTTP Host。router 只消费结果。
 
-`accept → Flow+FlowMeta → dispatch → 有界 inspection(replayable prefix) → route → outbound → 双向 relay → close`
+router 返回逻辑 outbound ID；运行时 outbound graph 负责 concrete adapter、Selector/URLTest/Fallback、健康检查、循环检测以及 reload 隔离。
 
-### UDP 路径
+## 平台边界
 
-`DatagramEndpoint`（多目标入口）与 `DatagramSession`（已路由固定目标会话）分开。按五元组建有界 session 表，idle timeout + 容量淘汰。每个真实目标独立路由。
+TUN 路径为 `PacketDevice → packet-to-flow stack → dispatcher`；透明代理路径为 `OS redirect → original-dst lookup → dispatcher`。两者共享后半段数据面，但 TUN 额外需要 packet device 和网络栈。
 
-### Inspection
+`PacketDeviceProvider` 提供设备 I/O，`NetworkControl` 以 lease 表示可回滚的路由、DNS、重定向和防泄漏变更。出站必须支持绕过自身捕获。Linux 和 Windows 分别在 `crates/platform/` 实现能力；不支持的能力应在 composition 阶段返回结构化诊断，不静默降级。
 
-分两类：metadata enricher（进程、DNS 反查，不读 payload）和 payload inspector（受限预算内读 TLS SNI / HTTP Host）。产出不可变 `FlowMeta` 快照供 router 消费。失败策略需显式：继续、拒绝或诊断。
+## 观测与控制
 
-### DNS Runtime
+kernel/modules 只产生结构化事件；sink 负责 console、file、recording、store、平台日志或远程导出。慢 sink 在自身内部缓冲，不能向 relay 施加背压。
 
-独立子系统，不在 `rustbox-route` 内。bootstrap + 防递归环。`DomainIndex`（FakeIP 反查）带来源、TTL 和冲突策略。
+`ObservabilityStore` 提供有界事件、指标和连接快照，控制 API 负责查询及 stop 等命令。目标 `SessionRegistry` 保存会话元数据、逻辑/实际 outbound、原子 byte/packet/drop 计数和取消句柄，不暴露 socket。非 loopback 控制端点必须启用 token，凭证不得进入事件。
 
-### Runtime Outbound Graph
+## 当前能力与缺口
 
-router 返回逻辑 outbound ID。运行时 graph 负责：concrete adapter、group（Selector/URLTest/Fallback）、health check、child 选择记录、循环检测、reload 新旧图隔离。
+已实现 HTTP、SOCKS5、mixed、TUN、transparent inbound；Direct、HTTP、SOCKS5、Shadowsocks、AnyTLS outbound；配置 pipeline、CLI/FFI 生命周期、gRPC 控制 API、结构化观测，以及 Linux/Windows TUN 和 Linux redirect。VMess、VLESS、Trojan 目前只有配置模型，组合时会明确报未实现。
 
-### Session Registry
+近期工作按依赖顺序推进：
 
-`SessionRegistry` 保存活跃会话：ID、地址、inbound/outbound、原子 byte/packet 计数、取消句柄。控制 API 通过只读快照查询，通过命令接口取消/切换。
+1. dispatcher/supervisor：解除 TUN 和 transparent accept loop 对长 flow 的等待。
+2. UDP session：按真实目标路由，加入容量、超时和淘汰。
+3. inspection + DNS：可重放前缀、SNI/Host 和独立 resolver。
+4. runtime outbound graph：运行时 group、健康检查和 child 选择记录。
+5. session control：活跃连接持续计数、取消和 UDP 指标。
+6. 性能基线：测量吞吐、延迟、RSS 和分配后再优化。
 
-### 资源上限
+## AnyTLS
 
-dispatcher 队列、inspection 字节/时间、UDP session 表、DNS cache、连接池——都需明确上限。`stop` 顺序：停接纳 → 停后台探测 → 排空/取消会话 → 撤销平台配置。
+AnyTLS outbound 固定使用协议兼容的 `anytls 0.2.3`（MIT），保留可注入 `NetworkProvider` 的拨号边界，并以 sing-box 1.13.14 做真实端到端验证。当前覆盖 TLS/密码认证、标准帧、递增 stream ID、session 池、TCP 代理及 UDP-over-TCP v2；升级必须继续通过模块测试、连续三次请求的 sing-box E2E 和资源泄漏检查。
 
-## 当前实现
+## 不变量
 
-### 已实现
-
-- HTTP、SOCKS5、mixed、TUN、transparent inbound
-- Direct、HTTP、SOCKS5、Shadowsocks、AnyTLS outbound
-- 纯函数路由表 `FlowMeta → RouteDecision`
-- 配置完整 pipeline（parse/normalize/validate/compile）
-- CLI + FFI 共用 `RustBox` 生命周期
-- gRPC 控制 API、结构化观测、console/file/recording/store sink
-- Linux/Windows TUN、Linux transparent redirect
-
-### 待修复
-
-- **并发边界**：TUN 和 transparent accept loop 当前直接等待 `submit`，长 flow 阻塞后续接纳
-- **UDP session**：SOCKS5 UDP ASSOCIATE 多目标尚未按真实目标路由和淘汰
-- **Payload inspection**：仅有静态 enricher，无真实 TLS SNI / HTTP Host 嗅探
-- **DNS runtime**：有模型但未装配真实 resolver/transport
-- **Outbound group**：Selector/URLTest 编译期折叠为固定 child，非运行时动态切换
-- **实时统计**：relay bytes 完成后一次性发布，无活跃连接持续计数
-
-VMess、VLESS、Trojan 仅有配置模型，组合时明确报未实现。
-
-### AnyTLS
-
-精确锁定 `anytls 0.2.3`（MIT），通过 sing-box 1.13.14 真实 E2E。
-
-| 能力 | 验证 |
-|---|---|
-| TLS + 密码认证 | 模块测试 + sing-box E2E |
-| 标准 SYN/PSH/FIN 帧、递增 stream ID、session 池 | sing-box E2E（三次连续请求） |
-| TCP 代理流 | 模块回环 + E2E |
-| UDP-over-TCP v2 | 模块回环 |
-| TLS 证书校验、SNI、ALPN | rustls 配置路径 |
-
-选型理由：0.2.3 保留标准流模型 + 可注入 `NetworkProvider` 拨号，不绕过 host 网络边界。0.3.x 移除了多路复用，`anytls-rs` 需 CMake/NASM，`meow-anytls` 自带 dial 会绕过 `NetworkProvider`。
-
-配置示例：
-
-```toml
-[[outbounds]]
-id = "anytls"
-type = "anytls"
-server = "proxy.example.com:443"
-password = "replace-with-a-secret"
-
-[outbounds.tls]
-enabled = true
-server_name = "proxy.example.com"
-
-[[routes]]
-type = "default"
-outbound = "anytls"
-```
-
-升级门槛：保留可注入 dial API → 更新 pin → 通过 TCP/UOT 模块测试 → 通过三次请求 sing-box E2E（Linux/Windows/macOS）→ 验证无 session/连接泄漏。
-
-## 仍保留的 trait
-
-- `NetworkProvider`：测试 host 需内存网络
-- `PacketDeviceProvider` / `NetworkControl`：Linux / Windows / 移动平台实现不同
-- `ObservabilitySink`：console、file、store 有多个实现
-- `ByteStream`：仅 `AsyncRead + AsyncWrite + Send + Unpin` 的可装箱组合，无自定义 poll
-
-新增 trait 前需给出第二个真实实现。
-
-## 依赖边界
-
-- 协议模块不解析 CLI；FFI 不暴露 Rust 引用/trait object
-- 配置校验不重复；平台操作留在平台 crate
-- CLI / FFI 不直接操作内部 `Engine` 或 service 列表
-- 除此之外优先直接依赖和普通函数调用
-
-## 升级顺序
-
-1. **并发基线** — dispatcher/supervisor，修正 TUN/transparent accept loop
-2. **UDP 语义** — endpoint/session 分离，多目标路由，idle timeout 淘汰
-3. **Inspection + DNS** — replayable prefix，SNI/HTTP inspector，DNS runtime + DomainIndex
-4. **Runtime outbound graph** — Selector/URLTest 运行时 group，health check
-5. **会话控制** — SessionRegistry，实时 counter，连接取消，UDP packet/drop 指标
-6. **性能门槛** — 吞吐/延迟/RSS/分配基线，再决定优化
-
-每阶段需同步更新本文档的"当前实现"节。
-
-## 数据面不变量
-
-1. router 纯函数 `FlowMeta → RouteDecision`，不做 DNS、进程查询、I/O
-2. relay 生命周期不阻塞 accept loop
-3. UDP 按真实目标归属有界 session
-4. inspection 有严格预算，读取 payload 可重放
-5. group 是逻辑 outbound，运行时解析 concrete outbound
-6. reload 新旧 flow 资源隔离
-7. stop、取消、平台回滚是有界、幂等、可测试的
-8. 所有按流增长的表有容量、过期、淘汰策略
+1. accept loop 不等待 relay 生命周期。
+2. router 保持 `FlowMeta → RouteDecision` 纯函数。
+3. inspection 有严格预算且读取的 payload 可重放。
+4. UDP 和所有按 flow 增长的表都有容量、过期与淘汰策略。
+5. reload 隔离新旧 flow 的资源，stop/取消/平台回滚有界且幂等。
+6. 逻辑 outbound 由运行时 graph 解析为实际 child。
+7. 新增 trait 前必须存在第二个真实实现。

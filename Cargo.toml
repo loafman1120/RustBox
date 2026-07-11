@@ -36,6 +36,7 @@ members = [
     "crates/rustbox-observability",
     "crates/platform/rustbox-platform-linux",
     "crates/platform/rustbox-platform-windows",
+    "crates/platform/rustbox-platform-macos",
 ]
 
 [workspace.package]

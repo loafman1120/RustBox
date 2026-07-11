@@ -56,6 +56,9 @@ pub trait Entropy: Send + Sync {
 pub trait TaskSpawner: Send + Sync {
     fn spawn(&self, name: TaskName, task: BoxFuture<'static, ()>)
     -> Result<TaskHandle, SpawnError>;
+
+    /// Cancel a previously spawned background task. Cancellation is idempotent.
+    fn cancel(&self, handle: TaskHandle) -> Result<(), SpawnError>;
 }
 
 /// 包设备能力端口，TUN/Wintun/VpnService 等平台设施从这里进入系统。
@@ -72,6 +75,10 @@ pub trait NetworkControl: Send + Sync {
         &self,
         transaction: NetworkTransaction,
     ) -> BoxFuture<'_, Result<NetworkLease, NetworkControlError>>;
+
+    /// Undo every platform mutation represented by a lease. Implementations
+    /// must make releasing an inactive/no-op lease harmless.
+    fn release(&self, lease: NetworkLease) -> BoxFuture<'_, Result<(), NetworkControlError>>;
 }
 
 /// 透明代理能力端口。平台适配器负责监听被 redirect/TPROXY/WFP 送来的连接，
@@ -230,22 +237,6 @@ pub enum InterfaceRef {
     Index(u32),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct RouteTableId(pub u32);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RouteSelector {
-    pub mark: Option<u32>,
-    pub source: Option<IpCidr>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TransparentRedirectRule {
-    pub mode: TransparentRedirectMode,
-    pub listen: Endpoint,
-    pub mark: Option<u32>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransparentRedirectMode {
     Redirect,
@@ -254,46 +245,30 @@ pub enum TransparentRedirectMode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LeakProtectionRule {
-    pub protected_routes: Vec<IpCidr>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformProxyConfig {
     pub listen: Endpoint,
     pub bypass: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct SocketProtectionHandle(pub u64);
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkOperation {
-    AddInterfaceAddress {
-        interface: InterfaceRef,
-        address: IpCidr,
-    },
-    SetInterfaceMtu {
-        interface: InterfaceRef,
-        mtu: u16,
-    },
     AddRoute {
         destination: IpCidr,
         gateway: Option<IpAddress>,
         interface: InterfaceRef,
         metric: Option<u32>,
     },
-    AddRouteRule {
-        selector: RouteSelector,
-        table: RouteTableId,
-        priority: Option<u32>,
+    /// Preserve the route that currently reaches this prefix before a broader
+    /// TUN route is installed. Platforms resolve the existing best route and
+    /// install a more-specific copy for the requested prefix.
+    PreserveRoute {
+        destination: IpCidr,
     },
-    AddTransparentRedirectRule(TransparentRedirectRule),
-    AddLeakProtectionRule(LeakProtectionRule),
+    SetInterfaceDns {
+        interface: InterfaceRef,
+        servers: Vec<IpAddress>,
+    },
     SetPlatformHttpProxy(PlatformProxyConfig),
-    ProtectSocket {
-        handle: SocketProtectionHandle,
-    },
 }
 
 /// 进程归属查询是路由前的元数据增强能力，不属于路由器本身。

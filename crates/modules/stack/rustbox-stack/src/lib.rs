@@ -99,7 +99,22 @@ impl PacketFlowStack {
                         },
                     )
                     .await;
-                    let _ = sink.submit(flow).await;
+                    let flow_sink = sink.clone();
+                    let observability = self.observability.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = flow_sink.submit(flow).await {
+                            observability
+                                .emit(Event::new(
+                                    EventLevel::Warn,
+                                    "rustbox.stack.packet",
+                                    None,
+                                    EventKind::Diagnostic(format!(
+                                        "TUN flow dispatch failed: {err:?}"
+                                    )),
+                                ))
+                                .await;
+                        }
+                    });
                 }
                 Err(err) => {
                     self.emit(

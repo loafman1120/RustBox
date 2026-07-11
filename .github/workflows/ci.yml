@@ -138,6 +138,49 @@ jobs:
           path: target/ci-proxy-smoke/logs
           if-no-files-found: ignore
 
+  e2e-tun-windows:
+    name: E2E Windows Wintun lifecycle
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tun-e2e-windows
+      - name: Download official Wintun 0.14.1
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile $env:RUNNER_TEMP\wintun.zip
+          Expand-Archive $env:RUNNER_TEMP\wintun.zip -DestinationPath $env:RUNNER_TEMP\wintun
+      - name: Open and close a real Wintun adapter
+        shell: pwsh
+        env:
+          RUSTBOX_TUN_E2E: "1"
+          RUSTBOX_WINTUN_DLL: ${{ runner.temp }}\wintun\wintun\bin\amd64\wintun.dll
+        run: cargo test --locked -p rustbox-platform-windows tests::opens_and_closes_real_wintun_when_e2e_is_enabled -- --exact --nocapture
+
+  e2e-tun-linux:
+    name: E2E Linux TUN lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tun-e2e-linux
+      - name: Open and close a real Linux TUN device
+        env:
+          RUSTBOX_TUN_E2E: "1"
+        run: sudo -E cargo test --locked -p rustbox-platform-linux tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
+
   # ── E2E outbound: RustBox → upstream proxy → target ────────────
   #     curl → rustbox inbound → $outbound → sing-box → target
   e2e-outbound:

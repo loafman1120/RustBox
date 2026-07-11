@@ -4,17 +4,14 @@ schema_version = 1
 level = "debug"
 
 [[inbounds]]
-id = "transparent"
-type = "transparent"
-listen = "127.0.0.1:12345"
-network = "tcp"
-mode = "redirect"
-auto_rules = false
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:17890"
 
-# TUN now composes into a packet-to-flow stack. Keep auto_route disabled in
-# this example so parsing/composition can be tested without privileged route
-# mutation; enable it with route_includes when running as an operator-managed
-# TUN proxy.
+# TUN composes into a packet-to-flow stack. Keep auto_route disabled while
+# another VPN is active. For a real full-tunnel run as Administrator on Windows,
+# stop the other VPN and set auto_route = true. route_excludes preserve the
+# pre-existing best route for matching prefixes.
 [[inbounds]]
 id = "tun"
 type = "tun"
@@ -23,8 +20,10 @@ addresses = ["172.18.0.1/30"]
 mtu = 1500
 auto_route = false
 strict_route = false
-route_includes = ["0.0.0.0/0"]
 route_excludes = ["127.0.0.0/8"]
+dns_hijack = [{ endpoint = "1.1.1.1:53", network = "udp" }]
+platform_http_proxy = false
+auto_redirect = false
 
 [[outbounds]]
 id = "direct"

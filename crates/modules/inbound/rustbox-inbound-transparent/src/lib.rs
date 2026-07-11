@@ -304,6 +304,13 @@ mod tests {
         ) -> Result<rustbox_host_api::TaskHandle, rustbox_host_api::SpawnError> {
             Ok(rustbox_host_api::TaskHandle { id: 1 })
         }
+
+        fn cancel(
+            &self,
+            _handle: rustbox_host_api::TaskHandle,
+        ) -> Result<(), rustbox_host_api::SpawnError> {
+            Ok(())
+        }
     }
 
     #[derive(Default)]

@@ -55,8 +55,8 @@ See `examples/rustbox.toml`. Inbound types: `http-connect`, `socks5`, `mixed`.
 Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `anytls`.
 
 The `anytls` outbound uses the pinned, protocol-compatible `anytls 0.2.3`
-client and is continuously tested against a sing-box AnyTLS server. See
-[架构文档 §AnyTLS](docs/architecture.md).
+client and is continuously tested against a sing-box AnyTLS server. See the
+[architecture](docs/architecture.md#anytls).
 
 ## Verify
 
@@ -64,6 +64,21 @@ client and is continuously tested against a sing-box AnyTLS server. See
 curl.exe -x http://127.0.0.1:18080 https://example.com -I
 curl.exe --socks5-hostname 127.0.0.1:1080 https://example.com -I
 ```
+
+## TUN
+
+Windows TUN requires Administrator privileges and the official architecture-
+matched `wintun.dll` from [wintun.net](https://www.wintun.net/). Put it beside
+`rustbox-app.exe` or set `RUSTBOX_WINTUN_DLL` to its absolute path. Linux uses
+`/dev/net/tun`; macOS uses utun.
+
+Start with `auto_route = false` while another VPN is active. For a full tunnel,
+stop the competing VPN, enable `auto_route`, and run with elevated privileges.
+`strict_route` installs split `/1` routes, `route_excludes` preserve the current
+best route, `dns_hijack` configures the TUN interface DNS servers, and
+`platform_http_proxy` uses the first mixed/HTTP inbound in the same config.
+`auto_redirect` is an alias for TUN route capture; WFP/nft redirect belongs to a
+transparent inbound and is intentionally not stacked on a layer-3 TUN.
 
 ## Test
 

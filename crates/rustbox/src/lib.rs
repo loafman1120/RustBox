@@ -35,7 +35,7 @@ use rustbox_outbound_vmess::{VmessOutbound, VmessTlsConfig};
 use rustbox_route::{
     LogicalMode, RouteConditions, RouteMatcher, RouteRule, RouteRuleSet, RouteTable,
 };
-use rustbox_types::{Endpoint, RouteDecision};
+use rustbox_types::{Endpoint, Host, RouteDecision};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -310,6 +310,15 @@ impl RuntimeGraphBuilder {
         let engine = Arc::new(builder.build().map_err(ComposeError::Engine)?);
         let sink: Arc<dyn FlowSink> = engine.clone();
         let mut services: Vec<Box<dyn Service>> = Vec::new();
+        let platform_proxy_listen =
+            compiled
+                .inbounds
+                .iter()
+                .find_map(|inbound| match &inbound.kind {
+                    CompiledInboundKind::Mixed { listen, .. }
+                    | CompiledInboundKind::HttpConnect { listen, .. } => Some(listen.clone()),
+                    _ => None,
+                });
 
         for inbound in compiled.inbounds {
             match inbound.kind {
@@ -427,6 +436,28 @@ impl RuntimeGraphBuilder {
                     let stack = rustbox_stack::PacketFlowStack::new(inbound.id)
                         .with_mtu(mtu)
                         .with_observability(self.observability.clone());
+                    let dns_servers = config
+                        .dns_hijack
+                        .iter()
+                        .map(|target| match target.endpoint.host {
+                            Host::Ip(ip) => Ok(ip),
+                            Host::Domain(_) => Err(ComposeError::Config(ConfigError::new(
+                                "TUN dns_hijack endpoints must use literal IP addresses",
+                            ))),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let platform_proxy = if config.platform_http_proxy {
+                        Some(rustbox_host_api::PlatformProxyConfig {
+                            listen: platform_proxy_listen.clone().ok_or_else(|| {
+                                ComposeError::Config(ConfigError::new(
+                                    "TUN platform_http_proxy requires a mixed or http-connect inbound",
+                                ))
+                            })?,
+                            bypass: vec!["<local>".to_string()],
+                        })
+                    } else {
+                        None
+                    };
                     let inbound = TunInbound::new(
                         inbound.id,
                         packet_devices,
@@ -444,6 +475,8 @@ impl RuntimeGraphBuilder {
                             strict_route: config.strict_route,
                             route_includes: config.route_includes,
                             route_excludes: config.route_excludes,
+                            dns_servers,
+                            platform_proxy,
                             platform_http_proxy: config.platform_http_proxy,
                             auto_redirect: config.auto_redirect,
                         },
@@ -893,7 +926,13 @@ fn tun_platform_capabilities() -> Result<TunPlatformCapabilities, ComposeError> 
         Ok((platform.clone(), platform))
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        let platform = Arc::new(rustbox_platform_macos::MacosPlatform::new());
+        Ok((platform.clone(), platform))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(ComposeError::Config(ConfigError::new(
             "tun inbound requires Linux or Windows packet-device platform capabilities",

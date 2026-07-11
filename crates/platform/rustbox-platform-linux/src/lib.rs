@@ -29,6 +29,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(target_os = "linux")]
 use std::pin::Pin;
 #[cfg(target_os = "linux")]
+use std::process::Command;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::task::{Context, Poll};
@@ -70,6 +72,10 @@ impl NetworkControl for LinuxPlatform {
     ) -> BoxFuture<'_, Result<NetworkLease, NetworkControlError>> {
         Box::pin(apply_linux_network_transaction(transaction))
     }
+
+    fn release(&self, lease: NetworkLease) -> BoxFuture<'_, Result<(), NetworkControlError>> {
+        Box::pin(release_linux_network_lease(lease))
+    }
 }
 
 impl ProcessLookup for LinuxPlatform {
@@ -77,15 +83,7 @@ impl ProcessLookup for LinuxPlatform {
         &self,
         key: ConnectionKey,
     ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>> {
-        Box::pin(async move {
-            Err(ProcessLookupError::new(format!(
-                "{}; network={:?} local={} remote={}",
-                process_lookup_status_message(),
-                key.network,
-                key.local,
-                key.remote
-            )))
-        })
+        Box::pin(async move { lookup_linux_process(key) })
     }
 }
 
@@ -123,7 +121,7 @@ fn linux_capability_matrix() -> LinuxCapabilityMatrix {
         packet_device: CapabilitySupport::Supported,
         route_control: CapabilitySupport::Limited,
         transparent_proxy: CapabilitySupport::Limited,
-        process_lookup: CapabilitySupport::Planned,
+        process_lookup: CapabilitySupport::Supported,
     }
 }
 
@@ -155,7 +153,59 @@ fn network_control_status_message() -> &'static str {
 
 #[cfg(target_os = "linux")]
 fn process_lookup_status_message() -> &'static str {
-    "Linux process lookup is not implemented yet"
+    "Linux process lookup uses ss process ownership data"
+}
+
+#[cfg(target_os = "linux")]
+fn lookup_linux_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
+    let protocol = match key.network {
+        rustbox_types::Network::Tcp => "-tanp",
+        rustbox_types::Network::Udp => "-uanp",
+    };
+    let output = Command::new("ss")
+        .args(["-H", protocol])
+        .output()
+        .map_err(|err| ProcessLookupError::new(format!("start ss process lookup: {err}")))?;
+    if !output.status.success() {
+        return Err(ProcessLookupError::new(format!(
+            "{}: {}",
+            process_lookup_status_message(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let port_marker = format!(":{}", key.local.port);
+    let line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find(|line| line.contains(&port_marker) && line.contains("pid="))
+        .map(str::to_owned);
+    let Some(line) = line else {
+        return Ok(None);
+    };
+    let Some(pid) = line
+        .split("pid=")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split(|character: char| !character.is_ascii_digit())
+                .next()
+        })
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        return Ok(None);
+    };
+    let executable_path = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
+    Ok(Some(ProcessInfo {
+        pid: Some(pid),
+        executable_path,
+        package_name: None,
+        user_id: None,
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn lookup_linux_process(_key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
+    Err(ProcessLookupError::new(process_lookup_status_message()))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -197,7 +247,14 @@ static NEXT_NETWORK_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 async fn apply_linux_route_transaction(
     transaction: NetworkTransaction,
 ) -> Result<NetworkLease, NetworkControlError> {
+    let handle = RouteHandle::new()
+        .map_err(|err| network_control_io_error("initialize route handle", err))?;
+    let existing = handle
+        .list()
+        .await
+        .map_err(|err| network_control_io_error("list routes", err))?;
     let mut routes = Vec::with_capacity(transaction.operations.len());
+    let mut deferred = Vec::new();
     for operation in &transaction.operations {
         match operation {
             NetworkOperation::AddRoute {
@@ -211,18 +268,14 @@ async fn apply_linux_route_transaction(
                 interface,
                 *metric,
             )?),
-            operation => {
-                return Err(unsupported_network_operation(
-                    transaction.reason,
-                    transaction.operations.len(),
-                    operation,
-                ));
+            NetworkOperation::PreserveRoute { destination } => {
+                routes.push(preserved_route(*destination, &existing)?);
             }
+            NetworkOperation::SetInterfaceDns { .. }
+            | NetworkOperation::SetPlatformHttpProxy(_) => deferred.push(operation.clone()),
         }
     }
 
-    let handle = RouteHandle::new()
-        .map_err(|err| network_control_io_error("initialize route handle", err))?;
     let mut applied = Vec::new();
     for route in &routes {
         if let Err(err) = handle.add(route).await {
@@ -233,12 +286,224 @@ async fn apply_linux_route_transaction(
         }
         applied.push(route.clone());
     }
+    let mut applied_deferred = Vec::new();
+    for operation in &deferred {
+        if let Err(err) = apply_linux_non_route_operation(operation) {
+            rollback_routes(&handle, &applied).await;
+            for applied_operation in applied_deferred.iter().rev() {
+                let _ = undo_linux_non_route_operation(applied_operation);
+            }
+            return Err(err);
+        }
+        applied_deferred.push(operation.clone());
+    }
 
     Ok(NetworkLease {
         id: NEXT_NETWORK_LEASE_ID.fetch_add(1, Ordering::Relaxed),
         operations: transaction.operations,
         active: true,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn preserved_route(
+    destination: rustbox_types::IpCidr,
+    routes: &[Route],
+) -> Result<Route, NetworkControlError> {
+    let address = std_ip_address(destination.address);
+    let best = routes
+        .iter()
+        .filter(|route| route_contains(route, address))
+        .max_by_key(|route| route.prefix)
+        .ok_or_else(|| {
+            NetworkControlError::new(format!(
+                "no existing Linux route can preserve exclusion {destination}"
+            ))
+        })?;
+    let mut route = Route::new(address, destination.prefix_len).with_table(best.table);
+    if let Some(index) = best.ifindex {
+        route = route.with_ifindex(index);
+    }
+    if let Some(gateway) = best.gateway {
+        route = route.with_gateway(gateway);
+    }
+    if let Some(metric) = best.metric {
+        route = route.with_metric(metric);
+    }
+    Ok(route)
+}
+
+#[cfg(target_os = "linux")]
+fn route_contains(route: &Route, address: std::net::IpAddr) -> bool {
+    match (route.destination, address) {
+        (std::net::IpAddr::V4(network), std::net::IpAddr::V4(address)) => {
+            let prefix = route.prefix.min(32);
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            u32::from(network) & mask == u32::from(address) & mask
+        }
+        (std::net::IpAddr::V6(network), std::net::IpAddr::V6(address)) => {
+            let prefix = route.prefix.min(128);
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
+            u128::from(network) & mask == u128::from(address) & mask
+        }
+        _ => false,
+    }
+}
+
+async fn release_linux_network_lease(lease: NetworkLease) -> Result<(), NetworkControlError> {
+    if !lease.active || lease.operations.is_empty() {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let handle = RouteHandle::new()
+            .map_err(|err| network_control_io_error("initialize route handle", err))?;
+        let existing = handle
+            .list()
+            .await
+            .map_err(|err| network_control_io_error("list routes", err))?;
+        let mut errors = Vec::new();
+        for operation in lease.operations.iter().rev() {
+            let route = match operation {
+                NetworkOperation::AddRoute {
+                    destination,
+                    gateway,
+                    interface,
+                    metric,
+                } => route_from_add_route(*destination, *gateway, interface, *metric)?,
+                NetworkOperation::PreserveRoute { destination } => {
+                    preserved_route(*destination, &existing)?
+                }
+                NetworkOperation::SetInterfaceDns { .. }
+                | NetworkOperation::SetPlatformHttpProxy(_) => {
+                    if let Err(err) = undo_linux_non_route_operation(operation) {
+                        errors.push(err.message);
+                    }
+                    continue;
+                }
+            };
+            if let Err(err) = handle.delete(&route).await {
+                errors.push(err.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(NetworkControlError::new(format!(
+                "release Linux network lease {} failed: {}",
+                lease.id,
+                errors.join("; ")
+            )))
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(NetworkControlError::new(network_control_status_message()))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_non_route_operation(
+    operation: &NetworkOperation,
+) -> Result<(), NetworkControlError> {
+    match operation {
+        NetworkOperation::SetInterfaceDns { interface, servers } => {
+            let interface = interface_arg(interface);
+            let server_args = servers
+                .iter()
+                .map(|server| std_ip_address(*server).to_string())
+                .collect::<Vec<_>>();
+            let mut args = vec!["dns".to_string(), interface];
+            args.extend(server_args);
+            run_linux_command("resolvectl", &args)
+        }
+        NetworkOperation::SetPlatformHttpProxy(proxy) => {
+            let host = proxy.listen.host.to_string();
+            run_linux_command(
+                "gsettings",
+                &[
+                    "set".into(),
+                    "org.gnome.system.proxy".into(),
+                    "mode".into(),
+                    "manual".into(),
+                ],
+            )?;
+            for scheme in ["http", "https"] {
+                let base = format!("org.gnome.system.proxy.{scheme}");
+                run_linux_command(
+                    "gsettings",
+                    &["set".into(), base.clone(), "host".into(), host.clone()],
+                )?;
+                run_linux_command(
+                    "gsettings",
+                    &[
+                        "set".into(),
+                        base,
+                        "port".into(),
+                        proxy.listen.port.to_string(),
+                    ],
+                )?;
+            }
+            Ok(())
+        }
+        other => Err(NetworkControlError::new(format!(
+            "not a Linux non-route operation: {other:?}"
+        ))),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn undo_linux_non_route_operation(operation: &NetworkOperation) -> Result<(), NetworkControlError> {
+    match operation {
+        NetworkOperation::SetInterfaceDns { interface, .. } => {
+            run_linux_command("resolvectl", &["revert".into(), interface_arg(interface)])
+        }
+        NetworkOperation::SetPlatformHttpProxy(_) => run_linux_command(
+            "gsettings",
+            &[
+                "set".into(),
+                "org.gnome.system.proxy".into(),
+                "mode".into(),
+                "none".into(),
+            ],
+        ),
+        other => Err(NetworkControlError::new(format!(
+            "not a Linux non-route operation: {other:?}"
+        ))),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn interface_arg(interface: &InterfaceRef) -> String {
+    match interface {
+        InterfaceRef::Index(index) => index.to_string(),
+        InterfaceRef::Name(name) => name.clone(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_command(program: &str, args: &[String]) -> Result<(), NetworkControlError> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|err| NetworkControlError::new(format!("start {program}: {err}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(NetworkControlError::new(format!(
+            "{program} failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -292,17 +557,6 @@ async fn rollback_routes(handle: &RouteHandle, routes: &[Route]) {
 }
 
 #[cfg(target_os = "linux")]
-fn unsupported_network_operation(
-    reason: rustbox_host_api::NetworkControlReason,
-    operation_count: usize,
-    operation: &NetworkOperation,
-) -> NetworkControlError {
-    NetworkControlError::new(format!(
-        "{}; reason={reason:?} operations={operation_count} planned operation={operation:?}",
-        network_control_status_message()
-    ))
-}
-
 #[cfg(target_os = "linux")]
 fn network_control_io_error(action: &str, err: std::io::Error) -> NetworkControlError {
     NetworkControlError::new(format!("{action} failed: {err}"))
@@ -561,9 +815,6 @@ mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
     use rustbox_host_api::InterfaceRef;
-    use rustbox_host_api::{
-        NetworkControlReason, NetworkOperation, RollbackPolicy, SocketProtectionHandle,
-    };
     #[cfg(target_os = "linux")]
     use rustbox_types::{IpAddress, IpCidr};
 
@@ -577,7 +828,7 @@ mod tests {
             assert_eq!(matrix.packet_device, CapabilitySupport::Supported);
             assert_eq!(matrix.route_control, CapabilitySupport::Limited);
             assert_eq!(matrix.transparent_proxy, CapabilitySupport::Limited);
-            assert_eq!(matrix.process_lookup, CapabilitySupport::Planned);
+            assert_eq!(matrix.process_lookup, CapabilitySupport::Supported);
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -608,23 +859,6 @@ mod tests {
     }
 
     #[test]
-    fn reports_typed_network_control_request_in_error() {
-        let platform = LinuxPlatform::new();
-        let transaction = NetworkTransaction {
-            reason: NetworkControlReason::TransparentProxy,
-            operations: vec![NetworkOperation::ProtectSocket {
-                handle: SocketProtectionHandle(7),
-            }],
-            rollback_policy: RollbackPolicy::Required,
-        };
-
-        let error = block_on_ready(platform.apply(transaction)).expect_err("planned error");
-
-        assert!(error.message.contains("reason=TransparentProxy"));
-        assert!(error.message.contains("operations=1"));
-    }
-
-    #[test]
     #[cfg(target_os = "linux")]
     fn converts_add_route_operation_to_net_route() {
         let route = route_from_add_route(
@@ -648,13 +882,28 @@ mod tests {
         assert_eq!(route.metric, Some(5));
     }
 
-    fn block_on_ready<T>(future: impl core::future::Future<Output = T>) -> T {
-        let waker = std::task::Waker::noop();
-        let mut cx = std::task::Context::from_waker(waker);
-        let mut future = core::pin::pin!(future);
-        match future.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(value) => value,
-            std::task::Poll::Pending => panic!("future unexpectedly pending"),
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn opens_and_closes_real_tun_when_e2e_is_enabled() {
+        if std::env::var_os("RUSTBOX_TUN_E2E").is_none() {
+            return;
         }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build runtime");
+        let lease = runtime
+            .block_on(LinuxPlatform::new().open(PacketDeviceConfig {
+                name: Some(format!("rtun{}", std::process::id() % 10000)),
+                addresses: vec![
+                    IpCidr::new(IpAddress::V4([198, 18, 0, 1]), 30).expect("test CIDR"),
+                ],
+                mtu: Some(1500),
+                route_mode: rustbox_host_api::RouteMode::Manual,
+                dns_mode: rustbox_host_api::TunDnsMode::None,
+            }))
+            .expect("open real Linux TUN device; runner must have /dev/net/tun and CAP_NET_ADMIN");
+        assert!(!lease.info.name.is_empty());
+        assert_eq!(lease.info.addresses.len(), 1);
+        drop(lease);
     }
 }
