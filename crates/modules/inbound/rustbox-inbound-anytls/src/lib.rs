@@ -19,7 +19,7 @@ use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network};
 use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -484,7 +484,7 @@ fn server_tls_config(
         })?;
     let mut tls = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certificates, PrivateKeyDer::from(key))
+        .with_single_cert(certificates, key)
         .map_err(|error| AnyTlsInboundConfigError {
             message: format!("build AnyTLS server TLS config: {error}"),
         })?;

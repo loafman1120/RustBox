@@ -305,7 +305,7 @@ mod tests {
     fn address_encode_domain_too_long() {
         let long = "a".repeat(256);
         let meta = Metadata {
-            host: long.into(),
+            host: long,
             dst_port: 80,
             ..Default::default()
         };
@@ -337,7 +337,7 @@ mod tests {
     fn address_encode_domain_max_255_ok() {
         let domain = "a".repeat(255);
         let meta = Metadata {
-            host: domain.into(),
+            host: domain,
             dst_port: 80,
             ..Default::default()
         };
@@ -378,7 +378,6 @@ mod tests {
             host: "example.com".into(),
             dst_ip: Some(IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4))),
             dst_port: 443,
-            ..Default::default()
         };
         let mut buf = Vec::new();
         encode_address(&mut buf, &meta).unwrap();
