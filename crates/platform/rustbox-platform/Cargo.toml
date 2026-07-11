@@ -1,0 +1,20 @@
+[package]
+name = "rustbox-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-host-api = { path = "../../host/rustbox-host-api" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustbox-platform-linux = { path = "../rustbox-platform-linux" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rustbox-platform-windows = { path = "../rustbox-platform-windows" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rustbox-platform-macos = { path = "../rustbox-platform-macos" }
+
+[lints]
+workspace = true

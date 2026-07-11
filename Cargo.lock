@@ -2683,9 +2683,7 @@ dependencies = [
  "rustbox-outbound-trojan",
  "rustbox-outbound-vless",
  "rustbox-outbound-vmess",
- "rustbox-platform-linux",
- "rustbox-platform-macos",
- "rustbox-platform-windows",
+ "rustbox-platform",
  "rustbox-route",
  "rustbox-stack",
  "rustbox-types",
@@ -3029,6 +3027,16 @@ dependencies = [
  "tracing",
  "uuid",
  "webpki-roots",
+]
+
+[[package]]
+name = "rustbox-platform"
+version = "0.1.0"
+dependencies = [
+ "rustbox-host-api",
+ "rustbox-platform-linux",
+ "rustbox-platform-macos",
+ "rustbox-platform-windows",
 ]
 
 [[package]]

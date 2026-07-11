@@ -24,9 +24,7 @@ rustbox-outbound-trojan = { path = "../modules/outbound/rustbox-outbound-trojan"
 rustbox-outbound-vless = { path = "../modules/outbound/rustbox-outbound-vless" }
 rustbox-outbound-vmess = { path = "../modules/outbound/rustbox-outbound-vmess" }
 rustbox-observability = { path = "../rustbox-observability" }
-rustbox-platform-linux = { path = "../platform/rustbox-platform-linux" }
-rustbox-platform-windows = { path = "../platform/rustbox-platform-windows" }
-rustbox-platform-macos = { path = "../platform/rustbox-platform-macos" }
+rustbox-platform = { path = "../platform/rustbox-platform" }
 rustbox-route = { path = "../kernel/rustbox-route" }
 rustbox-stack = { path = "../modules/stack/rustbox-stack" }
 rustbox-types = { path = "../foundation/rustbox-types" }

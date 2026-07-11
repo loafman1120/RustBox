@@ -905,7 +905,11 @@ fn logical_mode(mode: &LogicalModeConfig) -> LogicalMode {
 }
 
 fn transparent_proxy_provider() -> Result<Arc<dyn TransparentProxyProvider>, ComposeError> {
-    Ok(Arc::new(rustbox_platform_linux::LinuxPlatform::new()))
+    rustbox_platform::transparent_proxy_provider().ok_or_else(|| {
+        ComposeError::Config(ConfigError::new(
+            "transparent inbound requires platform transparent-proxy capabilities",
+        ))
+    })
 }
 
 type TunPlatformCapabilities = (
@@ -914,30 +918,11 @@ type TunPlatformCapabilities = (
 );
 
 fn tun_platform_capabilities() -> Result<TunPlatformCapabilities, ComposeError> {
-    #[cfg(target_os = "linux")]
-    {
-        let platform = Arc::new(rustbox_platform_linux::LinuxPlatform::new());
-        Ok((platform.clone(), platform))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let platform = Arc::new(rustbox_platform_windows::WindowsPlatform::new());
-        Ok((platform.clone(), platform))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let platform = Arc::new(rustbox_platform_macos::MacosPlatform::new());
-        Ok((platform.clone(), platform))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        Err(ComposeError::Config(ConfigError::new(
-            "tun inbound requires Linux or Windows packet-device platform capabilities",
-        )))
-    }
+    rustbox_platform::tun_capabilities().ok_or_else(|| {
+        ComposeError::Config(ConfigError::new(
+            "tun inbound requires platform packet-device capabilities",
+        ))
+    })
 }
 
 #[cfg(test)]
