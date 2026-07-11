@@ -809,7 +809,7 @@ fn io_error(err: std::io::Error) -> IoError {
 mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
-    use rustbox_host_api::InterfaceRef;
+    use rustbox_host_api::{InterfaceRef, NetworkControlReason};
     #[cfg(target_os = "linux")]
     use rustbox_types::{IpAddress, IpCidr};
 
@@ -900,5 +900,13 @@ mod tests {
         assert!(!lease.info.name.is_empty());
         assert_eq!(lease.info.addresses.len(), 1);
         drop(lease);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn block_on_ready<T>(future: impl core::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build runtime")
+            .block_on(future)
     }
 }

@@ -1245,15 +1245,11 @@ mod tests {
 
         let result = RuntimeGraphBuilder::new().compose_source(source);
 
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        {
+        if rustbox_platform::SUPPORTS_TUN {
             let runtime = result.expect("compose tun inbound");
             assert_eq!(runtime.engine().outbound_count(), 1);
             assert_eq!(runtime.service_count(), 1);
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        {
+        } else {
             let error = match result {
                 Ok(_) => panic!("expected unsupported tun platform"),
                 Err(error) => error,

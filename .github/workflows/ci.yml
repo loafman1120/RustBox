@@ -179,7 +179,7 @@ jobs:
       - name: Open and close a real Linux TUN device
         env:
           RUSTBOX_TUN_E2E: "1"
-        run: sudo -E cargo test --locked -p rustbox-platform-linux tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
+        run: sudo -E "$(command -v cargo)" test --locked -p rustbox-platform-linux tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
 
   # ── E2E outbound: RustBox → upstream proxy → target ────────────
   #     curl → rustbox inbound → $outbound → sing-box → target
