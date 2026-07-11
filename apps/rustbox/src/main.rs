@@ -99,12 +99,11 @@ struct ControlArgs {
     #[arg(long, value_name = "ADDR", global = true)]
     control_grpc: Option<SocketAddr>,
 
-    #[arg(long, value_name = "TOKEN", global = true)]
+    #[arg(long, value_name = "TOKEN", global = true, requires = "control_grpc")]
     control_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
-#[command(rename_all = "kebab-case")]
 enum CliCommand {
     /// Start from a TOML configuration file.
     Run {
@@ -136,10 +135,6 @@ fn print_platform_capabilities() {
 }
 
 fn control_api_config_from_cli(args: &ControlArgs) -> Result<Option<ControlApiConfig>, String> {
-    if args.control_grpc.is_none() && args.control_token.is_some() {
-        return Err("`--control-token` requires `--control-grpc <ADDR>`".to_string());
-    }
-
     let Some(listen) = args.control_grpc else {
         return Ok(None);
     };
