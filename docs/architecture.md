@@ -85,7 +85,7 @@ TUN 路径为 `PacketDevice → packet-to-flow stack → dispatcher`；透明代
 
 ## 观测与控制
 
-kernel / modules 只产生结构化事件；sink 负责 console、file、recording、平台日志或远程导出。慢 sink 在自身内部缓冲，不能向 relay 施加背压。
+kernel / modules 产生结构化事件，协议与应用诊断统一使用 `tracing`；应用入口安装 `tracing-subscriber`，并通过 `RUSTBOX_LOG` 配置过滤。sink 继续负责业务事件的 console、file、recording、平台日志或远程导出。慢 sink 在自身内部缓冲，不能向 relay 施加背压。
 
 `ObservabilityStore` 提供有界事件、指标和连接快照；`rustbox-control-api` 暴露基于 tonic 的 gRPC，命令集包括 `Reload` / `Stop` / `ReplaceRouteTable` / `EnableOutbound` / `DisableOutbound`，并支持 `Snapshot` / `QueryEvents` / `QueryMetrics` / `QueryConnections` 等只读接口。非 loopback 控制端点必须启用 token，凭证不得进入事件。
 

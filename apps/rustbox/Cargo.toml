@@ -11,8 +11,10 @@ rustbox = { path = "../../crates/rustbox" }
 rustbox-control = { path = "../../crates/control/rustbox-control" }
 rustbox-control-api = { path = "../../crates/control/rustbox-control-api" }
 rustbox-observability = { path = "../../crates/rustbox-observability" }
-rustbox-platform-linux = { path = "../../crates/platform/rustbox-platform-linux" }
+rustbox-platform = { path = "../../crates/platform/rustbox-platform" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lints]
 workspace = true

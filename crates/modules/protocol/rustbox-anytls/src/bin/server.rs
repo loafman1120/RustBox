@@ -38,7 +38,7 @@ struct Args {
     key: Option<PathBuf>,
 
     #[arg(long, default_value = "info", help = "Log level (off, error, warn, info, debug, trace)")]
-    log: log::LevelFilter,
+    log: tracing::LevelFilter,
 }
 
 struct StreamReader {
@@ -88,10 +88,12 @@ impl tokio::io::AsyncRead for StreamReader {
 async fn main() -> Result<(), BoxError> {
     let args = Args::parse();
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(args.log.to_string())).init();
+    tracing_subscriber::fmt()
+        .with_max_level(args.log)
+        .init();
 
     if args.password.is_empty() {
-        log::error!("Please set password");
+        tracing::error!("Please set password");
         std::process::exit(1);
     }
 
@@ -101,15 +103,15 @@ async fn main() -> Result<(), BoxError> {
     if let Some(padding_file) = args.padding_scheme {
         let content = tokio::fs::read(&padding_file).await?;
         if DefaultPaddingFactory::update(&content).await {
-            log::info!("Loaded padding scheme file: {}", padding_file.display());
+            tracing::info!("Loaded padding scheme file: {}", padding_file.display());
         } else {
-            log::error!("Wrong format padding scheme file: {}", padding_file.display());
+            tracing::error!("Wrong format padding scheme file: {}", padding_file.display());
             std::process::exit(1);
         }
     }
 
-    log::info!("[Server] {}", PROGRAM_VERSION_NAME);
-    log::info!("[Server] Listening TCP {}", args.listen);
+    tracing::info!("[Server] {}", PROGRAM_VERSION_NAME);
+    tracing::info!("[Server] Listening TCP {}", args.listen);
 
     let listener = TcpListener::bind(&args.listen).await?;
 
@@ -119,7 +121,7 @@ async fn main() -> Result<(), BoxError> {
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        log::debug!("Accepted connection from: {}", addr);
+        tracing::debug!("Accepted connection from: {}", addr);
 
         let _ = stream.set_nodelay(true);
         let sock_ref = socket2::SockRef::from(&stream);
@@ -133,7 +135,7 @@ async fn main() -> Result<(), BoxError> {
 
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, acceptor, password_sha256.to_vec(), padding).await {
-                log::debug!("Connection error: {}", e);
+                tracing::debug!("Connection error: {}", e);
             }
         });
     }
@@ -196,10 +198,10 @@ async fn handle_connection(
 
     let received_password = &auth_data[..32];
     if received_password != password_sha256.as_slice() {
-        log::debug!("Authentication failed for {}", tls_stream.get_ref().0.peer_addr()?);
+        tracing::debug!("Authentication failed for {}", tls_stream.get_ref().0.peer_addr()?);
         return Ok(());
     }
-    log::debug!("Authentication successful for {}", tls_stream.get_ref().0.peer_addr()?);
+    tracing::debug!("Authentication successful for {}", tls_stream.get_ref().0.peer_addr()?);
 
     let padding_len = u16::from_be_bytes([auth_data[32], auth_data[33]]);
     if padding_len > 0 {
@@ -214,7 +216,7 @@ async fn handle_connection(
             // Handle new stream
             tokio::spawn(async move {
                 if let Err(e) = handle_stream(stream).await {
-                    log::debug!("Stream error: {}", e);
+                    tracing::debug!("Stream error: {}", e);
                 }
             });
         }),
@@ -227,7 +229,7 @@ async fn handle_connection(
 }
 
 async fn handle_stream(stream: Arc<anytls::proxy::session::Stream>) -> Result<(), BoxError> {
-    log::debug!("Handling new stream: {}", stream.id());
+    tracing::debug!("Handling new stream: {}", stream.id());
     let mut reader = StreamReader {
         inner: stream.clone(),
         read_fut: None,
@@ -275,7 +277,7 @@ async fn handle_uot_datagram_stream(stream: Arc<anytls::proxy::session::Stream>,
     .await;
 
     if let Err(err) = &result {
-        log::warn!("UOT relay error for stream {stream_id}: {err}");
+        tracing::warn!("UOT relay error for stream {stream_id}: {err}");
     }
 
     let _ = stream.close().await;
@@ -291,7 +293,7 @@ async fn handle_uot_connected_stream(
 
     let fixed_destination = request.destination.to_string();
     if let Err(err) = udp_socket.connect(&fixed_destination).await {
-        log::debug!("Failed to connect UDP socket to {fixed_destination}: {err}");
+        tracing::debug!("Failed to connect UDP socket to {fixed_destination}: {err}");
         stream.handshake_failure(&err.to_string()).await?;
         stream.close().await?;
         return Err(err.into());
@@ -320,7 +322,7 @@ async fn handle_uot_connected_stream(
     .await;
 
     if let Err(err) = &result {
-        log::warn!("Connected UOT relay error for stream {stream_id}: {err}");
+        tracing::warn!("Connected UOT relay error for stream {stream_id}: {err}");
     }
 
     let _ = stream.close().await;
@@ -328,11 +330,11 @@ async fn handle_uot_connected_stream(
 }
 
 async fn handle_tcp_stream(stream: Arc<anytls::proxy::session::Stream>, destination: String) -> Result<(), BoxError> {
-    log::debug!("Connecting to {}", destination);
+    tracing::debug!("Connecting to {}", destination);
     let mut outbound = match TcpStream::connect(&destination).await {
         Ok(s) => s,
         Err(e) => {
-            log::debug!("Failed to connect to {destination}: {e}");
+            tracing::debug!("Failed to connect to {destination}: {e}");
             stream.handshake_failure(&e.to_string()).await?;
             stream.close().await?;
             return Err(e.into());
@@ -343,7 +345,7 @@ async fn handle_tcp_stream(stream: Arc<anytls::proxy::session::Stream>, destinat
     stream.handshake_success().await?;
 
     let stream_id = stream.id();
-    log::debug!("Starting relay for stream {stream_id} to destination {destination}");
+    tracing::debug!("Starting relay for stream {stream_id} to destination {destination}");
     // Relay data
     let (stream_read, stream_write) = stream.split_ref();
     let (mut outbound_read, mut outbound_write) = outbound.split();
@@ -368,10 +370,10 @@ async fn handle_tcp_stream(stream: Arc<anytls::proxy::session::Stream>, destinat
             }
         };
         if let Err(e) = res {
-            log::warn!("Error relaying from stream {stream_id} to outbound: {e}");
+            tracing::warn!("Error relaying from stream {stream_id} to outbound: {e}");
         }
         outbound_write.shutdown().await?;
-        log::debug!("Stream {stream_id} s2o finished (client->outbound)");
+        tracing::debug!("Stream {stream_id} s2o finished (client->outbound)");
         Ok::<(), std::io::Error>(())
     };
 
@@ -390,19 +392,18 @@ async fn handle_tcp_stream(stream: Arc<anytls::proxy::session::Stream>, destinat
             }
         };
         if let Err(e) = res {
-            log::warn!("Error relaying from outbound to stream {stream_id}: {e}");
+            tracing::warn!("Error relaying from outbound to stream {stream_id}: {e}");
         }
         stream_write.close().await?;
-        log::debug!("Stream {stream_id} o2s finished (outbound->client)");
+        tracing::debug!("Stream {stream_id} o2s finished (outbound->client)");
         Ok::<(), std::io::Error>(())
     };
 
     match tokio::join!(s2o, o2s) {
-        (Ok(_), Ok(_)) => log::debug!("Relay finished for stream {stream_id}"),
-        (Err(e), _) | (_, Err(e)) => log::warn!("Relay error for stream {stream_id}: {e}"),
+        (Ok(_), Ok(_)) => tracing::debug!("Relay finished for stream {stream_id}"),
+        (Err(e), _) | (_, Err(e)) => tracing::warn!("Relay error for stream {stream_id}: {e}"),
     }
 
     Ok(())
 }
-
 

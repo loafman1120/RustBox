@@ -131,7 +131,7 @@ impl Session {
                 let frame_len = HEADER_OVERHEAD_SIZE + frame.data.len();
                 temp_buf.drain(0..frame_len);
 
-                log::trace!(
+                tracing::trace!(
                     "Session received frame: cmd={}, sid={}, len={}",
                     frame.cmd,
                     frame.sid,
@@ -149,7 +149,7 @@ impl Session {
 
     pub async fn write_frame(&self, frame: Frame) -> std::io::Result<usize> {
         let len = frame.data.len();
-        log::debug!(
+        tracing::debug!(
             "Session sending frame: cmd={}, sid={}, len={}",
             frame.cmd,
             frame.sid,
@@ -166,7 +166,7 @@ impl Session {
 
     pub async fn write_frame_sync(&self, frame: Frame) -> std::io::Result<usize> {
         let len = frame.data.len();
-        log::debug!(
+        tracing::debug!(
             "Session sending frame sync: cmd={}, sid={}, len={}",
             frame.cmd,
             frame.sid,
@@ -307,7 +307,7 @@ impl ProtocolHost for Session {
     async fn ensure_incoming_stream(&self, sid: u32) -> std::io::Result<()> {
         let mut streams = self.streams.lock().await;
         if let std::collections::hash_map::Entry::Vacant(entry) = streams.entry(sid) {
-            log::debug!("Session received SYN for stream {sid}");
+            tracing::debug!("Session received SYN for stream {sid}");
             let stream = Arc::new(self.new_stream(sid));
             entry.insert(stream.clone());
 
@@ -319,7 +319,7 @@ impl ProtocolHost for Session {
     }
 
     async fn close_local_stream(&self, sid: u32) -> std::io::Result<()> {
-        log::debug!("Session received FIN for stream {}", sid);
+        tracing::debug!("Session received FIN for stream {}", sid);
         let stream = {
             let streams = self.streams.lock().await;
             streams.get(&sid).cloned()

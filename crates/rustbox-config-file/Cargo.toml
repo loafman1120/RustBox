@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 rustbox-config = { path = "../control/rustbox-config" }
 rustbox-types = { path = "../foundation/rustbox-types" }
+rustbox-observability = { path = "../rustbox-observability" }
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"
 toml = "0.8"

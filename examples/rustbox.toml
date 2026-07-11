@@ -2,7 +2,7 @@ schema_version = 1
 
 [observability]
 level = "info"
-# Optional: append structured runtime logs to a file.
+# output = "console-and-file"
 # file = "target/rustbox.log"
 
 [[inbounds]]

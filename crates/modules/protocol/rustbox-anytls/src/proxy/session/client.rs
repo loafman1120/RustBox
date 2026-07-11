@@ -61,7 +61,7 @@ impl Client {
             match session.open_stream().await {
                 Ok(stream) => return Ok(stream),
                 Err(error) => {
-                    log::warn!("Failed to open stream on session {seq}: {error}, retrying...");
+                    tracing::warn!("Failed to open stream on session {seq}: {error}, retrying...");
                     let _ = session.close().await;
                     last_error = Some(error);
                 }
@@ -97,7 +97,7 @@ impl Client {
         tokio::spawn(async move {
             session.wait_for_idle().await;
             if !session.is_closed().await {
-                log::debug!("Session {seq} is now idle, adding back to idle pool");
+                tracing::debug!("Session {seq} is now idle, adding back to idle pool");
                 idle_sessions
                     .lock()
                     .await
@@ -134,7 +134,7 @@ impl Client {
 
         tokio::spawn(async move {
             let result = session_clone.run().await;
-            log::debug!("Session {seq} ended: {result:?}");
+            tracing::debug!("Session {seq} ended: {result:?}");
             sessions.lock().await.swap_remove(&seq);
         });
 

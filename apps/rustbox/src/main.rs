@@ -1,6 +1,6 @@
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use rustbox::{RustBox, RustBoxOptions};
-use rustbox_config_file::load_toml_file;
+use rustbox_config_file::{ObservabilityOutput, load_toml_file};
 use rustbox_control::EngineCommand;
 use rustbox_control_api::{AuthPolicy, ControlApiConfig};
 use rustbox_observability::{
@@ -14,6 +14,7 @@ use std::sync::Arc;
 /// 应用入口只负责选择配置来源、建立组合根、启动和响应 Ctrl-C。
 #[tokio::main]
 async fn main() {
+    init_tracing();
     let cli = Cli::parse();
     let control_api_config = control_api_config_from_cli(&cli.control)
         .unwrap_or_else(|err| Cli::command().error(ErrorKind::ValueValidation, err).exit());
@@ -55,10 +56,10 @@ async fn main() {
     runtime.start().await.expect("start configured proxy graph");
 
     if let Some(listen) = runtime.control_grpc_addr() {
-        println!("RustBox control gRPC listening on {listen}");
+        tracing::info!(%listen, "RustBox control gRPC listening");
     }
 
-    println!("RustBox {listen}");
+    tracing::info!(message = listen, "RustBox started");
     let control_enabled = runtime.control_grpc_addr().is_some();
     let stop_reason = tokio::select! {
         result = tokio::signal::ctrl_c() => {
@@ -74,8 +75,17 @@ async fn main() {
         }
     };
 
-    eprintln!("RustBox stopping after {stop_reason}");
+    tracing::info!(reason = stop_reason, "RustBox stopping");
     runtime.stop().await.expect("stop configured proxy graph");
+}
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("RUSTBOX_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 #[derive(Debug, Parser)]
@@ -125,13 +135,13 @@ struct RuntimeObservability {
 }
 
 fn print_platform_capabilities() {
-    let linux = rustbox_platform_linux::LinuxPlatform::new().capability_matrix();
-    println!("Linux platform capabilities:");
-    println!("  tcp_udp: {:?}", linux.tcp_udp);
-    println!("  packet_device: {:?}", linux.packet_device);
-    println!("  route_control: {:?}", linux.route_control);
-    println!("  transparent_proxy: {:?}", linux.transparent_proxy);
-    println!("  process_lookup: {:?}", linux.process_lookup);
+    let capabilities = rustbox_platform::current_capabilities();
+    println!("{} platform capabilities:", capabilities.platform);
+    println!("  tcp_udp: {:?}", capabilities.tcp_udp);
+    println!("  packet_device: {:?}", capabilities.packet_device);
+    println!("  route_control: {:?}", capabilities.route_control);
+    println!("  transparent_proxy: {:?}", capabilities.transparent_proxy);
+    println!("  process_lookup: {:?}", capabilities.process_lookup);
 }
 
 fn control_api_config_from_cli(args: &ControlArgs) -> Result<Option<ControlApiConfig>, String> {
@@ -144,43 +154,46 @@ fn control_api_config_from_cli(args: &ControlArgs) -> Result<Option<ControlApiCo
         .or_else(|| std::env::var("RUSTBOX_CONTROL_TOKEN").ok())
         .map(AuthPolicy::bearer_token)
         .unwrap_or_else(AuthPolicy::disabled);
-    let config = ControlApiConfig {
+    Ok(Some(ControlApiConfig {
         listen,
         auth,
         ..ControlApiConfig::default()
-    };
-    config.validate().map_err(|err| err.message)?;
-    Ok(Some(config))
+    }))
 }
 
 fn observability_from_file(
     config: &rustbox_config_file::FileConfig,
 ) -> Result<RuntimeObservability, String> {
-    let level = config
-        .observability
-        .as_ref()
-        .and_then(|observability| observability.level.as_deref())
-        .and_then(LevelFilter::parse)
-        .unwrap_or_else(LevelFilter::from_env);
-    let file = config
-        .observability
-        .as_ref()
-        .and_then(|observability| observability.file.as_deref());
-    observability_with_outputs(level, file)
+    let Some(config) = config.observability.as_ref() else {
+        return observability_with_outputs(LevelFilter::from_env(), &ObservabilityOutput::Console);
+    };
+    observability_with_outputs(
+        config.level.unwrap_or_else(LevelFilter::from_env),
+        &config.output,
+    )
 }
 
 fn observability_with_outputs(
     level: LevelFilter,
-    file: Option<&str>,
+    output: &ObservabilityOutput,
 ) -> Result<RuntimeObservability, String> {
     let store = Arc::new(ObservabilityStore::default());
-    let mut sink = CompositeObservabilitySink::new()
-        .with_sink(Arc::new(ConsoleObservabilitySink::stderr(level)))
-        .with_sink(store.clone());
+    let mut sink = CompositeObservabilitySink::new().with_sink(store.clone());
 
-    if let Some(path) = file {
-        let file_sink = FileObservabilitySink::append(path, level)
-            .map_err(|err| format!("failed to open observability file `{path}`: {err}"))?;
+    if matches!(
+        output,
+        ObservabilityOutput::Console | ObservabilityOutput::ConsoleAndFile(_)
+    ) {
+        sink = sink.with_sink(Arc::new(ConsoleObservabilitySink::stderr(level)));
+    }
+
+    if let ObservabilityOutput::File(path) | ObservabilityOutput::ConsoleAndFile(path) = output {
+        let file_sink = FileObservabilitySink::append(path, level).map_err(|err| {
+            format!(
+                "failed to open observability file `{}`: {err}",
+                path.display()
+            )
+        })?;
         sink = sink.with_sink(Arc::new(file_sink));
     }
 

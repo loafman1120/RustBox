@@ -34,12 +34,18 @@ Stop with `Ctrl+C`.
 
 ## Logging
 
+RustBox uses `tracing` for structured application and protocol logs. Set
+`RUSTBOX_LOG` to a level or a `tracing-subscriber` filter directive:
+
 ```powershell
 $env:RUSTBOX_LOG = "debug"
 cargo run -p rustbox-app -- http-proxy
 ```
 
 Levels: `trace`, `debug`, `info`, `warn`, `error`, `off`.
+
+Crate-specific filters are also supported, for example
+`RUSTBOX_LOG=rustbox_anytls=debug,rustbox_app=info`.
 
 ## Control gRPC
 

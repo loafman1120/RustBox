@@ -111,7 +111,7 @@ impl Engine {
                     });
                 }
             }
-            _ => log::warn!(
+            _ => tracing::warn!(
                 "Received unexpected frame: cmd={}, sid={}, data_len={}",
                 frame.cmd,
                 frame.sid,

@@ -49,13 +49,13 @@ impl Stream {
     pub async fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.pipe_reader.read(buf).await?;
         if n > 0 {
-            log::trace!("Stream {} read {} bytes", self.id, n);
+            tracing::trace!("Stream {} read {} bytes", self.id, n);
         }
         Ok(n)
     }
 
     pub async fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
-        log::trace!("Stream {} write {} bytes", self.id, buf.len());
+        tracing::trace!("Stream {} write {} bytes", self.id, buf.len());
         let frame = Frame::with_data(Command::Psh, self.id, bytes::Bytes::copy_from_slice(buf));
         match self.frame_tx.send((frame, None)).await {
             Ok(_) => Ok(buf.len()),
@@ -71,7 +71,7 @@ impl Stream {
     }
 
     pub async fn close(&self) -> std::io::Result<()> {
-        log::debug!("Stream {} close requested", self.id);
+        tracing::debug!("Stream {} close requested", self.id);
         self.close_with_error(None).await
     }
 
@@ -126,7 +126,7 @@ impl Stream {
         let tx = self.frame_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = tx.send((frame, None)).await {
-                log::error!("Failed to send FIN frame: {e}");
+                tracing::error!("Failed to send FIN frame: {e}");
             }
         });
 

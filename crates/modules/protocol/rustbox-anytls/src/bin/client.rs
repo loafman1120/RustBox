@@ -41,7 +41,7 @@ struct Args {
     root_cert: Option<PathBuf>,
 
     #[arg(long, default_value = "info", help = "Log level (off, error, warn, info, debug, trace)")]
-    log: log::LevelFilter,
+    log: tracing::LevelFilter,
 }
 
 struct StreamReader {
@@ -97,17 +97,19 @@ impl AsyncRead for StreamReader {
 async fn main() -> Result<(), BoxError> {
     let args = Args::parse();
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(args.log.to_string())).init();
+    tracing_subscriber::fmt()
+        .with_max_level(args.log)
+        .init();
 
     if args.password.is_empty() {
-        log::error!("Please set password");
+        tracing::error!("Please set password");
         std::process::exit(1);
     }
 
     let password_sha256: [u8; 32] = Sha256::digest(args.password.as_bytes()).into();
 
-    log::info!("[Client] {}", PROGRAM_VERSION_NAME);
-    log::info!("[Client] SOCKS5 {} => {}", args.listen, args.server);
+    tracing::info!("[Client] {}", PROGRAM_VERSION_NAME);
+    tracing::info!("[Client] SOCKS5 {} => {}", args.listen, args.server);
 
     let server = Server::bind(args.listen, Arc::new(NoAuth)).await?;
 
@@ -137,7 +139,7 @@ async fn main() -> Result<(), BoxError> {
 
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, client).await {
-                log::error!("Connection error: {}", e);
+                tracing::error!("Connection error: {}", e);
             }
         });
     }
@@ -292,7 +294,7 @@ async fn handle_connection(incoming: IncomingConnection<()>, client: Arc<Client>
             handle_udp_associate(associate, client).await?;
         }
         ClientConnection::Bind(_, _) => {
-            log::warn!("Bind command is not supported");
+            tracing::warn!("Bind command is not supported");
             return Err("Bind command is not supported".into());
         }
     };
@@ -304,7 +306,7 @@ async fn s5_connect(
     target_addr: socks5_impl::protocol::Address,
     client: Arc<Client>,
 ) -> std::io::Result<()> {
-    log::info!("Connecting to target via proxy: {}", target_addr);
+    tracing::info!("Connecting to target via proxy: {}", target_addr);
 
     // 创建到代理服务器的连接
     let proxy_stream = client.create_stream().await?;
@@ -340,7 +342,7 @@ async fn s5_connect(
         }
         let _ = proxy_stream_write.close().await;
         if let Some(e) = err {
-            log::debug!("Client to Proxy error: {e}");
+            tracing::debug!("Client to Proxy error: {e}");
         }
     });
 
@@ -365,7 +367,7 @@ async fn s5_connect(
         }
         let _ = client_write.shutdown().await;
         if let Some(e) = err {
-            log::debug!("Proxy to Client error: {e}");
+            tracing::debug!("Proxy to Client error: {e}");
         }
     });
 
@@ -457,5 +459,4 @@ async fn handle_udp_associate(associate: UdpAssociate<associate::NeedReply>, cli
     let _ = reply_listener.shutdown().await;
     result
 }
-
 

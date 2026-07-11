@@ -357,11 +357,11 @@ impl Protocol for AnyTlsProtocol {
                 }
 
                 if let Err(error) = res {
-                    log::error!("Failed to write frame to peer: {error}");
+                    tracing::error!("Failed to write frame to peer: {error}");
                     break;
                 }
             }
-            log::debug!("Session writer task exiting (writer loop ended)");
+            tracing::debug!("Session writer task exiting (writer loop ended)");
         });
     }
 
@@ -392,13 +392,13 @@ impl Protocol for AnyTlsProtocol {
         if frame.cmd == Command::Alert {
             if !frame.data.is_empty() {
                 let message = String::from_utf8_lossy(frame.data.as_ref());
-                log::error!("Alert from server: {}", message);
+                tracing::error!("Alert from server: {}", message);
             }
             return Err(std::io::Error::other("Alert received"));
         }
 
         if should_warn {
-            log::warn!(
+            tracing::warn!(
                 "Session received unexpected command: cmd={}, sid={}, len={}",
                 frame.cmd,
                 frame.sid,
@@ -411,7 +411,7 @@ impl Protocol for AnyTlsProtocol {
     }
 
     async fn open_stream(&self, host: &dyn ProtocolHost, sid: u32) -> std::io::Result<()> {
-        log::debug!("Session opening new stream {sid}");
+        tracing::debug!("Session opening new stream {sid}");
 
         let actions = Engine::on_open_stream(&host.protocol_state(), sid);
         self.apply_actions(host, actions).await

@@ -11,6 +11,7 @@ use rustbox_config::{
     RouteRuleConfig, RouteRuleSetConfig, SourceConfig, TransparentInboundConfig,
     TransparentNetwork, TransparentRedirectMode, TunDnsMode, TunInboundConfig,
 };
+use rustbox_observability::LevelFilter;
 use rustbox_types::{Endpoint, IpCidr, Network, PortRange, RejectReason};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
@@ -34,10 +35,17 @@ pub struct FileConfig {
 /// 当前文件格式支持的观测配置，组合根会把它转成具体 sink。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileObservabilityConfig {
-    pub level: Option<String>,
-    pub file: Option<String>,
+    pub level: Option<LevelFilter>,
+    pub output: ObservabilityOutput,
     pub platform: Option<bool>,
     pub remote_endpoint: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObservabilityOutput {
+    Console,
+    File(PathBuf),
+    ConsoleAndFile(PathBuf),
 }
 
 /// 从磁盘读取 TOML 文件并解析为统一配置模型。
@@ -114,12 +122,8 @@ impl TomlConfigDocument {
             },
             observability: self
                 .observability
-                .map(|observability| FileObservabilityConfig {
-                    level: observability.level,
-                    file: observability.file,
-                    platform: observability.platform,
-                    remote_endpoint: observability.remote_endpoint,
-                }),
+                .map(TomlObservabilityConfig::into_file)
+                .transpose()?,
         })
     }
 }
@@ -128,9 +132,57 @@ impl TomlConfigDocument {
 #[serde(deny_unknown_fields)]
 struct TomlObservabilityConfig {
     level: Option<String>,
+    output: Option<TomlObservabilityOutput>,
     file: Option<String>,
     platform: Option<bool>,
     remote_endpoint: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlObservabilityOutput {
+    Console,
+    File,
+    ConsoleAndFile,
+}
+
+impl TomlObservabilityConfig {
+    fn into_file(self) -> Result<FileObservabilityConfig, ConfigFileError> {
+        let level = match self.level.as_deref() {
+            Some(value) => Some(LevelFilter::parse(value).ok_or_else(|| {
+                ConfigFileError::new(
+                    "invalid observability level; expected trace, debug, info, warn, error, or off",
+                )
+            })?),
+            None => None,
+        };
+        let output = match (
+            self.output.unwrap_or(TomlObservabilityOutput::Console),
+            self.file,
+        ) {
+            (TomlObservabilityOutput::Console, None) => ObservabilityOutput::Console,
+            (TomlObservabilityOutput::Console, Some(_)) => {
+                return Err(ConfigFileError::new(
+                    "observability.file requires output = \"file\" or \"console-and-file\"",
+                ));
+            }
+            (TomlObservabilityOutput::File, Some(path)) => ObservabilityOutput::File(path.into()),
+            (TomlObservabilityOutput::ConsoleAndFile, Some(path)) => {
+                ObservabilityOutput::ConsoleAndFile(path.into())
+            }
+            (TomlObservabilityOutput::File | TomlObservabilityOutput::ConsoleAndFile, None) => {
+                return Err(ConfigFileError::new(
+                    "observability output requires a file path",
+                ));
+            }
+        };
+        Ok(FileObservabilityConfig {
+            level,
+            output,
+            platform: self.platform,
+            remote_endpoint: self.remote_endpoint,
+        })
+    }
 }
 
 #[serde_as]
@@ -1351,11 +1403,16 @@ outbound = "direct"
         assert_eq!(
             config.observability.map(|value| (
                 value.level,
-                value.file,
+                value.output,
                 value.platform,
                 value.remote_endpoint
             )),
-            Some((Some("debug".to_string()), None, None, None))
+            Some((
+                Some(LevelFilter::Debug),
+                ObservabilityOutput::Console,
+                None,
+                None
+            ))
         );
     }
 
@@ -1367,6 +1424,7 @@ schema_version = 1
 
 [observability]
 level = "info"
+output = "console-and-file"
 file = "target/rustbox.log"
 platform = true
 remote_endpoint = "https://telemetry.example.test/rustbox"
@@ -1375,12 +1433,45 @@ remote_endpoint = "https://telemetry.example.test/rustbox"
         .expect("parse config");
 
         let observability = config.observability.expect("observability config");
-        assert_eq!(observability.file, Some("target/rustbox.log".to_string()));
+        assert_eq!(
+            observability.output,
+            ObservabilityOutput::ConsoleAndFile(PathBuf::from("target/rustbox.log"))
+        );
         assert_eq!(observability.platform, Some(true));
         assert_eq!(
             observability.remote_endpoint,
             Some("https://telemetry.example.test/rustbox".to_string())
         );
+    }
+
+    #[test]
+    fn rejects_invalid_observability_level() {
+        let error = parse_toml_str(
+            r#"
+schema_version = 1
+[observability]
+level = "loud"
+"#,
+        )
+        .expect_err("invalid level");
+        assert!(error.message.contains("invalid observability level"));
+    }
+
+    #[test]
+    fn validates_observability_output_and_file_as_one_choice() {
+        for input in [
+            r#"schema_version = 1
+[observability]
+output = "file"
+"#,
+            r#"schema_version = 1
+[observability]
+output = "console"
+file = "rustbox.log"
+"#,
+        ] {
+            assert!(parse_toml_str(input).is_err());
+        }
     }
 
     #[test]
