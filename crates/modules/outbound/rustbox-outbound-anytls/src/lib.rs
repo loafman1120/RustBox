@@ -7,8 +7,8 @@
 //!
 //! The selected crate version retains canonical stream creation (`cmdSYN`),
 //! monotonically increasing stream IDs, session pooling, and `cmdSYNACK`
-//! handling. See `docs/anytls-support.md` for the interoperability contract and
-//! upgrade gates.
+//! handling. Upgrade gates live in `scripts/ci/sing-box-smoke.ps1` and the
+//! interop contract is described in `docs/architecture.md#anytls`.
 
 use anytls::core::PaddingFactory;
 use anytls::proxy::session::{Client, Stream};
