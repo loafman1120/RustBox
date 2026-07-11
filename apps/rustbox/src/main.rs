@@ -1,15 +1,13 @@
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+mod observability;
+
+use observability::ObservabilityArgs;
 use rustbox::{RustBox, RustBoxOptions};
-use rustbox_config_file::{ObservabilityOutput, load_toml_file};
+use rustbox_config_file::load_toml_file;
 use rustbox_control::EngineCommand;
 use rustbox_control_api::{AuthPolicy, ControlApiConfig};
-use rustbox_observability::{
-    CompositeObservabilitySink, ConsoleObservabilitySink, FileObservabilitySink, LevelFilter,
-    ObservabilityStore,
-};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 /// 应用入口只负责选择配置来源、建立组合根、启动和响应 Ctrl-C。
 #[tokio::main]
@@ -41,8 +39,10 @@ async fn main() {
             let file_config = load_toml_file(&config).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", config.display(), err.message)
             });
-            let observability = observability_from_file(&file_config)
-                .unwrap_or_else(|err| panic!("configure observability: {err}"));
+            let observability = cli
+                .observability
+                .build(file_config.observability.as_ref())
+                .unwrap_or_else(|err| Cli::command().error(ErrorKind::ValueValidation, err).exit());
             let mut options = RustBoxOptions::default().with_observability(observability.sink);
             if let Some(config) = control_api_config {
                 options = options.with_control_grpc(config, observability.store);
@@ -100,6 +100,9 @@ struct Cli {
     #[command(flatten)]
     control: ControlArgs,
 
+    #[command(flatten)]
+    observability: ObservabilityArgs,
+
     #[command(subcommand)]
     command: CliCommand,
 }
@@ -129,11 +132,6 @@ enum CliCommand {
     PlatformCapabilities,
 }
 
-struct RuntimeObservability {
-    sink: Arc<CompositeObservabilitySink>,
-    store: Arc<ObservabilityStore>,
-}
-
 fn print_platform_capabilities() {
     let capabilities = rustbox_platform::current_capabilities();
     println!("{} platform capabilities:", capabilities.platform);
@@ -159,46 +157,4 @@ fn control_api_config_from_cli(args: &ControlArgs) -> Result<Option<ControlApiCo
         auth,
         ..ControlApiConfig::default()
     }))
-}
-
-fn observability_from_file(
-    config: &rustbox_config_file::FileConfig,
-) -> Result<RuntimeObservability, String> {
-    let Some(config) = config.observability.as_ref() else {
-        return observability_with_outputs(LevelFilter::from_env(), &ObservabilityOutput::Console);
-    };
-    observability_with_outputs(
-        config.level.unwrap_or_else(LevelFilter::from_env),
-        &config.output,
-    )
-}
-
-fn observability_with_outputs(
-    level: LevelFilter,
-    output: &ObservabilityOutput,
-) -> Result<RuntimeObservability, String> {
-    let store = Arc::new(ObservabilityStore::default());
-    let mut sink = CompositeObservabilitySink::new().with_sink(store.clone());
-
-    if matches!(
-        output,
-        ObservabilityOutput::Console | ObservabilityOutput::ConsoleAndFile(_)
-    ) {
-        sink = sink.with_sink(Arc::new(ConsoleObservabilitySink::stderr(level)));
-    }
-
-    if let ObservabilityOutput::File(path) | ObservabilityOutput::ConsoleAndFile(path) = output {
-        let file_sink = FileObservabilitySink::append(path, level).map_err(|err| {
-            format!(
-                "failed to open observability file `{}`: {err}",
-                path.display()
-            )
-        })?;
-        sink = sink.with_sink(Arc::new(file_sink));
-    }
-
-    Ok(RuntimeObservability {
-        sink: Arc::new(sink),
-        store,
-    })
 }

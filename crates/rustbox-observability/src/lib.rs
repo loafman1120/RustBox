@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -62,6 +63,52 @@ impl LevelFilter {
             Self::Off => false,
         }
     }
+}
+
+/// Concrete destinations selected by an application host.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObservabilityOutput {
+    Console,
+    File(PathBuf),
+    ConsoleAndFile(PathBuf),
+}
+
+/// Fully resolved observability settings, independent of their CLI, file, or
+/// environment source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservabilityConfig {
+    pub level: LevelFilter,
+    pub output: ObservabilityOutput,
+}
+
+impl ObservabilityConfig {
+    pub fn build(self) -> io::Result<RuntimeObservability> {
+        let store = Arc::new(ObservabilityStore::default());
+        let mut sink = CompositeObservabilitySink::new().with_sink(store.clone());
+
+        if matches!(
+            self.output,
+            ObservabilityOutput::Console | ObservabilityOutput::ConsoleAndFile(_)
+        ) {
+            sink = sink.with_sink(Arc::new(ConsoleObservabilitySink::stderr(self.level)));
+        }
+
+        if let ObservabilityOutput::File(path) | ObservabilityOutput::ConsoleAndFile(path) =
+            self.output
+        {
+            sink = sink.with_sink(Arc::new(FileObservabilitySink::append(path, self.level)?));
+        }
+
+        Ok(RuntimeObservability {
+            sink: Arc::new(sink),
+            store,
+        })
+    }
+}
+
+pub struct RuntimeObservability {
+    pub sink: Arc<CompositeObservabilitySink>,
+    pub store: Arc<ObservabilityStore>,
 }
 
 /// 控制台 sink，用于 CLI 默认观测输出。

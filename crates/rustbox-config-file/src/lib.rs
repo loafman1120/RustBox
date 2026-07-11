@@ -11,7 +11,7 @@ use rustbox_config::{
     RouteRuleConfig, RouteRuleSetConfig, SourceConfig, TransparentInboundConfig,
     TransparentNetwork, TransparentRedirectMode, TunDnsMode, TunInboundConfig,
 };
-use rustbox_observability::LevelFilter;
+use rustbox_observability::{LevelFilter, ObservabilityOutput};
 use rustbox_types::{Endpoint, IpCidr, Network, PortRange, RejectReason};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
@@ -39,13 +39,6 @@ pub struct FileObservabilityConfig {
     pub output: ObservabilityOutput,
     pub platform: Option<bool>,
     pub remote_endpoint: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ObservabilityOutput {
-    Console,
-    File(PathBuf),
-    ConsoleAndFile(PathBuf),
 }
 
 /// 从磁盘读取 TOML 文件并解析为统一配置模型。
