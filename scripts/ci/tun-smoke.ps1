@@ -234,9 +234,19 @@ outbound = "mock"
     $RustboxProcess = Start-LoggedProcess $BinPath @("run", "--config", $ConfigPath) $RustboxOut $RustboxErr
     Wait-ForLog $RustboxErr "configured proxy graph started" "RustBox TUN" $RustboxProcess
 
+    # Wintun creation returns before Windows has necessarily completed address
+    # initialization and source-address selection. A connect during that short
+    # window is attempted from 0.0.0.0 and fails immediately as unreachable.
+    if ($IsWindows) {
+        Write-Host "[tun-smoke] waiting for Windows TUN address initialization"
+        Start-Sleep -Seconds 2
+    }
+
     $BodyPath = Join-Path $LogsDir "curl.body.log"
     $CurlErr = Join-Path $LogsDir "curl.log"
-    & $Curl --fail --silent --show-error --verbose --max-time 15 --noproxy "*" --output $BodyPath "http://${TargetAddress}/rustbox-tun-ci" 2> $CurlErr
+    & $Curl --fail --silent --show-error --verbose --max-time 20 `
+        --retry 5 --retry-all-errors --retry-delay 1 `
+        --noproxy "*" --output $BodyPath "http://${TargetAddress}/rustbox-tun-ci" 2> $CurlErr
     if ($LASTEXITCODE -ne 0) { throw "curl failed; see $CurlErr" }
     $Body = Get-Content $BodyPath -Raw
     if (-not $Body.Contains($Marker)) { throw "unexpected response body: $Body" }
