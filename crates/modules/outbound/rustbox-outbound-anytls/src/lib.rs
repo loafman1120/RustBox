@@ -795,6 +795,7 @@ mod tests {
 
     const PASSWORD: &str = "test-password";
 
+    // Verifies that TCP payloads are relayed through a local AnyTLS server.
     #[tokio::test]
     async fn anytls_outbound_relays_tcp_bytes_through_local_server() {
         let server = start_anytls_server().await;
@@ -834,6 +835,7 @@ mod tests {
             .expect("close anytls stream");
     }
 
+    // Verifies that UDP datagrams are relayed through a local AnyTLS server.
     #[tokio::test]
     async fn anytls_outbound_relays_udp_datagrams_through_local_server() {
         let server = start_anytls_server().await;
@@ -873,11 +875,12 @@ mod tests {
         assert_eq!(source, target);
     }
 
+    // Verifies that an empty password is rejected before any connection is opened.
     #[tokio::test]
     async fn anytls_outbound_rejects_empty_password() {
         let host = Arc::new(TokioHost::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
-        // lgtm[rust/hard-coded-cryptographic-value]: intentional empty password for validation test
+        // codeql[rust/hard-coded-cryptographic-value]: Test-only empty value verifies password validation; it is never used as a credential.
         let error = match AnyTlsOutbound::new(
             outbound_id,
             Endpoint::localhost_v4(443),
@@ -892,6 +895,7 @@ mod tests {
         assert!(error.message.contains("password"));
     }
 
+    // Verifies that the supported AnyTLS profile remains pinned to its declared dependency version.
     #[test]
     fn supported_profile_matches_the_exact_dependency_pin() {
         let manifest = include_str!("../Cargo.toml");

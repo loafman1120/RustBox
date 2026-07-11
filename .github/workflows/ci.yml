@@ -181,6 +181,63 @@ jobs:
           RUSTBOX_TUN_E2E: "1"
         run: sudo -E "$(command -v cargo)" test --locked -p rustbox-platform-linux tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
 
+  # Full TUN data path: curl -> OS TUN -> RustBox -> mock SOCKS5 -> fixed HTTP response.
+  e2e-tun-data-windows:
+    name: E2E Windows TUN data path
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rustbox-app-windows-latest
+          path: target/debug
+      - name: Download official Wintun 0.14.1
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile $env:RUNNER_TEMP\wintun.zip
+          Expand-Archive $env:RUNNER_TEMP\wintun.zip -DestinationPath $env:RUNNER_TEMP\wintun
+      - name: Run TUN data path e2e
+        shell: pwsh
+        env:
+          RUSTBOX_WINTUN_DLL: ${{ runner.temp }}\wintun\wintun\bin\amd64\wintun.dll
+          RUSTBOX_CI_DUMP_LOGS: "1"
+        run: ./scripts/ci/tun-smoke.ps1
+      - name: Upload TUN e2e logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tun-data-windows-logs
+          path: target/ci-tun-smoke/logs
+          if-no-files-found: ignore
+
+  e2e-tun-data-linux:
+    name: E2E Linux TUN data path
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rustbox-app-ubuntu-latest
+          path: target/debug
+      - name: Fix permissions
+        run: chmod +x target/debug/rustbox-app
+      - name: Run TUN data path e2e
+        shell: bash
+        run: sudo -E "$(command -v pwsh)" -NoLogo -NoProfile -File ./scripts/ci/tun-smoke.ps1
+        env:
+          RUSTBOX_CI_DUMP_LOGS: "1"
+      - name: Upload TUN e2e logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tun-data-linux-logs
+          path: target/ci-tun-smoke/logs
+          if-no-files-found: ignore
+
   # ── E2E outbound: RustBox → upstream proxy → target ────────────
   #     curl → rustbox inbound → $outbound → sing-box → target
   e2e-outbound:
