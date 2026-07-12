@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
@@ -53,7 +53,7 @@ jobs:
           - windows-latest
           - macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal --component clippy
@@ -89,7 +89,7 @@ jobs:
         run: cargo run --locked -p rustbox-app -- check-config --config examples/tun-transparent.toml
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rustbox-app-${{ matrix.os }}
           path: |
@@ -112,12 +112,12 @@ jobs:
           - windows-latest
           - macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Download binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rustbox-app-${{ matrix.os }}
           path: target/debug
@@ -132,7 +132,7 @@ jobs:
         run: ./scripts/ci/proxy-smoke.ps1
       - name: Upload inbound e2e logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-inbound-logs-${{ matrix.os }}
           path: target/ci-proxy-smoke/logs
@@ -143,7 +143,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -188,8 +188,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: rustbox-app-windows-latest
           path: target/debug
@@ -206,7 +206,7 @@ jobs:
         run: ./scripts/ci/tun-smoke.ps1
       - name: Upload TUN e2e logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-tun-data-windows-logs
           path: target/ci-tun-smoke/logs
@@ -218,8 +218,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: rustbox-app-ubuntu-latest
           path: target/debug
@@ -232,7 +232,7 @@ jobs:
           RUSTBOX_CI_DUMP_LOGS: "1"
       - name: Upload TUN e2e logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-tun-data-linux-logs
           path: target/ci-tun-smoke/logs
@@ -261,12 +261,12 @@ jobs:
           - vless
           - trojan
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Download binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rustbox-app-${{ matrix.os }}
           path: target/debug
@@ -275,7 +275,7 @@ jobs:
         run: chmod +x target/debug/rustbox-app
 
       - name: Cache sing-box
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/rustbox-ci-sing-box
           key: sing-box-${{ runner.os }}-${{ runner.arch }}-1.13.14
@@ -289,7 +289,7 @@ jobs:
         run: ./scripts/ci/sing-box-smoke.ps1
       - name: Upload outbound e2e logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-outbound-${{ matrix.outbound }}-${{ matrix.os }}
           path: target/ci-singbox-smoke/logs
@@ -309,9 +309,9 @@ jobs:
           - windows-latest
           - macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rustbox-app-${{ matrix.os }}
           path: target/debug
@@ -335,7 +335,7 @@ jobs:
           - windows-latest
           - macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
