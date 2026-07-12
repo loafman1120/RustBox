@@ -1,5 +1,8 @@
 # RustBox 架构
 
+代码组织、依赖方向和巨石模块的拆分准则见
+[`code-structure.md`](code-structure.md)。
+
 本文只记录稳定边界、关键数据流和近期演进方向；命令与配置示例见根目录 `README.md` 和 `examples/`。
 
 ## 设计目标

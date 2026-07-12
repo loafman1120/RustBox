@@ -3,6 +3,7 @@
 //! Tokio 是项目的直接依赖。这里的 trait 用于测试替身和操作系统能力注入，
 //! 不是为了抽象或替换 Tokio runtime。
 
+pub mod net;
 mod tokio_host;
 
 pub use tokio_host::TokioHost;

@@ -1,3 +1,7 @@
+use crate::net::{
+    endpoint_to_socket_addr as try_endpoint_to_socket_addr, ip_address_to_std as ip_to_std,
+    socket_addr_to_endpoint,
+};
 use crate::{
     BoxFuture, Clock, Entropy, EntropyError, HostInstant, NetError, NetworkProvider, SpawnError,
     StreamListener, TaskHandle, TaskName, TaskSpawner, TcpBind, TcpConnect, UdpBind,
@@ -6,10 +10,10 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
-use rustbox_types::{Endpoint, Host, IpAddress};
+use rustbox_types::{Endpoint, Host};
 use std::collections::HashMap;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::io::ReadBuf;
@@ -207,27 +211,12 @@ impl DatagramSocket for TokioUdpSocket {
 }
 
 fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, NetError> {
-    match &endpoint.host {
-        Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
-        Host::Domain(domain) => Err(NetError::new(format!(
+    try_endpoint_to_socket_addr(endpoint).ok_or_else(|| match &endpoint.host {
+        Host::Domain(domain) => NetError::new(format!(
             "cannot bind UDP/TCP listener to domain host {domain}"
-        ))),
-    }
-}
-
-fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
-        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
-    };
-    Endpoint::new(host, addr.port())
-}
-
-fn ip_to_std(ip: IpAddress) -> IpAddr {
-    match ip {
-        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
-        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
-    }
+        )),
+        Host::Ip(_) => unreachable!("IP endpoint conversion must succeed"),
+    })
 }
 
 fn net_error(err: io::Error) -> NetError {

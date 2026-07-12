@@ -7,13 +7,15 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use ipstack::{IpStack, IpStackConfig, IpStackStream};
+use rustbox_host_api::net::socket_addr_to_endpoint;
 use rustbox_host_api::{
     BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
 };
 use rustbox_io::{DatagramSocket, IoError, IoErrorKind, PacketDevice};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink};
-use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network};
-use std::net::{IpAddr, SocketAddr};
+use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network};
+#[cfg(test)]
+use rustbox_types::{Host, IpAddress};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -306,14 +308,6 @@ impl DatagramSocket for IpStackDatagram {
             .poll_write(cx, buf)
             .map_err(io_error)
     }
-}
-
-fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
-        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
-    };
-    Endpoint::new(host, addr.port())
 }
 
 fn io_error(err: std::io::Error) -> IoError {
