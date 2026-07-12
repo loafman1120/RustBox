@@ -17,7 +17,7 @@ pub(crate) fn compose_engine(
     host: &Arc<TokioHost>,
     observability: &Arc<dyn ObservabilitySink>,
 ) -> Result<Arc<Engine>, ComposeError> {
-    let router = route_table(&compiled);
+    let router = route_table(compiled);
     let mut builder = Engine::builder(Box::new(router)).observability(observability.clone());
 
     for outbound in &compiled.outbounds {
