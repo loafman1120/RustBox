@@ -5,18 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-prost = "0.14.1"
+prost = "0.14.4"
 rustbox-control = { path = "../rustbox-control" }
 rustbox-host-api = { path = "../../host/rustbox-host-api" }
 rustbox-observability = { path = "../../rustbox-observability" }
 tokio = { version = "1", features = ["net", "sync"] }
 tonic = { version = "0.14.6", features = ["transport"] }
-tonic-prost = "0.14.2"
+tonic-prost = "0.14.6"
 
 [build-dependencies]
-prost-build = "0.14.1"
+prost-build = "0.14.4"
 protoc-bin-vendored = "3.2.0"
-tonic-prost-build = "0.14.2"
+tonic-prost-build = "0.14.6"
 
 [dev-dependencies]
 rustbox-types = { path = "../../foundation/rustbox-types" }

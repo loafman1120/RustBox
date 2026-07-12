@@ -11,7 +11,7 @@ rustbox-types = { path = "../../foundation/rustbox-types" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 net-route = "0.4.6"
-tun-rs = { version = "2.8.6", features = ["async"] }
+tun-rs = { version = "2.8.7", features = ["async"] }
 
 [lints]
 workspace = true

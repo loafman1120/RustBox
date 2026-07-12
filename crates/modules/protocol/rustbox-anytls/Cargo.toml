@@ -21,18 +21,18 @@ server = ["runtime", "uot", "dep:rcgen", "dep:rustls"]
 
 [dependencies]
 async-trait = { version = "0.1.89", optional = true }
-bytes = "1.11.1"
+bytes = "1.12.1"
 futures = { version = "0.3.32", optional = true }
 indexmap = { version = "2.14.0", optional = true }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-md5 = "0.8.0"
+md5 = "0.8.1"
 parking_lot = "0.12.5"
-rand = "0.10.1"
-rcgen = { version = "0.14.7", optional = true }
-rustls = { version = "0.23.39", optional = true }
-socks5-impl = { version = "0.8.1", features = ["server"], optional = true }
-tokio = { version = "1.52.1", features = ["io-util", "macros", "rt", "sync", "time"], optional = true }
+rand = "0.10.2"
+rcgen = { version = "0.14.8", optional = true }
+rustls = { version = "0.23.41", optional = true }
+socks5-impl = { version = "0.8.7", features = ["server"], optional = true }
+tokio = { version = "1.52.3", features = ["io-util", "macros", "rt", "sync", "time"], optional = true }
 
 [lints]
 workspace = true

@@ -16,7 +16,7 @@ rustbox-host-api = { path = "../../../host/rustbox-host-api" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
-rustls = "0.23.40"
+rustls = "0.23.41"
 sha2 = "0.10"
 tokio = { version = "1", features = ["io-util", "rt"] }
 tokio-rustls = "0.26.4"
