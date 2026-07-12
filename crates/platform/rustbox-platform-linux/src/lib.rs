@@ -10,7 +10,8 @@ use rustbox_host_api::{
     NetworkControlError, NetworkLease, NetworkOperation, NetworkTransaction, PacketDeviceConfig,
     PacketDeviceError, PacketDeviceInfo, PacketDeviceLease, PacketDeviceProvider, ProcessInfo,
     ProcessLookup, ProcessLookupError, RollbackPolicy, TransparentProxyError,
-    TransparentProxyProvider, TransparentStreamListener, TransparentTcpBind,
+    TransparentProxyProvider, TransparentRedirectMode, TransparentStreamListener,
+    TransparentTcpBind,
 };
 use rustbox_io::PacketDevice;
 use rustbox_io::{IoError, IoErrorKind};
