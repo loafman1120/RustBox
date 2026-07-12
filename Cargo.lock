@@ -2954,10 +2954,12 @@ dependencies = [
 name = "rustbox-ffi"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "rustbox",
  "rustbox-config",
  "rustbox-config-file",
  "rustbox-control",
+ "rustbox-observability",
  "rustbox-types",
  "tokio",
 ]

@@ -99,6 +99,15 @@ pub struct RuntimeObservability {
     pub store: Arc<ObservabilityStore>,
 }
 
+impl RuntimeObservability {
+    /// In-memory observability for embedded hosts that do not want implicit output.
+    pub fn store_only() -> Self {
+        let store = Arc::new(ObservabilityStore::default());
+        let sink = Arc::new(CompositeObservabilitySink::new().with_sink(store.clone()));
+        Self { sink, store }
+    }
+}
+
 /// 控制台 sink，用于 CLI 默认观测输出。
 #[derive(Clone, Debug)]
 pub struct ConsoleObservabilitySink {

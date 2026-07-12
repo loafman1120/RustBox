@@ -8,7 +8,8 @@ mod validation;
 
 pub use document::SUPPORTED_SCHEMA_VERSION;
 pub use document::{
-    ConfigLoader, FileConfig, FileObservabilityConfig, load_toml_file, parse_toml_str,
+    ConfigLoader, FileConfig, FileObservabilityConfig, load_toml_file, load_toml_source,
+    parse_toml_source, parse_toml_str,
 };
 pub use error::ConfigFileError;
 
@@ -538,5 +539,35 @@ schema_version = 2
             endpoint.host,
             Host::Ip(IpAddress::V4(Ipv4Addr::LOCALHOST.octets()))
         );
+    }
+
+    #[test]
+    fn parses_source_config_without_exposing_file_only_settings() {
+        let input = r#"
+schema_version = 1
+
+[observability]
+level = "debug"
+
+[[inbounds]]
+id = "socks"
+type = "socks5"
+listen = "127.0.0.1:1080"
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[routes]]
+type = "default"
+outbound = "direct"
+"#;
+
+        let source = parse_toml_source(input).expect("parse source config");
+        let file = parse_toml_str(input).expect("parse full file config");
+
+        assert_eq!(source, file.source);
+        assert_eq!(source.inbounds.len(), 1);
+        assert_eq!(source.outbounds.len(), 1);
     }
 }

@@ -33,6 +33,13 @@ pub struct FileConfig {
     pub observability: Option<FileObservabilityConfig>,
 }
 
+impl FileConfig {
+    /// Discards file-only application settings and returns the runtime source model.
+    pub fn into_source(self) -> SourceConfig {
+        self.source
+    }
+}
+
 /// Typed configuration loader with optional environment overrides.
 ///
 /// Environment loading is opt-in so existing file-only callers remain fully
@@ -69,6 +76,16 @@ impl ConfigLoader {
         };
         document.into_file_config(None)
     }
+
+    /// Loads only the format-independent runtime source model.
+    pub fn load_source(&self, path: impl AsRef<Path>) -> Result<SourceConfig, ConfigFileError> {
+        self.load(path).map(FileConfig::into_source)
+    }
+
+    /// Parses only the format-independent runtime source model.
+    pub fn parse_source(&self, input: &str) -> Result<SourceConfig, ConfigFileError> {
+        self.parse(input).map(FileConfig::into_source)
+    }
 }
 
 /// 从磁盘读取 TOML 文件并解析为统一配置模型。
@@ -79,6 +96,16 @@ pub fn load_toml_file(path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileEr
 /// 从 TOML 文本解析配置，供 CLI、测试和 FFI 文本入口复用。
 pub fn parse_toml_str(input: &str) -> Result<FileConfig, ConfigFileError> {
     ConfigLoader::new().parse(input)
+}
+
+/// 从磁盘读取 TOML 文件并直接返回格式无关的运行配置。
+pub fn load_toml_source(path: impl AsRef<Path>) -> Result<SourceConfig, ConfigFileError> {
+    ConfigLoader::new().load_source(path)
+}
+
+/// 从 TOML 文本直接返回格式无关的运行配置。
+pub fn parse_toml_source(input: &str) -> Result<SourceConfig, ConfigFileError> {
+    ConfigLoader::new().parse_source(input)
 }
 
 #[derive(Clone, Debug, Deserialize, Validate)]

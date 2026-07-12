@@ -1,5 +1,5 @@
 use garde::Validate;
-use rustbox_observability::{LevelFilter, ObservabilityOutput};
+use rustbox_observability::{LevelFilter, ObservabilityConfig, ObservabilityOutput};
 use serde::Deserialize;
 
 use crate::{ConfigFileError, validation};
@@ -11,6 +11,16 @@ pub struct FileObservabilityConfig {
     pub output: ObservabilityOutput,
     pub platform: Option<bool>,
     pub remote_endpoint: Option<String>,
+}
+
+impl FileObservabilityConfig {
+    /// Resolves file settings into the host-independent runtime configuration.
+    pub fn runtime_config(&self) -> ObservabilityConfig {
+        ObservabilityConfig {
+            level: self.level.unwrap_or_else(LevelFilter::from_env),
+            output: self.output.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Validate)]

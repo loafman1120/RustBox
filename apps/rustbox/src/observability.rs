@@ -30,13 +30,14 @@ impl ObservabilityArgs {
         &self,
         file: Option<&FileObservabilityConfig>,
     ) -> Result<ObservabilityConfig, String> {
-        let level = self
-            .level
-            .or_else(|| file.and_then(|config| config.level))
-            .unwrap_or_else(LevelFilter::from_env);
-        let configured_output = file
-            .map(|config| config.output.clone())
-            .unwrap_or(ObservabilityOutput::Console);
+        let configured = file
+            .map(FileObservabilityConfig::runtime_config)
+            .unwrap_or_else(|| ObservabilityConfig {
+                level: LevelFilter::from_env(),
+                output: ObservabilityOutput::Console,
+            });
+        let level = self.level.unwrap_or(configured.level);
+        let configured_output = configured.output;
         let output = match self.output {
             None => configured_output,
             Some(OutputSelector::Console) => {

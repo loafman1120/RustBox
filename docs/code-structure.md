@@ -69,13 +69,14 @@ The completed bounded splits are:
 4. Windows platform: network control, packet device, and process lookup.
 5. Observability: configuration/basic sinks, store/query model, host sinks, and
    event formatting.
+6. FFI: ABI value types, panic-safe pointer boundary, per-engine registry and
+   lifecycle ownership, exported calls, C header, and native header/link smoke
+   coverage.
 
 The remaining candidates are deliberately outside this bounded pass:
 
 - SOCKS5 inbound: service lifecycle, command handling, UDP association, and
   prefixed stream utilities.
-- FFI: ABI types, engine table, unsafe pointer boundary, and exported calls.
-
 These should be migrated in behavior-preserving batches. A batch is complete
 only after formatting, `cargo check --workspace --all-targets`, and
 `cargo test --workspace --all-targets` succeed.

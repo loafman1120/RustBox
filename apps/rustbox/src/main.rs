@@ -3,7 +3,7 @@ mod observability;
 
 use observability::ObservabilityArgs;
 use rustbox::{RustBox, RustBoxOptions};
-use rustbox_config_file::load_toml_file;
+use rustbox_config_file::{load_toml_file, load_toml_source};
 use rustbox_control::EngineCommand;
 use rustbox_control_api::{AuthPolicy, ControlApiConfig};
 use std::net::SocketAddr;
@@ -22,10 +22,10 @@ async fn main() {
             return;
         }
         CliCommand::CheckConfig { config } => {
-            let file_config = load_toml_file(&config).unwrap_or_else(|err| {
+            let source = load_toml_source(&config).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", config.display(), err.message)
             });
-            let runtime = RustBox::new(file_config.source)
+            let runtime = RustBox::new(source)
                 .unwrap_or_else(|err| panic!("check config `{}`: {err:?}", config.display()));
             let snapshot = runtime.snapshot();
             println!(
