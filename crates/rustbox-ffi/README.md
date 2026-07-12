@@ -28,3 +28,9 @@ against `include/rustbox.h` and link `rustbox_ffi` (`rustbox_ffi.dll`,
 `cargo test -p rustbox-ffi --all-targets` compiles the files under `tests/c`
 with the platform C compiler, links them to the Rust exports, and executes a
 complete C-driven create/start/snapshot/metrics/stop/destroy lifecycle.
+
+CI also runs `scripts/ci/ffi-smoke.ps1` on Linux, Windows, and macOS. This
+builds the shared library, separately compiles a native C application, links
+the two artifacts dynamically, and sends an HTTP request through the proxy
+created by the public ABI. The test validates the response body and resulting
+traffic metrics before stopping and destroying the engine.
