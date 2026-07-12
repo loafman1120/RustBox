@@ -2,6 +2,48 @@
 
 Modular proxy engine in Rust, built on Tokio.
 
+## Website design
+
+`website/` is a dependency-free, static project showcase. It is designed as an
+interactive technical whitepaper rather than a conventional product landing
+page: the narrative follows a flow from request ingress, through routing and
+runtime composition, to protocols and a runnable local setup.
+
+```text
+Hero / shared lifecycle
+        ↓
+Data plane / inbound → enrich → route → outbound → relay
+        ↓
+Composition boundaries / application → kernel → foundation
+        ↓
+Connection surfaces / inbound and outbound protocols
+        ↓
+Control plane / TOML → normalize → validate → compile → RustBox
+        ↓
+Getting started / build → run → verify
+```
+
+Its visual language is **engineering editorial × network debugger**:
+
+- graphite background and fine technical rules keep the page close to a tool,
+  not a SaaS dashboard;
+- icy cyan denotes the data plane, while amber denotes configuration and
+  control-plane signals;
+- a transparent system box in the hero visualizes the shared RustBox
+  lifecycle, with a moving packet path as the primary motion cue;
+- architecture is shown with open diagrams, rails, and layers instead of
+  marketing cards or unverified performance claims.
+
+The page intentionally uses only HTML, CSS, and small native JavaScript
+interactions (scroll progress, reveal transitions, packet motion, and command
+copying). It can be hosted on GitHub Pages or any static file server without a
+frontend build tool. Its technical copy is derived from `README.md` and
+`docs/architecture.md`; update those facts alongside the page when protocol or
+lifecycle support changes.
+
+Preview it locally with a static server rooted at `website/`; see
+[`website/README.md`](website/README.md) for an example.
+
 ## Build
 
 ```powershell
