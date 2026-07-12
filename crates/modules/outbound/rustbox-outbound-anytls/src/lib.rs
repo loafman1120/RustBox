@@ -793,6 +793,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
 
+    // codeql[rust/hard-coded-cryptographic-value]: test-only constant, never used in production
     const PASSWORD: &str = "test-password";
 
     // Verifies that TCP payloads are relayed through a local AnyTLS server.
@@ -880,10 +881,10 @@ mod tests {
     async fn anytls_outbound_rejects_empty_password() {
         let host = Arc::new(TokioHost::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
-        // codeql[rust/hard-coded-cryptographic-value]: Test-only empty value verifies password validation; it is never used as a credential.
         let error = match AnyTlsOutbound::new(
             outbound_id,
             Endpoint::localhost_v4(443),
+            // codeql[rust/hard-coded-cryptographic-value]: empty value validates that empty passwords are rejected at construction
             "",
             AnyTlsTlsConfig::default(),
             host,

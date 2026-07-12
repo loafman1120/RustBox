@@ -330,6 +330,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const METHOD: &str = "aes-128-gcm";
+    // codeql[rust/hard-coded-cryptographic-value]: test-only constant, never used in production
     const PASSWORD: &str = "test-password";
 
     #[tokio::test]

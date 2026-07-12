@@ -662,6 +662,7 @@ mod tests {
         let outbound = AnyTlsOutbound::new(
             OutboundId::new(NonZeroU64::new(2).unwrap()),
             server,
+            // codeql[rust/hard-coded-cryptographic-value]: test-only value, never used in production
             "secret",
             AnyTlsTlsConfig {
                 server_name: Some("localhost".into()),
