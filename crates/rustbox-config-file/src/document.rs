@@ -3,6 +3,9 @@
 //! 本 crate 负责把用户编写的 TOML 等文件形态转换为格式无关的
 //! `rustbox-config` 模型。运行时模块和内核不依赖文件解析。
 
+mod observability;
+
+use garde::Validate;
 use rustbox_config::{
     AnyTlsInboundTlsConfig, DnsCacheConfig, DnsConfig, DnsHijackTarget, DnsRecordType,
     DnsRuleAction, DnsRuleConfig, DnsRuleMatcher, DnsServerConfig, DnsServerProtocol, FakeIpConfig,
@@ -11,14 +14,15 @@ use rustbox_config::{
     RouteRuleConfig, RouteRuleSetConfig, SourceConfig, TransparentInboundConfig,
     TransparentNetwork, TransparentRedirectMode, TunDnsMode, TunInboundConfig,
 };
-use rustbox_observability::{LevelFilter, ObservabilityOutput};
 use rustbox_types::{Endpoint, IpCidr, Network, PortRange, RejectReason};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{ConfigFileError, migration};
+use crate::{ConfigFileError, loader, migration};
+pub use observability::FileObservabilityConfig;
+use observability::TomlObservabilityConfig;
 
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
@@ -29,46 +33,67 @@ pub struct FileConfig {
     pub observability: Option<FileObservabilityConfig>,
 }
 
-/// 当前文件格式支持的观测配置，组合根会把它转成具体 sink。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileObservabilityConfig {
-    pub level: Option<LevelFilter>,
-    pub output: ObservabilityOutput,
-    pub platform: Option<bool>,
-    pub remote_endpoint: Option<String>,
+/// Typed configuration loader with optional environment overrides.
+///
+/// Environment loading is opt-in so existing file-only callers remain fully
+/// deterministic. Nested keys use `__`, for example
+/// `RUSTBOX_OBSERVABILITY__LEVEL=debug` with the `RUSTBOX_` prefix.
+#[derive(Clone, Debug, Default)]
+pub struct ConfigLoader {
+    env_prefix: Option<String>,
+}
+
+impl ConfigLoader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_env_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.env_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn load(&self, path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileError> {
+        let path = path.as_ref();
+        let document = match self.env_prefix.as_deref() {
+            Some(prefix) => loader::load_toml_with_env::<TomlConfigDocument>(path, prefix)?,
+            None => loader::load_toml::<TomlConfigDocument>(path)?,
+        };
+        document.into_file_config(path.parent())
+    }
+
+    pub fn parse(&self, input: &str) -> Result<FileConfig, ConfigFileError> {
+        let document = match self.env_prefix.as_deref() {
+            Some(prefix) => loader::parse_toml_with_env::<TomlConfigDocument>(input, prefix)?,
+            None => loader::parse_toml::<TomlConfigDocument>(input)?,
+        };
+        document.into_file_config(None)
+    }
 }
 
 /// 从磁盘读取 TOML 文件并解析为统一配置模型。
 pub fn load_toml_file(path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileError> {
-    let path = path.as_ref();
-    let text = fs::read_to_string(path)
-        .map_err(|err| ConfigFileError::new(format!("failed to read config file: {err}")))?;
-    parse_toml_str_with_base_dir(&text, path.parent())
+    ConfigLoader::new().load(path)
 }
 
 /// 从 TOML 文本解析配置，供 CLI、测试和 FFI 文本入口复用。
 pub fn parse_toml_str(input: &str) -> Result<FileConfig, ConfigFileError> {
-    parse_toml_str_with_base_dir(input, None)
+    ConfigLoader::new().parse(input)
 }
 
-fn parse_toml_str_with_base_dir(
-    input: &str,
-    base_dir: Option<&Path>,
-) -> Result<FileConfig, ConfigFileError> {
-    let document = toml::from_str::<TomlConfigDocument>(input)
-        .map_err(|err| ConfigFileError::new(format!("failed to parse TOML config: {err}")))?;
-    document.into_file_config(base_dir)
-}
-
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 struct TomlConfigDocument {
     schema_version: u32,
+    #[garde(dive)]
     observability: Option<TomlObservabilityConfig>,
     #[serde(default)]
     inbounds: Vec<TomlInboundConfig>,
     #[serde(default)]
+    #[garde(dive)]
     outbounds: Vec<TomlOutboundConfig>,
+    #[garde(dive)]
     dns: Option<TomlDnsConfig>,
     #[serde(default)]
     rule_sets: Vec<TomlRouteRuleSetConfig>,
@@ -78,8 +103,11 @@ struct TomlConfigDocument {
 
 impl TomlConfigDocument {
     fn into_file_config(self, base_dir: Option<&Path>) -> Result<FileConfig, ConfigFileError> {
-        // 文件格式版本在进入 SourceConfig 前校验，避免运行时理解历史格式。
+        // Reject unknown document shapes before applying current-schema rules.
         migration::accept_schema_version(self.schema_version)?;
+        self.validate().map_err(|error| {
+            ConfigFileError::new(format!("configuration validation failed: {error}"))
+        })?;
 
         let inbounds = self
             .inbounds
@@ -114,63 +142,6 @@ impl TomlConfigDocument {
                 .observability
                 .map(TomlObservabilityConfig::into_file)
                 .transpose()?,
-        })
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TomlObservabilityConfig {
-    level: Option<String>,
-    output: Option<TomlObservabilityOutput>,
-    file: Option<String>,
-    platform: Option<bool>,
-    remote_endpoint: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum TomlObservabilityOutput {
-    Console,
-    File,
-    ConsoleAndFile,
-}
-
-impl TomlObservabilityConfig {
-    fn into_file(self) -> Result<FileObservabilityConfig, ConfigFileError> {
-        let level = match self.level.as_deref() {
-            Some(value) => Some(LevelFilter::parse(value).ok_or_else(|| {
-                ConfigFileError::new(
-                    "invalid observability level; expected trace, debug, info, warn, error, or off",
-                )
-            })?),
-            None => None,
-        };
-        let output = match (
-            self.output.unwrap_or(TomlObservabilityOutput::Console),
-            self.file,
-        ) {
-            (TomlObservabilityOutput::Console, None) => ObservabilityOutput::Console,
-            (TomlObservabilityOutput::Console, Some(_)) => {
-                return Err(ConfigFileError::new(
-                    "observability.file requires output = \"file\" or \"console-and-file\"",
-                ));
-            }
-            (TomlObservabilityOutput::File, Some(path)) => ObservabilityOutput::File(path.into()),
-            (TomlObservabilityOutput::ConsoleAndFile, Some(path)) => {
-                ObservabilityOutput::ConsoleAndFile(path.into())
-            }
-            (TomlObservabilityOutput::File | TomlObservabilityOutput::ConsoleAndFile, None) => {
-                return Err(ConfigFileError::new(
-                    "observability output requires a file path",
-                ));
-            }
-        };
-        Ok(FileObservabilityConfig {
-            level,
-            output,
-            platform: self.platform,
-            remote_endpoint: self.remote_endpoint,
         })
     }
 }
@@ -371,7 +342,8 @@ impl TomlInboundConfig {
 }
 
 #[serde_as]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlOutboundConfig {
     Direct {
@@ -408,10 +380,12 @@ enum TomlOutboundConfig {
     },
     Urltest {
         id: String,
+        #[garde(length(min = 1))]
         outbounds: Vec<String>,
         #[serde(default = "default_urltest_url")]
         url: String,
         #[serde(default = "default_urltest_interval_seconds")]
+        #[garde(range(min = 1))]
         interval_seconds: u64,
         #[serde(default)]
         tolerance_ms: u16,
@@ -616,7 +590,8 @@ impl From<TomlOutboundTlsConfig> for OutboundTlsConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 struct TomlDnsConfig {
     #[serde(default)]
@@ -624,7 +599,9 @@ struct TomlDnsConfig {
     #[serde(default)]
     rules: Vec<TomlDnsRuleConfig>,
     final_server: Option<String>,
+    #[garde(dive)]
     cache: Option<TomlDnsCacheConfig>,
+    #[garde(dive)]
     fake_ip: Option<TomlFakeIpConfig>,
     #[serde(default)]
     hijack: Vec<TomlDnsHijackConfig>,
@@ -788,16 +765,19 @@ impl From<TomlDnsRecordType> for DnsRecordType {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 struct TomlDnsCacheConfig {
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default = "default_dns_cache_max_entries")]
+    #[garde(range(min = 1))]
     max_entries: usize,
     #[serde(default)]
     min_ttl_seconds: u32,
     #[serde(default = "default_dns_cache_max_ttl_seconds")]
+    #[garde(range(min = 1))]
     max_ttl_seconds: u32,
 }
 
@@ -813,7 +793,8 @@ impl From<TomlDnsCacheConfig> for DnsCacheConfig {
 }
 
 #[serde_as]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 struct TomlFakeIpConfig {
     #[serde(default = "default_true")]
@@ -821,6 +802,7 @@ struct TomlFakeIpConfig {
     #[serde_as(as = "DisplayFromStr")]
     ipv4_pool: IpCidr,
     #[serde(default = "default_fake_ip_ttl_seconds")]
+    #[garde(range(min = 1))]
     ttl_seconds: u32,
 }
 
@@ -1098,9 +1080,9 @@ impl TomlRouteRuleSetConfig {
                     ))
                 })?;
                 let document =
-                    toml::from_str::<TomlRouteRuleSetDocument>(&text).map_err(|err| {
+                    loader::parse_toml::<TomlRouteRuleSetDocument>(&text).map_err(|error| {
                         ConfigFileError::new(format!(
-                            "failed to parse route rule-set `{}`: {err}",
+                            "failed to parse route rule-set `{}`: {error}",
                             path.display()
                         ))
                     })?;

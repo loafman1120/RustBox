@@ -8,9 +8,12 @@ license.workspace = true
 rustbox-config = { path = "../control/rustbox-config" }
 rustbox-types = { path = "../foundation/rustbox-types" }
 rustbox-observability = { path = "../rustbox-observability" }
+figment = { version = "0.10", features = ["toml", "env"] }
+garde = { version = "0.23", features = ["derive"] }
+miette = "7"
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"
-toml = "0.8"
+thiserror = "2"
 
 [lints]
 workspace = true

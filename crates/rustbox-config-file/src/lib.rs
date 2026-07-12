@@ -2,10 +2,14 @@
 
 mod document;
 mod error;
+mod loader;
 mod migration;
+mod validation;
 
 pub use document::SUPPORTED_SCHEMA_VERSION;
-pub use document::{FileConfig, FileObservabilityConfig, load_toml_file, parse_toml_str};
+pub use document::{
+    ConfigLoader, FileConfig, FileObservabilityConfig, load_toml_file, parse_toml_str,
+};
 pub use error::ConfigFileError;
 
 #[cfg(test)]
@@ -231,6 +235,50 @@ level = "loud"
         )
         .expect_err("invalid level");
         assert!(error.message.contains("invalid observability level"));
+    }
+
+    #[test]
+    fn garde_rejects_invalid_local_values_with_a_field_path() {
+        let error = parse_toml_str(
+            r#"
+schema_version = 1
+
+[[outbounds]]
+id = "auto"
+type = "urltest"
+outbounds = []
+interval_seconds = 0
+"#,
+        )
+        .expect_err("invalid urltest values");
+
+        assert!(error.message.contains("configuration validation failed"));
+        assert!(error.message.contains("outbounds[0]"));
+        assert!(error.message.contains("interval_seconds"));
+    }
+
+    #[test]
+    fn figment_reports_the_nested_deserialization_path() {
+        let error = parse_toml_str(
+            r#"
+schema_version = 1
+
+[[inbounds]]
+id = "http"
+type = "http-connect"
+listen = "not-an-endpoint"
+"#,
+        )
+        .expect_err("invalid nested value");
+
+        assert!(error.message.contains("default.inbounds.0"));
+        assert!(error.message.contains("not-an-endpoint"));
+    }
+
+    #[test]
+    fn config_errors_are_miette_diagnostics() {
+        fn assert_diagnostic<T: miette::Diagnostic>() {}
+        assert_diagnostic::<ConfigFileError>();
     }
 
     #[test]

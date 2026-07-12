@@ -58,6 +58,14 @@ cargo run -p rustbox-app -- --control-grpc 0.0.0.0:19090 --control-token secret 
 ## Config
 
 See `examples/rustbox.toml`. Inbound types: `http-connect`, `socks5`, `mixed`.
+
+The configuration frontend uses Figment and Serde for typed TOML loading,
+Garde for field-local validation, and Miette-compatible diagnostics. Existing
+`load_toml_file` callers are file-only and deterministic. Applications that
+need environment overrides can use `ConfigLoader::with_env_prefix("RUSTBOX_")`;
+nested keys are separated with `__` (for example,
+`RUSTBOX_OBSERVABILITY__LEVEL=debug`). Cross-reference and protocol checks are
+performed later by `rustbox-config`, after the document has been normalized.
 Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `anytls`.
 
 The `anytls` outbound uses the pinned, protocol-compatible `anytls 0.2.3`

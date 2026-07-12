@@ -61,7 +61,8 @@ network value conversions live in `rustbox-host-api::net`, keeping
 The completed bounded splits are:
 
 1. `rustbox-config`: semantic models and compiler implementation.
-2. `rustbox-config-file`: public facade, TOML document model, migration, errors,
+2. `rustbox-config-file`: public facade, Figment providers, Serde document
+   model, Garde leaf validation, migration, and Miette diagnostics,
    and tests.
 3. Linux platform: network control, packet device, process lookup, and
    transparent proxy.
