@@ -8,8 +8,6 @@ license.workspace = true
 rustbox-host-api = { path = "../../host/rustbox-host-api" }
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
-
-[target.'cfg(target_os = "windows")'.dependencies]
 net-route = "0.4.6"
 tun-rs = { version = "2.8.7", features = ["async"] }
 

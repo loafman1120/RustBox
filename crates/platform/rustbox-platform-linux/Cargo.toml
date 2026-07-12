@@ -8,8 +8,6 @@ license.workspace = true
 rustbox-host-api = { path = "../../host/rustbox-host-api" }
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
-
-[target.'cfg(target_os = "linux")'.dependencies]
 net-route = "0.4.6"
 nix = { version = "0.31.3", features = ["net"] }
 tokio = { version = "1", features = ["io-util", "net"] }
