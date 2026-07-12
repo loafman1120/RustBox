@@ -113,10 +113,7 @@ fn preserved_route(
             ))
         })?;
     let mut route = Route::new(address, destination.prefix_len);
-    #[cfg(target_os = "linux")]
-    {
-        route = route.with_table(best.table);
-    }
+    route = route.with_table(best.table);
     if let Some(index) = best.ifindex {
         route = route.with_ifindex(index);
     }

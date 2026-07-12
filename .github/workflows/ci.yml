@@ -161,7 +161,7 @@ jobs:
         env:
           RUSTBOX_TUN_E2E: "1"
           RUSTBOX_WINTUN_DLL: ${{ runner.temp }}\wintun\wintun\bin\amd64\wintun.dll
-        run: cargo test --locked -p rustbox-platform-windows tests::opens_and_closes_real_wintun_when_e2e_is_enabled -- --exact --nocapture
+        run: cargo test --locked -p rustbox-platform current::packet_device::tests::opens_and_closes_real_wintun_when_e2e_is_enabled -- --exact --nocapture
 
   e2e-tun-linux:
     name: E2E Linux TUN lifecycle
@@ -179,7 +179,7 @@ jobs:
       - name: Open and close a real Linux TUN device
         env:
           RUSTBOX_TUN_E2E: "1"
-        run: sudo -E "$(command -v cargo)" test --locked -p rustbox-platform-linux tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
+        run: sudo -E "$(command -v cargo)" test --locked -p rustbox-platform current::packet_device::tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
 
   # Full TUN data path: curl -> OS TUN -> RustBox -> mock SOCKS5 -> fixed HTTP response.
   e2e-tun-data-windows:

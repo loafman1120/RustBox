@@ -13,6 +13,25 @@ use rustbox_io::{IoError, PacketDevice};
 use rustbox_types::{IpAddress, IpCidr};
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
+pub(super) const CAPABILITIES: crate::PlatformCapabilities = crate::PlatformCapabilities {
+    platform: "macOS",
+    tcp_udp: crate::CapabilitySupport::Supported,
+    packet_device: crate::CapabilitySupport::Supported,
+    route_control: crate::CapabilitySupport::Supported,
+    transparent_proxy: crate::CapabilitySupport::Unsupported,
+    process_lookup: crate::CapabilitySupport::Unsupported,
+};
+
+pub(super) fn tun() -> Option<crate::TunCapabilities> {
+    let platform = std::sync::Arc::new(MacosPlatform::new());
+    Some((platform.clone(), platform))
+}
+
+pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_host_api::TransparentProxyProvider>>
+{
+    None
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MacosPlatform;
 
@@ -201,19 +220,8 @@ fn contains(route: &Route, address: std::net::IpAddr) -> bool {
 fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError> {
     match interface {
         InterfaceRef::Index(index) => Ok(*index),
-        InterfaceRef::Name(name) => {
-            #[cfg(target_os = "macos")]
-            {
-                net_route::ifname_to_index(name)
-                    .ok_or_else(|| NetworkControlError::new(format!("unknown interface `{name}`")))
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                Err(NetworkControlError::new(format!(
-                    "interface name resolution not available on this platform; use index instead, got `{name}`"
-                )))
-            }
-        }
+        InterfaceRef::Name(name) => net_route::ifname_to_index(name)
+            .ok_or_else(|| NetworkControlError::new(format!("unknown interface `{name}`"))),
     }
 }
 

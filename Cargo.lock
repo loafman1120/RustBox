@@ -3205,41 +3205,8 @@ dependencies = [
 name = "rustbox-platform"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
- "rustbox-platform-linux",
- "rustbox-platform-macos",
- "rustbox-platform-windows",
-]
-
-[[package]]
-name = "rustbox-platform-linux"
-version = "0.1.0"
-dependencies = [
  "net-route",
  "nix 0.31.3",
- "rustbox-host-api",
- "rustbox-io",
- "rustbox-types",
- "tokio",
- "tun-rs",
-]
-
-[[package]]
-name = "rustbox-platform-macos"
-version = "0.1.0"
-dependencies = [
- "net-route",
- "rustbox-host-api",
- "rustbox-io",
- "rustbox-types",
- "tun-rs",
-]
-
-[[package]]
-name = "rustbox-platform-windows"
-version = "0.1.0"
-dependencies = [
- "net-route",
  "rustbox-host-api",
  "rustbox-io",
  "rustbox-types",

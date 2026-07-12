@@ -1,7 +1,7 @@
 //! Current-target platform capability facade.
 //!
-//! OS selection belongs in this crate. Consumers depend only on the capability
-//! traits and never name an OS-specific implementation crate.
+//! This is the only place where an operating-system implementation is
+//! selected. Consumers depend on this crate and never name a platform module.
 
 use rustbox_host_api::{NetworkControl, PacketDeviceProvider, TransparentProxyProvider};
 use std::fmt;
@@ -31,80 +31,57 @@ impl fmt::Display for PlatformCapabilities {
     }
 }
 
-pub fn current_capabilities() -> PlatformCapabilities {
-    #[cfg(target_os = "linux")]
-    return PlatformCapabilities {
-        platform: "Linux",
-        tcp_udp: CapabilitySupport::Supported,
-        packet_device: CapabilitySupport::Supported,
-        route_control: CapabilitySupport::Limited,
-        transparent_proxy: CapabilitySupport::Limited,
-        process_lookup: CapabilitySupport::Supported,
-    };
-    #[cfg(target_os = "windows")]
-    return PlatformCapabilities {
-        platform: "Windows",
-        tcp_udp: CapabilitySupport::Supported,
-        packet_device: CapabilitySupport::Supported,
-        route_control: CapabilitySupport::Supported,
-        transparent_proxy: CapabilitySupport::Planned,
-        process_lookup: CapabilitySupport::Supported,
-    };
-    #[cfg(target_os = "macos")]
-    return PlatformCapabilities {
-        platform: "macOS",
-        tcp_udp: CapabilitySupport::Supported,
-        packet_device: CapabilitySupport::Supported,
-        route_control: CapabilitySupport::Supported,
-        transparent_proxy: CapabilitySupport::Unsupported,
-        process_lookup: CapabilitySupport::Unsupported,
-    };
-    #[allow(unreachable_code)]
-    PlatformCapabilities {
+pub type TunCapabilities = (Arc<dyn PacketDeviceProvider>, Arc<dyn NetworkControl>);
+
+#[cfg(target_os = "linux")]
+#[path = "platform/linux/lib.rs"]
+mod current;
+
+#[cfg(target_os = "windows")]
+#[path = "platform/windows/lib.rs"]
+mod current;
+
+#[cfg(target_os = "macos")]
+#[path = "platform/macos.rs"]
+mod current;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+mod current {
+    use super::*;
+
+    pub(super) const CAPABILITIES: PlatformCapabilities = PlatformCapabilities {
         platform: "Unknown",
         tcp_udp: CapabilitySupport::Unsupported,
         packet_device: CapabilitySupport::Unsupported,
         route_control: CapabilitySupport::Unsupported,
         transparent_proxy: CapabilitySupport::Unsupported,
         process_lookup: CapabilitySupport::Unsupported,
+    };
+
+    pub(super) fn tun() -> Option<TunCapabilities> {
+        None
+    }
+
+    pub(super) fn transparent() -> Option<Arc<dyn TransparentProxyProvider>> {
+        None
     }
 }
 
-pub type TunCapabilities = (Arc<dyn PacketDeviceProvider>, Arc<dyn NetworkControl>);
+pub const SUPPORTS_TUN: bool = matches!(
+    current::CAPABILITIES.packet_device,
+    CapabilitySupport::Supported | CapabilitySupport::Limited
+);
 
-pub const SUPPORTS_TUN: bool = cfg!(any(
-    target_os = "linux",
-    target_os = "windows",
-    target_os = "macos"
-));
+pub fn current_capabilities() -> PlatformCapabilities {
+    current::CAPABILITIES
+}
 
 pub fn tun_capabilities() -> Option<TunCapabilities> {
-    #[cfg(target_os = "linux")]
-    {
-        let platform = Arc::new(rustbox_platform_linux::LinuxPlatform::new());
-        return Some((platform.clone(), platform));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let platform = Arc::new(rustbox_platform_windows::WindowsPlatform::new());
-        return Some((platform.clone(), platform));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let platform = Arc::new(rustbox_platform_macos::MacosPlatform::new());
-        return Some((platform.clone(), platform));
-    }
-    #[allow(unreachable_code)]
-    None
+    current::tun()
 }
 
 pub fn transparent_proxy_provider() -> Option<Arc<dyn TransparentProxyProvider>> {
-    #[cfg(target_os = "linux")]
-    {
-        return Some(Arc::new(rustbox_platform_linux::LinuxPlatform::new()));
-    }
-    #[allow(unreachable_code)]
-    None
+    current::transparent()
 }
 
 #[cfg(test)]

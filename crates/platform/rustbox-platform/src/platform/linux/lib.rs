@@ -18,7 +18,6 @@ use rustbox_io::{IoError, IoErrorKind};
 use rustbox_types::IpAddress;
 use rustbox_types::{Endpoint, Host};
 use std::net::{IpAddr, SocketAddr};
-#[cfg(target_os = "linux")]
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::process::Command;
@@ -26,6 +25,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use tokio::net::{TcpListener, TcpStream};
 use tun_rs::{DeviceBuilder, Layer, SyncDevice};
+
+pub(super) const CAPABILITIES: crate::PlatformCapabilities = crate::PlatformCapabilities {
+    platform: "Linux",
+    tcp_udp: crate::CapabilitySupport::Supported,
+    packet_device: crate::CapabilitySupport::Supported,
+    route_control: crate::CapabilitySupport::Limited,
+    transparent_proxy: crate::CapabilitySupport::Limited,
+    process_lookup: crate::CapabilitySupport::Supported,
+};
+
+pub(super) fn tun() -> Option<crate::TunCapabilities> {
+    let platform = std::sync::Arc::new(LinuxPlatform::new());
+    Some((platform.clone(), platform))
+}
+
+pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_host_api::TransparentProxyProvider>>
+{
+    Some(std::sync::Arc::new(LinuxPlatform::new()))
+}
 
 /// Linux 平台能力集合。
 ///
@@ -37,38 +55,6 @@ pub struct LinuxPlatform;
 impl LinuxPlatform {
     pub fn new() -> Self {
         Self
-    }
-
-    pub fn capability_matrix(&self) -> LinuxCapabilityMatrix {
-        linux_capability_matrix()
-    }
-}
-
-/// Linux 能力矩阵，用于组合层在启动前给出早期诊断。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LinuxCapabilityMatrix {
-    pub tcp_udp: CapabilitySupport,
-    pub packet_device: CapabilitySupport,
-    pub route_control: CapabilitySupport,
-    pub transparent_proxy: CapabilitySupport,
-    pub process_lookup: CapabilitySupport,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CapabilitySupport {
-    Supported,
-    Limited,
-    Planned,
-    Unsupported,
-}
-
-fn linux_capability_matrix() -> LinuxCapabilityMatrix {
-    LinuxCapabilityMatrix {
-        tcp_udp: CapabilitySupport::Supported,
-        packet_device: CapabilitySupport::Supported,
-        route_control: CapabilitySupport::Limited,
-        transparent_proxy: CapabilitySupport::Limited,
-        process_lookup: CapabilitySupport::Supported,
     }
 }
 

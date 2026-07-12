@@ -54,7 +54,6 @@ fn build_tun_device(config: PacketDeviceConfig) -> std::io::Result<SyncDevice> {
     }
 
     let device = builder.build_sync()?;
-    #[cfg(target_os = "linux")]
     device.set_nonblocking(true)?;
     Ok(device)
 }
@@ -118,20 +117,20 @@ fn io_error(err: std::io::Error) -> IoError {
 
 #[cfg(test)]
 mod tests {
+    use super::super::network_control::{has_exact_route, route_from_add_route};
     use super::*;
-    use crate::network_control::{has_exact_route, route_from_add_route};
     use rustbox_host_api::{InterfaceRef, NetworkControlReason};
     use rustbox_types::{IpAddress, IpCidr};
 
     #[test]
     fn declares_linux_capabilities_for_current_target() {
-        let matrix = LinuxPlatform::new().capability_matrix();
+        let matrix = crate::current_capabilities();
 
-        assert_eq!(matrix.tcp_udp, CapabilitySupport::Supported);
-        assert_eq!(matrix.packet_device, CapabilitySupport::Supported);
-        assert_eq!(matrix.route_control, CapabilitySupport::Limited);
-        assert_eq!(matrix.transparent_proxy, CapabilitySupport::Limited);
-        assert_eq!(matrix.process_lookup, CapabilitySupport::Supported);
+        assert_eq!(matrix.tcp_udp, crate::CapabilitySupport::Supported);
+        assert_eq!(matrix.packet_device, crate::CapabilitySupport::Supported);
+        assert_eq!(matrix.route_control, crate::CapabilitySupport::Limited);
+        assert_eq!(matrix.transparent_proxy, crate::CapabilitySupport::Limited);
+        assert_eq!(matrix.process_lookup, crate::CapabilitySupport::Supported);
     }
 
     #[test]

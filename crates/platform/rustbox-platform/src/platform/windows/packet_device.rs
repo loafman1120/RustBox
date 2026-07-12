@@ -1,6 +1,6 @@
-use super::*;
 #[cfg(test)]
-use crate::network_control::{has_exact_route, route_from_add_route};
+use super::network_control::{has_exact_route, route_from_add_route};
+use super::*;
 
 impl PacketDeviceProvider for WindowsPlatform {
     fn open(
@@ -135,13 +135,13 @@ mod tests {
 
     #[test]
     fn declares_windows_tun_and_route_capabilities_for_current_target() {
-        let matrix = WindowsPlatform::new().capability_matrix();
+        let matrix = crate::current_capabilities();
 
-        assert_eq!(matrix.tcp_udp, CapabilitySupport::Supported);
-        assert_eq!(matrix.packet_device, CapabilitySupport::Supported);
-        assert_eq!(matrix.route_control, CapabilitySupport::Supported);
-        assert_eq!(matrix.transparent_proxy, CapabilitySupport::Planned);
-        assert_eq!(matrix.process_lookup, CapabilitySupport::Supported);
+        assert_eq!(matrix.tcp_udp, crate::CapabilitySupport::Supported);
+        assert_eq!(matrix.packet_device, crate::CapabilitySupport::Supported);
+        assert_eq!(matrix.route_control, crate::CapabilitySupport::Supported);
+        assert_eq!(matrix.transparent_proxy, crate::CapabilitySupport::Planned);
+        assert_eq!(matrix.process_lookup, crate::CapabilitySupport::Supported);
     }
 
     #[test]
