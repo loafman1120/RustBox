@@ -24,26 +24,11 @@ async fn apply_windows_network_transaction(
         });
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        apply_windows_route_transaction(transaction).await
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err(NetworkControlError::new(format!(
-            "{}; reason={:?} operations={}",
-            network_control_status_message(),
-            transaction.reason,
-            transaction.operations.len()
-        )))
-    }
+    apply_windows_route_transaction(transaction).await
 }
 
-#[cfg(target_os = "windows")]
 static NEXT_NETWORK_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(target_os = "windows")]
 async fn apply_windows_route_transaction(
     transaction: NetworkTransaction,
 ) -> Result<NetworkLease, NetworkControlError> {
@@ -113,7 +98,6 @@ async fn apply_windows_route_transaction(
     })
 }
 
-#[cfg(target_os = "windows")]
 fn preserved_route(
     destination: rustbox_types::IpCidr,
     routes: &[Route],
@@ -141,7 +125,6 @@ fn preserved_route(
     Ok(route)
 }
 
-#[cfg(target_os = "windows")]
 fn route_contains(route: &Route, address: std::net::IpAddr) -> bool {
     match (route.destination, address) {
         (std::net::IpAddr::V4(network), std::net::IpAddr::V4(address)) => {
@@ -166,7 +149,6 @@ fn route_contains(route: &Route, address: std::net::IpAddr) -> bool {
     }
 }
 
-#[cfg(target_os = "windows")]
 pub(crate) fn has_exact_route(destination: rustbox_types::IpCidr, routes: &[Route]) -> bool {
     let address = std_ip_address(destination.address);
     routes
@@ -178,55 +160,48 @@ async fn release_windows_network_lease(lease: NetworkLease) -> Result<(), Networ
     if !lease.active || lease.operations.is_empty() {
         return Ok(());
     }
-    #[cfg(target_os = "windows")]
-    {
-        let handle = RouteHandle::new()
-            .map_err(|err| network_control_io_error("initialize route handle", err))?;
-        let existing = handle
-            .list()
-            .await
-            .map_err(|err| network_control_io_error("list routes", err))?;
-        let mut errors = Vec::new();
-        for operation in lease.operations.iter().rev() {
-            let route = match operation {
-                NetworkOperation::AddRoute {
-                    destination,
-                    gateway,
-                    interface,
-                    metric,
-                } => route_from_add_route(*destination, *gateway, interface, *metric)?,
-                NetworkOperation::PreserveRoute { destination } => {
-                    preserved_route(*destination, &existing)?
-                }
-                NetworkOperation::SetInterfaceDns { .. }
-                | NetworkOperation::SetPlatformHttpProxy(_) => {
-                    if let Err(err) = undo_windows_non_route_operation(operation) {
-                        errors.push(err.message);
-                    }
-                    continue;
-                }
-            };
-            if let Err(err) = handle.delete(&route).await {
-                errors.push(err.to_string());
+
+    let handle = RouteHandle::new()
+        .map_err(|err| network_control_io_error("initialize route handle", err))?;
+    let existing = handle
+        .list()
+        .await
+        .map_err(|err| network_control_io_error("list routes", err))?;
+    let mut errors = Vec::new();
+    for operation in lease.operations.iter().rev() {
+        let route = match operation {
+            NetworkOperation::AddRoute {
+                destination,
+                gateway,
+                interface,
+                metric,
+            } => route_from_add_route(*destination, *gateway, interface, *metric)?,
+            NetworkOperation::PreserveRoute { destination } => {
+                preserved_route(*destination, &existing)?
             }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(NetworkControlError::new(format!(
-                "release Windows network lease {} failed: {}",
-                lease.id,
-                errors.join("; ")
-            )))
+            NetworkOperation::SetInterfaceDns { .. }
+            | NetworkOperation::SetPlatformHttpProxy(_) => {
+                if let Err(err) = undo_windows_non_route_operation(operation) {
+                    errors.push(err.message);
+                }
+                continue;
+            }
+        };
+        if let Err(err) = handle.delete(&route).await {
+            errors.push(err.to_string());
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err(NetworkControlError::new(network_control_status_message()))
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(NetworkControlError::new(format!(
+            "release Windows network lease {} failed: {}",
+            lease.id,
+            errors.join("; ")
+        )))
     }
 }
 
-#[cfg(target_os = "windows")]
 fn apply_windows_non_route_operation(
     operation: &NetworkOperation,
 ) -> Result<(), NetworkControlError> {
@@ -264,7 +239,6 @@ fn apply_windows_non_route_operation(
     }
 }
 
-#[cfg(target_os = "windows")]
 fn undo_windows_non_route_operation(
     operation: &NetworkOperation,
 ) -> Result<(), NetworkControlError> {
@@ -287,17 +261,14 @@ fn undo_windows_non_route_operation(
     }
 }
 
-#[cfg(target_os = "windows")]
 fn ps_quote(value: &str) -> String {
     value.replace('\'', "''")
 }
 
-#[cfg(target_os = "windows")]
 fn run_powershell(script: &str) -> Result<(), NetworkControlError> {
     run_powershell_with_env(script, &[])
 }
 
-#[cfg(target_os = "windows")]
 fn run_powershell_with_env(
     script: &str,
     env: &[(&str, String)],
@@ -321,7 +292,6 @@ fn run_powershell_with_env(
     }
 }
 
-#[cfg(target_os = "windows")]
 pub(crate) fn route_from_add_route(
     destination: rustbox_types::IpCidr,
     gateway: Option<IpAddress>,
@@ -346,7 +316,6 @@ pub(crate) fn route_from_add_route(
     Ok(route)
 }
 
-#[cfg(target_os = "windows")]
 fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError> {
     match interface {
         InterfaceRef::Index(index) => Ok(*index),
@@ -356,7 +325,6 @@ fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError>
     }
 }
 
-#[cfg(target_os = "windows")]
 fn std_ip_address(address: IpAddress) -> std::net::IpAddr {
     match address {
         IpAddress::V4(octets) => std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)),
@@ -364,15 +332,12 @@ fn std_ip_address(address: IpAddress) -> std::net::IpAddr {
     }
 }
 
-#[cfg(target_os = "windows")]
 async fn rollback_routes(handle: &RouteHandle, routes: &[Route]) {
     for route in routes.iter().rev() {
         let _ = handle.delete(route).await;
     }
 }
 
-#[cfg(target_os = "windows")]
-#[cfg(target_os = "windows")]
 fn network_control_io_error(action: &str, err: std::io::Error) -> NetworkControlError {
     NetworkControlError::new(format!("{action} failed: {err}"))
 }

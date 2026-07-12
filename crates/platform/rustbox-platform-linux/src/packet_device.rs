@@ -9,7 +9,6 @@ impl PacketDeviceProvider for LinuxPlatform {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn open_linux_packet_device(
     config: PacketDeviceConfig,
 ) -> Result<PacketDeviceLease, PacketDeviceError> {
@@ -35,19 +34,6 @@ fn open_linux_packet_device(
     })
 }
 
-#[cfg(not(target_os = "linux"))]
-fn open_linux_packet_device(
-    config: PacketDeviceConfig,
-) -> Result<PacketDeviceLease, PacketDeviceError> {
-    Err(PacketDeviceError::new(format!(
-        "{}; requested name={:?} addresses={}",
-        packet_device_status_message(),
-        config.name,
-        config.addresses.len()
-    )))
-}
-
-#[cfg(target_os = "linux")]
 fn build_tun_device(config: PacketDeviceConfig) -> std::io::Result<SyncDevice> {
     let mut builder = DeviceBuilder::new().layer(Layer::L3);
     if let Some(name) = config.name {
@@ -73,19 +59,16 @@ fn build_tun_device(config: PacketDeviceConfig) -> std::io::Result<SyncDevice> {
 }
 
 /// Thin RustBox `PacketDevice` wrapper over a real Linux TUN `tun-rs` device.
-#[cfg(target_os = "linux")]
 struct TunPacketDevice {
     device: SyncDevice,
 }
 
-#[cfg(target_os = "linux")]
 impl TunPacketDevice {
     fn new(device: SyncDevice) -> Self {
         Self { device }
     }
 }
 
-#[cfg(target_os = "linux")]
 impl PacketDevice for TunPacketDevice {
     fn poll_recv_packet(
         self: Pin<&mut Self>,
@@ -95,8 +78,6 @@ impl PacketDevice for TunPacketDevice {
         match self.get_mut().device.recv(buf) {
             Ok(len) => Poll::Ready(Ok(len)),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                // The adapter is deliberately tiny; a future runtime-specific
-                // packet device can replace this with true readiness wakers.
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
@@ -120,7 +101,6 @@ impl PacketDevice for TunPacketDevice {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn io_error(err: std::io::Error) -> IoError {
     let kind = match err.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
@@ -138,36 +118,21 @@ fn io_error(err: std::io::Error) -> IoError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
     use rustbox_host_api::{InterfaceRef, NetworkControlReason};
-    #[cfg(target_os = "linux")]
     use rustbox_types::{IpAddress, IpCidr};
 
     #[test]
     fn declares_linux_capabilities_for_current_target() {
         let matrix = LinuxPlatform::new().capability_matrix();
 
-        #[cfg(target_os = "linux")]
-        {
-            assert_eq!(matrix.tcp_udp, CapabilitySupport::Supported);
-            assert_eq!(matrix.packet_device, CapabilitySupport::Supported);
-            assert_eq!(matrix.route_control, CapabilitySupport::Limited);
-            assert_eq!(matrix.transparent_proxy, CapabilitySupport::Limited);
-            assert_eq!(matrix.process_lookup, CapabilitySupport::Supported);
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            assert_eq!(matrix.tcp_udp, CapabilitySupport::Unsupported);
-            assert_eq!(matrix.packet_device, CapabilitySupport::Unsupported);
-            assert_eq!(matrix.route_control, CapabilitySupport::Unsupported);
-            assert_eq!(matrix.transparent_proxy, CapabilitySupport::Unsupported);
-            assert_eq!(matrix.process_lookup, CapabilitySupport::Unsupported);
-        }
+        assert_eq!(matrix.tcp_udp, CapabilitySupport::Supported);
+        assert_eq!(matrix.packet_device, CapabilitySupport::Supported);
+        assert_eq!(matrix.route_control, CapabilitySupport::Limited);
+        assert_eq!(matrix.transparent_proxy, CapabilitySupport::Limited);
+        assert_eq!(matrix.process_lookup, CapabilitySupport::Supported);
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn accepts_empty_network_control_transaction_as_noop_lease() {
         let platform = LinuxPlatform::new();
         let transaction = NetworkTransaction {
@@ -184,7 +149,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn converts_add_route_operation_to_net_route() {
         let route = route_from_add_route(
             IpCidr::new(IpAddress::V4([10, 14, 0, 0]), 24).expect("cidr"),
@@ -208,7 +172,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn recognizes_an_existing_exact_exclusion_route() {
         let destination = IpCidr::new(IpAddress::V4([192, 0, 2, 7]), 32).expect("host route");
         let routes = vec![
@@ -223,7 +186,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn opens_and_closes_real_tun_when_e2e_is_enabled() {
         if std::env::var_os("RUSTBOX_TUN_E2E").is_none() {
             return;
@@ -247,7 +209,6 @@ mod tests {
         drop(lease);
     }
 
-    #[cfg(target_os = "linux")]
     fn block_on_ready<T>(future: impl core::future::Future<Output = T>) -> T {
         tokio::runtime::Builder::new_current_thread()
             .build()

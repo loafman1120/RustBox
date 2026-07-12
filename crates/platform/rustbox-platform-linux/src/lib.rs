@@ -4,39 +4,24 @@
 //! 平台边界。当前只接入 `tun-rs` packet device；netlink、nftables 和进程
 //! 查询会继续隔离在这里，portable kernel 和协议模块不直接看到 OS 细节。
 
-#[cfg(target_os = "linux")]
 use net_route::{Handle as RouteHandle, Route};
-#[cfg(target_os = "linux")]
-use rustbox_host_api::{AcceptedTransparentStream, TransparentRedirectMode};
 use rustbox_host_api::{
-    BoxFuture, ConnectionKey, NetworkControl, NetworkControlError, NetworkLease,
-    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceLease,
-    PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError, TransparentProxyError,
+    AcceptedTransparentStream, BoxFuture, ConnectionKey, InterfaceRef, NetworkControl,
+    NetworkControlError, NetworkLease, NetworkOperation, NetworkTransaction, PacketDeviceConfig,
+    PacketDeviceError, PacketDeviceInfo, PacketDeviceLease, PacketDeviceProvider, ProcessInfo,
+    ProcessLookup, ProcessLookupError, RollbackPolicy, TransparentProxyError,
     TransparentProxyProvider, TransparentStreamListener, TransparentTcpBind,
 };
-#[cfg(target_os = "linux")]
-use rustbox_host_api::{InterfaceRef, NetworkOperation, PacketDeviceInfo, RollbackPolicy};
-#[cfg(target_os = "linux")]
 use rustbox_io::PacketDevice;
-#[cfg(target_os = "linux")]
 use rustbox_io::{IoError, IoErrorKind};
-#[cfg(target_os = "linux")]
 use rustbox_types::IpAddress;
-#[cfg(target_os = "linux")]
 use rustbox_types::{Endpoint, Host};
-#[cfg(target_os = "linux")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(target_os = "linux")]
 use std::pin::Pin;
-#[cfg(target_os = "linux")]
 use std::process::Command;
-#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "linux")]
 use std::task::{Context, Poll};
-#[cfg(target_os = "linux")]
 use tokio::net::{TcpListener, TcpStream};
-#[cfg(target_os = "linux")]
 use tun_rs::{DeviceBuilder, Layer, SyncDevice};
 
 /// Linux 平台能力集合。
@@ -74,7 +59,6 @@ pub enum CapabilitySupport {
     Unsupported,
 }
 
-#[cfg(target_os = "linux")]
 fn linux_capability_matrix() -> LinuxCapabilityMatrix {
     LinuxCapabilityMatrix {
         tcp_udp: CapabilitySupport::Supported,
@@ -85,28 +69,6 @@ fn linux_capability_matrix() -> LinuxCapabilityMatrix {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn linux_capability_matrix() -> LinuxCapabilityMatrix {
-    LinuxCapabilityMatrix {
-        tcp_udp: CapabilitySupport::Unsupported,
-        packet_device: CapabilitySupport::Unsupported,
-        route_control: CapabilitySupport::Unsupported,
-        transparent_proxy: CapabilitySupport::Unsupported,
-        process_lookup: CapabilitySupport::Unsupported,
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn packet_device_status_message() -> &'static str {
-    "Linux packet devices are unavailable on this target"
-}
-
-#[cfg(not(target_os = "linux"))]
-fn network_control_status_message() -> &'static str {
-    "Linux network control is unavailable on this target"
-}
-
-#[cfg(target_os = "linux")]
 fn process_lookup_status_message() -> &'static str {
     "Linux process lookup uses ss process ownership data"
 }

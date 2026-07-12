@@ -12,43 +12,30 @@ impl TransparentProxyProvider for LinuxPlatform {
 async fn bind_linux_transparent_tcp(
     request: TransparentTcpBind,
 ) -> Result<Box<dyn TransparentStreamListener>, TransparentProxyError> {
-    #[cfg(target_os = "linux")]
-    {
-        if request.mode != TransparentRedirectMode::Redirect {
-            return Err(TransparentProxyError::new(format!(
-                "Linux transparent proxy currently supports redirect mode only; requested {:?}",
-                request.mode
-            )));
-        }
-        if request.mark.is_some() {
-            return Err(TransparentProxyError::new(
-                "Linux transparent redirect does not use socket mark; set mark only for tproxy",
-            ));
-        }
-
-        let addr = endpoint_to_socket_addr(&request.listen).map_err(TransparentProxyError::new)?;
-        let listener = TcpListener::bind(addr)
-            .await
-            .map_err(|err| TransparentProxyError::new(format!("bind transparent TCP: {err}")))?;
-        Ok(Box::new(LinuxTransparentTcpListener { inner: listener })
-            as Box<dyn TransparentStreamListener>)
+    if request.mode != TransparentRedirectMode::Redirect {
+        return Err(TransparentProxyError::new(format!(
+            "Linux transparent proxy currently supports redirect mode only; requested {:?}",
+            request.mode
+        )));
+    }
+    if request.mark.is_some() {
+        return Err(TransparentProxyError::new(
+            "Linux transparent redirect does not use socket mark; set mark only for tproxy",
+        ));
     }
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err(TransparentProxyError::new(format!(
-            "Linux transparent TCP is unavailable on this target; listen={}",
-            request.listen
-        )))
-    }
+    let addr = endpoint_to_socket_addr(&request.listen).map_err(TransparentProxyError::new)?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|err| TransparentProxyError::new(format!("bind transparent TCP: {err}")))?;
+    Ok(Box::new(LinuxTransparentTcpListener { inner: listener })
+        as Box<dyn TransparentStreamListener>)
 }
 
-#[cfg(target_os = "linux")]
 struct LinuxTransparentTcpListener {
     inner: TcpListener,
 }
 
-#[cfg(target_os = "linux")]
 impl TransparentStreamListener for LinuxTransparentTcpListener {
     fn local_endpoint(&self) -> Option<Endpoint> {
         self.inner.local_addr().ok().map(socket_addr_to_endpoint)
@@ -71,7 +58,6 @@ impl TransparentStreamListener for LinuxTransparentTcpListener {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxyError> {
     match stream
         .local_addr()
@@ -104,7 +90,6 @@ fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxy
     }
 }
 
-#[cfg(target_os = "linux")]
 fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, String> {
     match &endpoint.host {
         Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
@@ -114,7 +99,6 @@ fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, String> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
     let host = match addr.ip() {
         IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
@@ -123,7 +107,6 @@ fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
     Endpoint::new(host, addr.port())
 }
 
-#[cfg(target_os = "linux")]
 fn ip_to_std(ip: IpAddress) -> IpAddr {
     match ip {
         IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),

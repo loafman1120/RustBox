@@ -9,7 +9,6 @@ impl ProcessLookup for LinuxPlatform {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn lookup_linux_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
     let protocol = match key.network {
         rustbox_types::Network::Tcp => "-tanp",
@@ -54,14 +53,4 @@ fn lookup_linux_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, Proce
         package_name: None,
         user_id: None,
     }))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn lookup_linux_process(_key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
-    Err(ProcessLookupError::new(process_lookup_status_message()))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn process_lookup_status_message() -> &'static str {
-    "Linux process lookup is unavailable on this target"
 }

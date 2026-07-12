@@ -9,7 +9,6 @@ impl ProcessLookup for WindowsPlatform {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn lookup_windows_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
     let command = match key.network {
         rustbox_types::Network::Tcp => "Get-NetTCPConnection",
@@ -49,14 +48,4 @@ fn lookup_windows_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, Pro
         package_name: None,
         user_id: None,
     }))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn lookup_windows_process(_key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
-    Err(ProcessLookupError::new(process_lookup_status_message()))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn process_lookup_status_message() -> &'static str {
-    "Windows process lookup is unavailable on this target"
 }
