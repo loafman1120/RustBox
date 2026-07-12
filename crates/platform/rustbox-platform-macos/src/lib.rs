@@ -5,9 +5,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use net_route::{Handle, Route};
 use rustbox_host_api::{
-    BoxFuture, InterfaceRef, NetworkControl, NetworkControlError, NetworkLease,
-    NetworkOperation, NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo,
-    PacketDeviceLease, PacketDeviceProvider, RollbackPolicy,
+    BoxFuture, InterfaceRef, NetworkControl, NetworkControlError, NetworkLease, NetworkOperation,
+    NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
+    PacketDeviceProvider, RollbackPolicy,
 };
 use rustbox_io::{IoError, PacketDevice};
 use rustbox_types::{IpAddress, IpCidr};
@@ -46,9 +46,7 @@ impl NetworkControl for MacosPlatform {
 
 static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
 
-fn open_packet_device(
-    config: PacketDeviceConfig,
-) -> Result<PacketDeviceLease, PacketDeviceError> {
+fn open_packet_device(config: PacketDeviceConfig) -> Result<PacketDeviceLease, PacketDeviceError> {
     let requested = config.clone();
     let mut builder = DeviceBuilder::new().layer(Layer::L3);
     if let Some(name) = config.name {
@@ -173,9 +171,7 @@ fn preserve(destination: IpCidr, routes: &[Route]) -> Result<Route, NetworkContr
         .iter()
         .filter(|route| contains(route, address))
         .max_by_key(|route| route.prefix)
-        .ok_or_else(|| {
-            NetworkControlError::new(format!("no route for exclusion {destination}"))
-        })?;
+        .ok_or_else(|| NetworkControlError::new(format!("no route for exclusion {destination}")))?;
     let mut route = Route::new(address, destination.prefix_len);
     if let Some(index) = best.ifindex {
         route = route.with_ifindex(index);
@@ -205,9 +201,8 @@ fn contains(route: &Route, address: std::net::IpAddr) -> bool {
 fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError> {
     match interface {
         InterfaceRef::Index(index) => Ok(*index),
-        InterfaceRef::Name(name) => net_route::ifname_to_index(name).ok_or_else(|| {
-            NetworkControlError::new(format!("unknown macOS interface `{name}`"))
-        }),
+        InterfaceRef::Name(name) => net_route::ifname_to_index(name)
+            .ok_or_else(|| NetworkControlError::new(format!("unknown macOS interface `{name}`"))),
     }
 }
 
