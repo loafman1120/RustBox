@@ -112,7 +112,11 @@ fn preserved_route(
                 "no existing Linux route can preserve exclusion {destination}"
             ))
         })?;
-    let mut route = Route::new(address, destination.prefix_len).with_table(best.table);
+    let mut route = Route::new(address, destination.prefix_len);
+    #[cfg(target_os = "linux")]
+    {
+        route = route.with_table(best.table);
+    }
     if let Some(index) = best.ifindex {
         route = route.with_ifindex(index);
     }
@@ -149,7 +153,7 @@ fn route_contains(route: &Route, address: std::net::IpAddr) -> bool {
     }
 }
 
-fn has_exact_route(destination: rustbox_types::IpCidr, routes: &[Route]) -> bool {
+pub(crate) fn has_exact_route(destination: rustbox_types::IpCidr, routes: &[Route]) -> bool {
     let address = std_ip_address(destination.address);
     routes
         .iter()
@@ -294,7 +298,7 @@ fn run_linux_command(program: &str, args: &[String]) -> Result<(), NetworkContro
     }
 }
 
-fn route_from_add_route(
+pub(crate) fn route_from_add_route(
     destination: rustbox_types::IpCidr,
     gateway: Option<IpAddress>,
     interface: &InterfaceRef,

@@ -34,6 +34,9 @@ members = [
     "crates/modules/transport/rustbox-transport",
     "crates/modules/protocol/rustbox-anytls",
     "crates/rustbox-observability",
+    "crates/platform/rustbox-platform-linux",
+    "crates/platform/rustbox-platform-windows",
+    "crates/platform/rustbox-platform-macos",
     "crates/platform/rustbox-platform",
 ]
 

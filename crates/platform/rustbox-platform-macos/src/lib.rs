@@ -201,8 +201,19 @@ fn contains(route: &Route, address: std::net::IpAddr) -> bool {
 fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError> {
     match interface {
         InterfaceRef::Index(index) => Ok(*index),
-        InterfaceRef::Name(name) => net_route::ifname_to_index(name)
-            .ok_or_else(|| NetworkControlError::new(format!("unknown macOS interface `{name}`"))),
+        InterfaceRef::Name(name) => {
+            #[cfg(target_os = "macos")]
+            {
+                net_route::ifname_to_index(name)
+                    .ok_or_else(|| NetworkControlError::new(format!("unknown interface `{name}`")))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(NetworkControlError::new(format!(
+                    "interface name resolution not available on this platform; use index instead, got `{name}`"
+                )))
+            }
+        }
     }
 }
 

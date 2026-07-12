@@ -24,10 +24,7 @@ async fn bind_linux_transparent_tcp(
         ));
     }
 
-    let addr = endpoint_to_socket_addr(&request.listen).map_err(TransparentProxyError::new)?;
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|err| TransparentProxyError::new(format!("bind transparent TCP: {err}")))?;
+    let listener = bind_tcp_listener(&request.listen).await?;
     Ok(Box::new(LinuxTransparentTcpListener { inner: listener })
         as Box<dyn TransparentStreamListener>)
 }
@@ -58,6 +55,22 @@ impl TransparentStreamListener for LinuxTransparentTcpListener {
     }
 }
 
+#[cfg(target_os = "linux")]
+async fn bind_tcp_listener(listen: &Endpoint) -> Result<TcpListener, TransparentProxyError> {
+    let addr = endpoint_to_socket_addr(listen).map_err(TransparentProxyError::new)?;
+    TcpListener::bind(addr)
+        .await
+        .map_err(|err| TransparentProxyError::new(format!("bind transparent TCP: {err}")))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn bind_tcp_listener(_listen: &Endpoint) -> Result<TcpListener, TransparentProxyError> {
+    Err(TransparentProxyError::new(
+        "Linux transparent proxy is only available on Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
 fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxyError> {
     match stream
         .local_addr()
@@ -90,6 +103,14 @@ fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxy
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn original_destination(_stream: &TcpStream) -> Result<Endpoint, TransparentProxyError> {
+    Err(TransparentProxyError::new(
+        "Linux transparent proxy is only available on Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
 fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, String> {
     match &endpoint.host {
         Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
@@ -107,6 +128,7 @@ fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
     Endpoint::new(host, addr.port())
 }
 
+#[cfg(target_os = "linux")]
 fn ip_to_std(ip: IpAddress) -> IpAddr {
     match ip {
         IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),

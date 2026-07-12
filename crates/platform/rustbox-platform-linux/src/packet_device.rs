@@ -54,6 +54,7 @@ fn build_tun_device(config: PacketDeviceConfig) -> std::io::Result<SyncDevice> {
     }
 
     let device = builder.build_sync()?;
+    #[cfg(target_os = "linux")]
     device.set_nonblocking(true)?;
     Ok(device)
 }
@@ -118,6 +119,7 @@ fn io_error(err: std::io::Error) -> IoError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network_control::{has_exact_route, route_from_add_route};
     use rustbox_host_api::{InterfaceRef, NetworkControlReason};
     use rustbox_types::{IpAddress, IpCidr};
 

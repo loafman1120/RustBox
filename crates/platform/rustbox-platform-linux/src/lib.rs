@@ -17,7 +17,9 @@ use rustbox_io::PacketDevice;
 use rustbox_io::{IoError, IoErrorKind};
 use rustbox_types::IpAddress;
 use rustbox_types::{Endpoint, Host};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
+#[cfg(target_os = "linux")]
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
