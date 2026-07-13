@@ -22,7 +22,7 @@ param(
     [ValidateRange(21, 35)]
     [int] $AndroidApi = 21,
 
-    [switch] $Debug,
+    [switch] $Development,
 
     [switch] $Locked
 )
@@ -30,8 +30,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $RootDir = Resolve-Path (Join-Path $PSScriptRoot "../..")
-$Profile = $Debug ? "debug" : "release"
-$BuildFlag = $Debug ? @() : @("--release")
+$Profile = $Development ? "debug" : "release"
+$BuildFlag = $Development ? @() : @("--release")
 $LockedFlag = $Locked ? @("--locked") : @()
 
 function Require-Command([string] $Name, [string] $Hint) {

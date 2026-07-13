@@ -40,59 +40,59 @@ jobs:
         shell: pwsh
         run: ./scripts/build/rust.ps1 -Fmt
 
-  # Compile and execute the public lifecycle ABI inside Android, as an app would.
-  e2e-ffi-android:
-    name: E2E FFI lifecycle (Android x86_64)
-    runs-on: ubuntu-latest
+  # Build and execute the public lifecycle ABI on the mobile platforms that
+  # consume it. One matrix keeps the shared Rust setup and artifact contract in
+  # sync while platform-specific runner steps remain explicit.
+  e2e-ffi-mobile:
+    name: E2E FFI lifecycle (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install stable Rust and cargo-ndk
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          cargo install cargo-ndk --locked
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ffi-e2e-android
-      - name: Run lifecycle consumer in Android Emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 29
-          arch: x86_64
-          disable-animations: true
-          script: pwsh -NoLogo -NoProfile -File ./scripts/test/ffi.ps1 -Platform Android
-      - name: Upload Android library
-        uses: actions/upload-artifact@v7
-        with:
-          name: rustbox-ffi-android-x86_64
-          path: dist/android/x86_64/librustbox_ffi.so
-          if-no-files-found: error
-
-  # Build the same C lifecycle consumer against the iOS static library and run
-  # it inside an arm64 iOS Simulator. The release build also assembles the
-  # XCFramework consumed by Flutter.
-  e2e-ffi-ios:
-    name: E2E FFI lifecycle (iOS arm64)
-    runs-on: macos-latest
-    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Android
+            label: Android x86_64
+            os: ubuntu-latest
+            cache_key: ffi-e2e-android
+            artifact_name: rustbox-ffi-android-x86_64
+            artifact_path: dist/android/x86_64/librustbox_ffi.so
+          - platform: IOS
+            label: iOS arm64
+            os: macos-latest
+            cache_key: ffi-e2e-ios
+            artifact_name: rustbox-ffi-ios-xcframework
+            artifact_path: dist/ios/RustBoxFFI.xcframework
     steps:
       - uses: actions/checkout@v7
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+      - name: Install cargo-ndk
+        if: matrix.platform == 'Android'
+        run: |
+          cargo install cargo-ndk --locked
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ffi-e2e-ios
+          shared-key: ${{ matrix.cache_key }}
+      - name: Run lifecycle consumer in Android Emulator
+        if: matrix.platform == 'Android'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          disable-animations: true
+          script: pwsh -NoLogo -NoProfile -File ./scripts/test/ffi.ps1 -Platform Android
       - name: Run lifecycle consumer in iOS Simulator
+        if: matrix.platform == 'IOS'
         shell: pwsh
         run: ./scripts/test/ffi.ps1 -Platform IOS
-      - name: Upload iOS XCFramework
+      - name: Upload mobile FFI library
         uses: actions/upload-artifact@v7
         with:
-          name: rustbox-ffi-ios-xcframework
-          path: dist/ios/RustBoxFFI.xcframework
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
           if-no-files-found: error
 
   # ── Build: compile, test, clippy, doc, upload artifact ─────────
