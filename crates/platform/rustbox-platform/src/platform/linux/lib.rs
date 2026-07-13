@@ -5,7 +5,9 @@
 //! 查询会继续隔离在这里，portable kernel 和协议模块不直接看到 OS 细节。
 
 use net_route::{Handle as RouteHandle, Route};
-use rustbox_host_api::{
+use rustbox_io::PacketDevice;
+use rustbox_io::{IoError, IoErrorKind};
+use rustbox_kernel::{
     AcceptedTransparentStream, BoxFuture, ConnectionKey, InterfaceRef, NetworkControl,
     NetworkControlError, NetworkLease, NetworkOperation, NetworkTransaction, PacketDeviceConfig,
     PacketDeviceError, PacketDeviceInfo, PacketDeviceLease, PacketDeviceProvider, ProcessInfo,
@@ -13,8 +15,6 @@ use rustbox_host_api::{
     TransparentProxyProvider, TransparentRedirectMode, TransparentStreamListener,
     TransparentTcpBind,
 };
-use rustbox_io::PacketDevice;
-use rustbox_io::{IoError, IoErrorKind};
 use rustbox_types::IpAddress;
 use rustbox_types::{Endpoint, Host};
 use std::net::{IpAddr, SocketAddr};
@@ -40,7 +40,7 @@ pub(super) fn tun() -> Option<crate::TunCapabilities> {
     Some((platform.clone(), platform))
 }
 
-pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_host_api::TransparentProxyProvider>>
+pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_kernel::TransparentProxyProvider>>
 {
     Some(std::sync::Arc::new(LinuxPlatform::new()))
 }

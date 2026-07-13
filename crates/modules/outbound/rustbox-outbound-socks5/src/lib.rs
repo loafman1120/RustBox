@@ -9,11 +9,11 @@ use core::task::{Context, Poll};
 use fast_socks5::client::{Config as SocksClientConfig, Socks5Datagram, Socks5Stream};
 use fast_socks5::util::target_addr::TargetAddr;
 use fast_socks5::{AuthenticationMethod, new_udp_header, parse_udp_request};
-use rustbox_host_api::{
+use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use std::io;
@@ -348,8 +348,8 @@ fn io_error(err: io::Error) -> IoError {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_host_api::TokioHost;
     use rustbox_inbound_socks5::Socks5Inbound;
+    use rustbox_kernel::TokioHost;
     use rustbox_kernel::{Engine, FlowSink, Service, ServiceContext};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;

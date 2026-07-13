@@ -4,7 +4,6 @@ use std::ptr;
 
 unsafe extern "C" {
     fn rustbox_ffi_c_snapshot_size() -> usize;
-    fn rustbox_ffi_c_metrics_size() -> usize;
     fn rustbox_ffi_c_call_abi_version() -> u32;
     fn rustbox_ffi_c_lifecycle_smoke() -> u32;
 }
@@ -23,42 +22,69 @@ fn clear(diagnostic: &mut RustBoxFfiDiagnostic) {
     unsafe { rustbox_diagnostic_clear(diagnostic) };
 }
 
+const HTTP_CONFIG: &[u8] = br#"
+schema_version = 1
+[[inbounds]]
+id = "http"
+type = "http-connect"
+listen = "127.0.0.1:0"
+[[outbounds]]
+id = "direct"
+type = "direct"
+[[routes]]
+type = "default"
+outbound = "direct"
+"#;
+
 #[test]
-fn owns_the_complete_engine_lifecycle() {
+fn submits_lifecycle_without_blocking_the_caller() {
     let mut diagnostic = RustBoxFfiDiagnostic::default();
     let mut handle = RustBoxEngineHandle(0);
     assert_eq!(
-        rustbox_engine_create_default_http_proxy(0, &mut handle, &mut diagnostic),
+        rustbox_engine_create(
+            HTTP_CONFIG.as_ptr(),
+            HTTP_CONFIG.len(),
+            &mut handle,
+            &mut diagnostic,
+        ),
         RustBoxStatusCode::Ok
     );
-    assert!(diagnostic.message.is_null());
 
+    let mut request = RustBoxRequestHandle(0);
     assert_eq!(
-        rustbox_engine_start(handle, &mut diagnostic),
+        rustbox_engine_start(handle, &mut request, &mut diagnostic),
         RustBoxStatusCode::Ok
     );
-    let mut snapshot = RustBoxFfiEngineSnapshot {
-        state: RustBoxEngineStateCode::Failed,
-        generation: 0,
-        inbound_count: 0,
-        outbound_count: 0,
-    };
-    assert_eq!(
-        rustbox_engine_snapshot(handle, &mut snapshot, &mut diagnostic),
-        RustBoxStatusCode::Ok
-    );
-    assert_eq!(snapshot.state, RustBoxEngineStateCode::Running);
-    let mut metrics = RustBoxFfiMetricsSnapshot::default();
-    assert_eq!(
-        rustbox_engine_metrics(handle, &mut metrics, &mut diagnostic),
-        RustBoxStatusCode::Ok
-    );
-    assert_eq!(metrics.services_started, 1);
+    assert_ne!(request.0, 0);
 
+    let mut state = RustBoxRequestStateCode::Pending;
+    loop {
+        assert_eq!(
+            rustbox_engine_request_poll(handle, request, &mut state, &mut diagnostic),
+            RustBoxStatusCode::Ok
+        );
+        if state == RustBoxRequestStateCode::Succeeded {
+            break;
+        }
+        assert_eq!(state, RustBoxRequestStateCode::Pending);
+        std::thread::yield_now();
+    }
+
+    let mut stop = RustBoxRequestHandle(0);
     assert_eq!(
-        rustbox_engine_stop(handle, &mut diagnostic),
+        rustbox_engine_stop(handle, &mut stop, &mut diagnostic),
         RustBoxStatusCode::Ok
     );
+    loop {
+        assert_eq!(
+            rustbox_engine_request_poll(handle, stop, &mut state, &mut diagnostic),
+            RustBoxStatusCode::Ok
+        );
+        if state == RustBoxRequestStateCode::Succeeded {
+            break;
+        }
+        std::thread::yield_now();
+    }
     assert_eq!(
         rustbox_engine_destroy(handle, &mut diagnostic),
         RustBoxStatusCode::Ok
@@ -83,18 +109,28 @@ outbound = "direct"
     let mut diagnostic = RustBoxFfiDiagnostic::default();
     let mut handle = RustBoxEngineHandle(0);
     assert_eq!(
-        rustbox_engine_create_from_config_toml(
+        rustbox_engine_create(config.as_ptr(), config.len(), &mut handle, &mut diagnostic,),
+        RustBoxStatusCode::Ok
+    );
+    let mut request = RustBoxRequestHandle(0);
+    assert_eq!(
+        rustbox_engine_reload(
+            handle,
             config.as_ptr(),
             config.len(),
-            &mut handle,
+            &mut request,
             &mut diagnostic,
         ),
         RustBoxStatusCode::Ok
     );
-    assert_eq!(
-        rustbox_engine_reload_config_toml(handle, config.as_ptr(), config.len(), &mut diagnostic,),
-        RustBoxStatusCode::Ok
-    );
+    let mut state = RustBoxRequestStateCode::Pending;
+    while state == RustBoxRequestStateCode::Pending {
+        assert_eq!(
+            rustbox_engine_request_poll(handle, request, &mut state, &mut diagnostic),
+            RustBoxStatusCode::Ok
+        );
+    }
+    assert_eq!(state, RustBoxRequestStateCode::Succeeded);
     assert_eq!(
         rustbox_engine_destroy(handle, &mut diagnostic),
         RustBoxStatusCode::Ok
@@ -105,7 +141,12 @@ outbound = "direct"
 fn reports_pointer_and_handle_errors() {
     let mut diagnostic = RustBoxFfiDiagnostic::default();
     assert_eq!(
-        rustbox_engine_create_default_http_proxy(0, ptr::null_mut(), &mut diagnostic),
+        rustbox_engine_create(
+            HTTP_CONFIG.as_ptr(),
+            HTTP_CONFIG.len(),
+            ptr::null_mut(),
+            &mut diagnostic,
+        ),
         RustBoxStatusCode::InvalidArgument
     );
     assert_eq!(
@@ -134,15 +175,13 @@ fn reports_pointer_and_handle_errors() {
 
 #[test]
 fn exposes_expected_abi_layout() {
-    assert_eq!(rustbox_ffi_abi_version(), 1);
+    assert_eq!(rustbox_ffi_abi_version(), 2);
     assert_eq!(std::mem::size_of::<RustBoxEngineHandle>(), 8);
     assert_eq!(std::mem::size_of::<RustBoxStatusCode>(), 4);
     assert_eq!(std::mem::size_of::<RustBoxEngineStateCode>(), 4);
     assert_eq!(std::mem::size_of::<RustBoxFfiEngineSnapshot>(), 32);
-    assert_eq!(std::mem::size_of::<RustBoxFfiMetricsSnapshot>(), 112);
     assert_eq!(unsafe { rustbox_ffi_c_snapshot_size() }, 32);
-    assert_eq!(unsafe { rustbox_ffi_c_metrics_size() }, 112);
-    assert_eq!(unsafe { rustbox_ffi_c_call_abi_version() }, 1);
+    assert_eq!(unsafe { rustbox_ffi_c_call_abi_version() }, 2);
 }
 
 #[test]

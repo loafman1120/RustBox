@@ -4,14 +4,14 @@
 //! proxy and process lookup remain explicit planned capabilities.
 
 use net_route::{Handle as RouteHandle, Route};
-use rustbox_host_api::{
+use rustbox_io::PacketDevice;
+use rustbox_io::{IoError, IoErrorKind};
+use rustbox_kernel::{
     BoxFuture, ConnectionKey, InterfaceRef, NetworkControl, NetworkControlError, NetworkLease,
     NetworkOperation, NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo,
     PacketDeviceLease, PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError,
     RollbackPolicy,
 };
-use rustbox_io::PacketDevice;
-use rustbox_io::{IoError, IoErrorKind};
 use rustbox_types::IpAddress;
 use std::pin::Pin;
 use std::process::Command;
@@ -33,7 +33,7 @@ pub(super) fn tun() -> Option<crate::TunCapabilities> {
     Some((platform.clone(), platform))
 }
 
-pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_host_api::TransparentProxyProvider>>
+pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_kernel::TransparentProxyProvider>>
 {
     None
 }

@@ -6,11 +6,11 @@
 //! by opening the upstream proxy through `NetworkProvider`.
 
 use base64::Engine;
-use rustbox_host_api::{
+use rustbox_io::{ByteStream, DatagramSocket, stream_write_all};
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect,
 };
-use rustbox_io::{ByteStream, DatagramSocket, stream_write_all};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, OutboundId};
 use std::sync::Arc;
@@ -313,7 +313,7 @@ impl AsyncWrite for HttpTunnelStream {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_host_api::TokioHost;
+    use rustbox_kernel::TokioHost;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

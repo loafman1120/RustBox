@@ -6,9 +6,8 @@ license.workspace = true
 
 [dependencies]
 fast-socks5 = "1.0.0"
-rustbox-host-api = { path = "../../../host/rustbox-host-api" }
-rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 tokio = { version = "1", features = ["io-util", "net"] }
 

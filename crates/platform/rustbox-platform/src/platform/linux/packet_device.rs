@@ -119,7 +119,7 @@ fn io_error(err: std::io::Error) -> IoError {
 mod tests {
     use super::super::network_control::{has_exact_route, route_from_add_route};
     use super::*;
-    use rustbox_host_api::{InterfaceRef, NetworkControlReason};
+    use rustbox_kernel::{InterfaceRef, NetworkControlReason};
     use rustbox_types::{IpAddress, IpCidr};
 
     #[test]
@@ -201,8 +201,8 @@ mod tests {
                     IpCidr::new(IpAddress::V4([198, 18, 0, 1]), 30).expect("test CIDR"),
                 ],
                 mtu: Some(1500),
-                route_mode: rustbox_host_api::RouteMode::Manual,
-                dns_mode: rustbox_host_api::TunDnsMode::None,
+                route_mode: rustbox_kernel::RouteMode::Manual,
+                dns_mode: rustbox_kernel::TunDnsMode::None,
             }))
             .expect("open real Linux TUN device; runner must have /dev/net/tun and CAP_NET_ADMIN");
         assert!(!lease.info.name.is_empty());

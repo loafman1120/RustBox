@@ -8,11 +8,11 @@ use core::num::NonZeroU64;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
-use rustbox_host_api::{
+use rustbox_io::{ByteStream, stream_close, stream_read, stream_write_all};
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, StreamListener, TaskName, TaskSpawner, TcpBind,
 };
-use rustbox_io::{ByteStream, stream_close, stream_read, stream_write_all};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_types::{
     Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network, ProtocolHint,
@@ -572,7 +572,7 @@ impl AsyncWrite for PrefixedByteStream {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_host_api::TokioHost;
+    use rustbox_kernel::TokioHost;
     use rustbox_kernel::{Engine, Service};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;

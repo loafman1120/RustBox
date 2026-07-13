@@ -3,11 +3,11 @@
 //! 本模块执行“直连”出站：把内核给出的目标 Endpoint 转换为宿主
 //! `NetworkProvider.connect_tcp` 调用，不直接接触系统 socket。
 
-use rustbox_host_api::{
+use rustbox_io::{ByteStream, DatagramSocket};
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect, UdpBind,
 };
-use rustbox_io::{ByteStream, DatagramSocket};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use std::sync::Arc;

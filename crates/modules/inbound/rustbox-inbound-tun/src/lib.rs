@@ -5,7 +5,7 @@
 //! mutation stay behind host capability traits.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use rustbox_host_api::{
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, InterfaceRef, NetworkControl, NetworkControlReason,
     NetworkOperation, NetworkTransaction, NoopObservabilitySink, ObservabilitySink,
     PacketDeviceConfig, PacketDeviceProvider, RollbackPolicy, RouteMode, TaskName, TaskSpawner,
@@ -28,7 +28,7 @@ pub struct TunInboundConfig {
     pub route_includes: Vec<IpCidr>,
     pub route_excludes: Vec<IpCidr>,
     pub dns_servers: Vec<IpAddress>,
-    pub platform_proxy: Option<rustbox_host_api::PlatformProxyConfig>,
+    pub platform_proxy: Option<rustbox_kernel::PlatformProxyConfig>,
     pub platform_http_proxy: bool,
     pub auto_redirect: bool,
 }
@@ -43,8 +43,8 @@ pub struct TunInbound {
     config: TunInboundConfig,
     observability: Arc<dyn ObservabilitySink>,
     started: AtomicBool,
-    network_lease: Arc<Mutex<Option<rustbox_host_api::NetworkLease>>>,
-    stack_task: Option<rustbox_host_api::TaskHandle>,
+    network_lease: Arc<Mutex<Option<rustbox_kernel::NetworkLease>>>,
+    stack_task: Option<rustbox_kernel::TaskHandle>,
 }
 
 impl TunInbound {
@@ -77,7 +77,7 @@ impl TunInbound {
         self
     }
 
-    pub fn network_lease(&self) -> Option<rustbox_host_api::NetworkLease> {
+    pub fn network_lease(&self) -> Option<rustbox_kernel::NetworkLease> {
         self.network_lease
             .lock()
             .expect("tun inbound network lease lock")
@@ -232,7 +232,7 @@ impl TunInbound {
 
 fn network_transaction(
     config: &TunInboundConfig,
-    info: &rustbox_host_api::PacketDeviceInfo,
+    info: &rustbox_kernel::PacketDeviceInfo,
 ) -> NetworkTransaction {
     let mut operations = Vec::new();
     if config.auto_route {
@@ -327,12 +327,12 @@ mod tests {
     use super::*;
     use core::pin::Pin;
     use core::task::{Context, Poll};
-    use rustbox_host_api::{
+    use rustbox_io::{IoError, IoErrorKind, PacketDevice};
+    use rustbox_kernel::{Flow, FlowError, FlowOutcome};
+    use rustbox_kernel::{
         NetworkControlError, NetworkLease, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
         SpawnError, TaskHandle,
     };
-    use rustbox_io::{IoError, IoErrorKind, PacketDevice};
-    use rustbox_kernel::{Flow, FlowError, FlowOutcome};
     use rustbox_types::{FlowId, RejectReason};
 
     #[test]
@@ -452,7 +452,7 @@ mod tests {
         config.strict_route = true;
         config.route_mode = RouteMode::Strict;
         config.dns_servers = vec![IpAddress::V4([172, 18, 0, 1])];
-        config.platform_proxy = Some(rustbox_host_api::PlatformProxyConfig {
+        config.platform_proxy = Some(rustbox_kernel::PlatformProxyConfig {
             listen: rustbox_types::Endpoint::localhost_v4(7890),
             bypass: vec!["<local>".to_string()],
         });

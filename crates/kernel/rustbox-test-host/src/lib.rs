@@ -4,11 +4,11 @@
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use rustbox_host_api::{
+use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
+use rustbox_kernel::{
     BoxFuture, Clock, Entropy, EntropyError, HostInstant, NetError, NetworkProvider,
     StreamListener, TcpBind, TcpConnect, UdpBind,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_types::Endpoint;
 use std::collections::VecDeque;
 use std::io;
@@ -111,7 +111,7 @@ impl NetworkProvider for TestHost {
     fn bind_tcp(
         &self,
         _request: TcpBind,
-    ) -> BoxFuture<'_, Result<Box<dyn rustbox_host_api::StreamListener>, NetError>> {
+    ) -> BoxFuture<'_, Result<Box<dyn rustbox_kernel::StreamListener>, NetError>> {
         Box::pin(async {
             Err(NetError::new(
                 "test host does not implement tcp listeners yet",

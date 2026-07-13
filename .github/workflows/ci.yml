@@ -322,9 +322,9 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/control-grpc-smoke.ps1
 
-  # Native C consumer -> produced RustBox shared library -> engine lifecycle.
+  # Native C consumer -> async FFI -> HTTP proxy -> local HTTP target.
   e2e-ffi:
-    name: E2E FFI (${{ matrix.os }})
+    name: Smoke async FFI HTTP (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -346,6 +346,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ffi-e2e
-      - name: Build shared library and run native C consumer
+      - name: Run async FFI HTTP data-path smoke
         shell: pwsh
         run: ./scripts/ci/ffi-smoke.ps1

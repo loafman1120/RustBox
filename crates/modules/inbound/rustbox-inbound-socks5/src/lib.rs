@@ -11,12 +11,12 @@ use core::task::{Context, Poll, Waker};
 use fast_socks5::server::Socks5ServerProtocol;
 use fast_socks5::util::target_addr::TargetAddr;
 use fast_socks5::{ReplyError, Socks5Command, new_udp_header, parse_udp_request};
-use rustbox_host_api::{
+use rustbox_inbound_http::{HttpInboundCredentials, handle_http_proxy_connection};
+use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind, stream_read};
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, StreamListener, TaskName, TaskSpawner, TcpBind, UdpBind,
 };
-use rustbox_inbound_http::{HttpInboundCredentials, handle_http_proxy_connection};
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind, stream_read};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_types::{
     Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network, ProtocolHint,
@@ -999,7 +999,7 @@ mod tests {
     use super::*;
     use core::num::NonZeroU64;
     use fast_socks5::{new_udp_header, parse_udp_request};
-    use rustbox_host_api::TokioHost;
+    use rustbox_kernel::TokioHost;
     use rustbox_kernel::{Engine, Service};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;

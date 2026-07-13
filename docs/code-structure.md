@@ -9,8 +9,8 @@ crate or trait.
 The intended direction is:
 
 ```text
-apps / ffi
-    -> rustbox composition root
+apps / async embedding / ffi
+    -> rustbox composition root / rustbox::HostedRustBox
         -> control + module adapters + platform facade
             -> kernel + host capability ports
                 -> foundation types and I/O contracts
@@ -24,6 +24,7 @@ must not make routing decisions.
 ## Module boundaries
 
 - Application facade: public construction and lifecycle only.
+- Hosted facade (`rustbox/hosted.rs`): own a persistent Tokio runtime and adapt the shared async lifecycle to non-blocking request handles.
 - Composition: translate compiled configuration into runtime objects.
 - Runtime: own an already composed engine and service collection.
 - Control: own control-plane tasks and channels.
@@ -55,8 +56,8 @@ The `rustbox` crate root is now a facade. Application lifecycle, graph building,
 inbound and outbound construction, routing, platform selection, control service,
 runtime ownership, errors, and tests live in focused modules. Protocol capability
 checks are validated in `rustbox-config` before composition. Standard-library
-network value conversions live in `rustbox-host-api::net`, keeping
-`rustbox-types` independent of socket semantics.
+host capability contracts, Tokio implementations, and network conversions live
+in `rustbox-kernel::host`; they are separated by files rather than thin crates.
 
 The completed bounded splits are:
 

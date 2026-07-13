@@ -21,16 +21,22 @@ extern "C" {
 #endif
 
 typedef uint64_t RustBoxEngineHandle;
+typedef uint64_t RustBoxRequestHandle;
+
+typedef enum RustBoxRequestStateCode {
+    RUSTBOX_REQUEST_PENDING = 0,
+    RUSTBOX_REQUEST_SUCCEEDED = 1,
+    RUSTBOX_REQUEST_FAILED = 2
+} RustBoxRequestStateCode;
 
 typedef enum RustBoxStatusCode {
     RUSTBOX_STATUS_OK = 0,
     RUSTBOX_STATUS_INVALID_CONFIG = 1,
     RUSTBOX_STATUS_NOT_FOUND = 2,
-    RUSTBOX_STATUS_ALREADY_RUNNING = 3,
-    RUSTBOX_STATUS_RUNTIME_ERROR = 4,
-    RUSTBOX_STATUS_INVALID_ARGUMENT = 5,
-    RUSTBOX_STATUS_LOCK_POISONED = 6,
-    RUSTBOX_STATUS_INTERNAL_ERROR = 7
+    RUSTBOX_STATUS_RUNTIME_ERROR = 3,
+    RUSTBOX_STATUS_INVALID_ARGUMENT = 4,
+    RUSTBOX_STATUS_LOCK_POISONED = 5,
+    RUSTBOX_STATUS_INTERNAL_ERROR = 6
 } RustBoxStatusCode;
 
 typedef enum RustBoxEngineStateCode {
@@ -54,75 +60,36 @@ typedef struct RustBoxFfiDiagnostic {
     char *message;
 } RustBoxFfiDiagnostic;
 
-typedef struct RustBoxFfiMetricsSnapshot {
-    uint64_t services_started;
-    uint64_t services_stopped;
-    uint64_t connections_accepted;
-    uint64_t flows_accepted;
-    uint64_t flows_active;
-    uint64_t flows_completed;
-    uint64_t flows_failed;
-    uint64_t routes_selected;
-    uint64_t outbound_connect_attempts;
-    uint64_t outbound_connect_successes;
-    uint64_t outbound_connect_failures;
-    uint64_t inbound_to_outbound_bytes;
-    uint64_t outbound_to_inbound_bytes;
-    uint64_t diagnostics;
-} RustBoxFfiMetricsSnapshot;
-
 RUSTBOX_API uint32_t rustbox_ffi_abi_version(void);
 
-RUSTBOX_API RustBoxStatusCode rustbox_validate_default_http_proxy(
-    uint16_t listen_port,
-    RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_validate_default_socks5_proxy(
-    uint16_t listen_port,
-    RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_validate_config_toml(
-    const uint8_t *bytes,
-    size_t len,
-    RustBoxFfiDiagnostic *diagnostic);
-
-RUSTBOX_API RustBoxStatusCode rustbox_engine_create_default_http_proxy(
-    uint16_t listen_port,
-    RustBoxEngineHandle *out_handle,
-    RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_engine_create_default_socks5_proxy(
-    uint16_t listen_port,
-    RustBoxEngineHandle *out_handle,
-    RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_engine_create_from_config_toml(
+/* Configuration is borrowed UTF-8 TOML and may be released after this call. */
+RUSTBOX_API RustBoxStatusCode rustbox_engine_create(
     const uint8_t *bytes,
     size_t len,
     RustBoxEngineHandle *out_handle,
     RustBoxFfiDiagnostic *diagnostic);
 RUSTBOX_API RustBoxStatusCode rustbox_engine_start(
     RustBoxEngineHandle handle,
+    RustBoxRequestHandle *out_request,
     RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_engine_reload_default_http_proxy(
-    RustBoxEngineHandle handle,
-    uint16_t listen_port,
-    RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_engine_reload_default_socks5_proxy(
-    RustBoxEngineHandle handle,
-    uint16_t listen_port,
-    RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_engine_reload_config_toml(
+RUSTBOX_API RustBoxStatusCode rustbox_engine_reload(
     RustBoxEngineHandle handle,
     const uint8_t *bytes,
     size_t len,
+    RustBoxRequestHandle *out_request,
     RustBoxFfiDiagnostic *diagnostic);
 RUSTBOX_API RustBoxStatusCode rustbox_engine_snapshot(
     RustBoxEngineHandle handle,
     RustBoxFfiEngineSnapshot *out_snapshot,
     RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API RustBoxStatusCode rustbox_engine_metrics(
-    RustBoxEngineHandle handle,
-    RustBoxFfiMetricsSnapshot *out_metrics,
-    RustBoxFfiDiagnostic *diagnostic);
 RUSTBOX_API RustBoxStatusCode rustbox_engine_stop(
     RustBoxEngineHandle handle,
+    RustBoxRequestHandle *out_request,
+    RustBoxFfiDiagnostic *diagnostic);
+RUSTBOX_API RustBoxStatusCode rustbox_engine_request_poll(
+    RustBoxEngineHandle handle,
+    RustBoxRequestHandle request,
+    RustBoxRequestStateCode *out_state,
     RustBoxFfiDiagnostic *diagnostic);
 RUSTBOX_API RustBoxStatusCode rustbox_engine_destroy(
     RustBoxEngineHandle handle,
@@ -131,7 +98,6 @@ RUSTBOX_API RustBoxStatusCode rustbox_engine_destroy(
 /* The diagnostic must be initialized to { RUSTBOX_STATUS_OK, NULL }. Clear it
  * before passing the same value to another RustBox call. */
 RUSTBOX_API void rustbox_diagnostic_clear(RustBoxFfiDiagnostic *diagnostic);
-RUSTBOX_API void rustbox_diagnostic_message_free(char *message);
 
 #ifdef __cplusplus
 }

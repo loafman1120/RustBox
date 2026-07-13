@@ -3,7 +3,7 @@
 //! This is the only place where an operating-system implementation is
 //! selected. Consumers depend on this crate and never name a platform module.
 
-use rustbox_host_api::{NetworkControl, PacketDeviceProvider, TransparentProxyProvider};
+use rustbox_kernel::{NetworkControl, PacketDeviceProvider, TransparentProxyProvider};
 use std::fmt;
 use std::sync::Arc;
 

@@ -4,7 +4,7 @@
 //! 契约、缓存、规则和 FakeIP；真实 UDP/TCP/DoH/DoT/DoQ I/O 由后续 adapter
 //! 通过 `DnsTransport` 接入。
 
-use rustbox_host_api::{BoxFuture, Clock};
+use rustbox_kernel::{BoxFuture, Clock};
 use rustbox_types::{Endpoint, Host, IpAddress, IpCidr, Network};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -492,7 +492,7 @@ fn fake_ip_response(address: IpAddress, ttl_seconds: u32) -> DnsResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbox_host_api::HostInstant;
+    use rustbox_kernel::HostInstant;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     #[test]

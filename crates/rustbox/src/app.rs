@@ -4,7 +4,7 @@ use crate::{
 use rustbox_config::SourceConfig;
 use rustbox_control::{EngineCommand, EngineSnapshot, EngineState};
 use rustbox_control_api::ControlApiConfig;
-use rustbox_host_api::{NoopObservabilitySink, ObservabilitySink};
+use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink};
 use rustbox_observability::ObservabilityStore;
 use rustbox_types::Endpoint;
 use std::{net::SocketAddr, sync::Arc};

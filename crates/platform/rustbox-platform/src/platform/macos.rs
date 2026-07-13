@@ -4,12 +4,12 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use net_route::{Handle, Route};
-use rustbox_host_api::{
+use rustbox_io::{IoError, PacketDevice};
+use rustbox_kernel::{
     BoxFuture, InterfaceRef, NetworkControl, NetworkControlError, NetworkLease, NetworkOperation,
     NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
     PacketDeviceProvider, RollbackPolicy,
 };
-use rustbox_io::{IoError, PacketDevice};
 use rustbox_types::{IpAddress, IpCidr};
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
@@ -27,7 +27,7 @@ pub(super) fn tun() -> Option<crate::TunCapabilities> {
     Some((platform.clone(), platform))
 }
 
-pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_host_api::TransparentProxyProvider>>
+pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_kernel::TransparentProxyProvider>>
 {
     None
 }

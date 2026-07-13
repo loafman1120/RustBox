@@ -1,6 +1,6 @@
 use crate::ComposeError;
 use rustbox_config::ConfigError;
-use rustbox_host_api::{NetworkControl, PacketDeviceProvider, TransparentProxyProvider};
+use rustbox_kernel::{NetworkControl, PacketDeviceProvider, TransparentProxyProvider};
 use std::sync::Arc;
 
 pub(crate) fn transparent_proxy_provider() -> Result<Arc<dyn TransparentProxyProvider>, ComposeError>

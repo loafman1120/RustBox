@@ -2,7 +2,7 @@
 //!
 //! inspect 模块在路由前补充 FlowMeta，保持“观察/补充”和“路由决策”分离。
 
-use rustbox_host_api::BoxFuture;
+use rustbox_kernel::BoxFuture;
 use rustbox_kernel::{InspectError, MetadataEnricher};
 use rustbox_types::{FlowMeta, Host, ProtocolHint};
 

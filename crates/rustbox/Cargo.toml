@@ -8,7 +8,6 @@ license.workspace = true
 rustbox-config = { path = "../control/rustbox-config" }
 rustbox-control = { path = "../control/rustbox-control" }
 rustbox-control-api = { path = "../control/rustbox-control-api" }
-rustbox-host-api = { path = "../host/rustbox-host-api" }
 rustbox-inbound-http = { path = "../modules/inbound/rustbox-inbound-http" }
 rustbox-inbound-anytls = { path = "../modules/inbound/rustbox-inbound-anytls" }
 rustbox-inbound-socks5 = { path = "../modules/inbound/rustbox-inbound-socks5" }

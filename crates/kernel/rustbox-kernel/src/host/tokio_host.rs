@@ -1,8 +1,8 @@
-use crate::net::{
+use super::net::{
     endpoint_to_socket_addr as try_endpoint_to_socket_addr, ip_address_to_std as ip_to_std,
     socket_addr_to_endpoint,
 };
-use crate::{
+use super::{
     BoxFuture, Clock, Entropy, EntropyError, HostInstant, NetError, NetworkProvider, SpawnError,
     StreamListener, TaskHandle, TaskName, TaskSpawner, TcpBind, TcpConnect, UdpBind,
 };

@@ -6,7 +6,7 @@
 
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use rustbox_host_api::{
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink, TaskName,
     TaskSpawner, TransparentProxyProvider, TransparentRedirectMode, TransparentTcpBind,
 };
@@ -158,7 +158,7 @@ impl Service for TransparentProxyInbound {
 
 async fn accept_loop(
     inbound_id: InboundId,
-    mut listener: Box<dyn rustbox_host_api::TransparentStreamListener>,
+    mut listener: Box<dyn rustbox_kernel::TransparentStreamListener>,
     sink: Arc<dyn FlowSink>,
     observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
@@ -223,7 +223,7 @@ mod tests {
     use super::*;
     use core::pin::Pin;
     use core::task::{Context, Poll};
-    use rustbox_host_api::{AcceptedTransparentStream, TransparentProxyError};
+    use rustbox_kernel::{AcceptedTransparentStream, TransparentProxyError};
     use rustbox_kernel::{FlowOutcome, FlowSink};
     use std::io;
     use std::sync::Mutex;
@@ -266,13 +266,13 @@ mod tests {
             request: TransparentTcpBind,
         ) -> BoxFuture<
             '_,
-            Result<Box<dyn rustbox_host_api::TransparentStreamListener>, TransparentProxyError>,
+            Result<Box<dyn rustbox_kernel::TransparentStreamListener>, TransparentProxyError>,
         > {
             Box::pin(async move {
                 Ok(Box::new(FakeTransparentListener {
                     listen: request.listen,
                 })
-                    as Box<dyn rustbox_host_api::TransparentStreamListener>)
+                    as Box<dyn rustbox_kernel::TransparentStreamListener>)
             })
         }
     }
@@ -281,7 +281,7 @@ mod tests {
         listen: Endpoint,
     }
 
-    impl rustbox_host_api::TransparentStreamListener for FakeTransparentListener {
+    impl rustbox_kernel::TransparentStreamListener for FakeTransparentListener {
         fn local_endpoint(&self) -> Option<Endpoint> {
             Some(self.listen.clone())
         }
@@ -296,19 +296,19 @@ mod tests {
     #[derive(Default)]
     struct FakeSpawner;
 
-    impl rustbox_host_api::TaskSpawner for FakeSpawner {
+    impl rustbox_kernel::TaskSpawner for FakeSpawner {
         fn spawn(
             &self,
-            _name: rustbox_host_api::TaskName,
+            _name: rustbox_kernel::TaskName,
             _task: BoxFuture<'static, ()>,
-        ) -> Result<rustbox_host_api::TaskHandle, rustbox_host_api::SpawnError> {
-            Ok(rustbox_host_api::TaskHandle { id: 1 })
+        ) -> Result<rustbox_kernel::TaskHandle, rustbox_kernel::SpawnError> {
+            Ok(rustbox_kernel::TaskHandle { id: 1 })
         }
 
         fn cancel(
             &self,
-            _handle: rustbox_host_api::TaskHandle,
-        ) -> Result<(), rustbox_host_api::SpawnError> {
+            _handle: rustbox_kernel::TaskHandle,
+        ) -> Result<(), rustbox_kernel::SpawnError> {
             Ok(())
         }
     }

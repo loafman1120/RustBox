@@ -1,17 +1,16 @@
 [workspace]
 resolver = "3"
 members = [
-    "apps/rustbox",
+    "apps/rustbox-cli",
+    "apps/rustbox-ffi",
     "crates/rustbox-config-file",
     "crates/rustbox",
     "crates/control/rustbox-config",
     "crates/control/rustbox-control",
     "crates/control/rustbox-control-api",
-    "crates/rustbox-ffi",
     "crates/foundation/rustbox-types",
     "crates/foundation/rustbox-io",
-    "crates/host/rustbox-host-api",
-    "crates/host/rustbox-test-host",
+    "crates/kernel/rustbox-test-host",
     "crates/kernel/rustbox-kernel",
     "crates/kernel/rustbox-registry",
     "crates/kernel/rustbox-route",
@@ -43,4 +42,5 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
+# Every workspace member inherits this unless it is the C ABI boundary.
 unsafe_code = "forbid"

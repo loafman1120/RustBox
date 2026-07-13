@@ -1,7 +1,7 @@
 use crate::{ComposeError, routing::route_table};
 use rustbox_config::{CompiledConfig, CompiledOutboundKind, ConfigError};
-use rustbox_host_api::{ObservabilitySink, TokioHost};
 use rustbox_kernel::Engine;
+use rustbox_kernel::{ObservabilitySink, TokioHost};
 use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
 use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};

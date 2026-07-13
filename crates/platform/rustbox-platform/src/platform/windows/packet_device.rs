@@ -129,8 +129,8 @@ fn io_error(err: std::io::Error) -> IoError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbox_host_api::InterfaceRef;
-    use rustbox_host_api::{NetworkControlReason, RollbackPolicy};
+    use rustbox_kernel::InterfaceRef;
+    use rustbox_kernel::{NetworkControlReason, RollbackPolicy};
     use rustbox_types::{IpAddress, IpCidr};
 
     #[test]
@@ -212,8 +212,8 @@ mod tests {
                     IpCidr::new(IpAddress::V4([198, 18, 0, 1]), 30).expect("benchmark CIDR"),
                 ],
                 mtu: Some(1500),
-                route_mode: rustbox_host_api::RouteMode::Manual,
-                dns_mode: rustbox_host_api::TunDnsMode::None,
+                route_mode: rustbox_kernel::RouteMode::Manual,
+                dns_mode: rustbox_kernel::TunDnsMode::None,
             }))
             .expect("open real Wintun adapter; runner must be elevated and provide Wintun");
         assert!(lease.info.index.is_some());

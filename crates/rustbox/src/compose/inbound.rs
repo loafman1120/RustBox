@@ -3,7 +3,6 @@ use crate::{
     platform::{transparent_proxy_provider, tun_platform_capabilities},
 };
 use rustbox_config::{CompiledInbound, CompiledInboundKind, ConfigError};
-use rustbox_host_api::{ObservabilitySink, TokioHost};
 use rustbox_inbound_anytls::{AnyTlsInbound, AnyTlsServerConfig};
 use rustbox_inbound_http::{HttpInboundCredentials, HttpProxyInbound};
 use rustbox_inbound_socks5::{
@@ -14,6 +13,7 @@ use rustbox_inbound_transparent::{
 };
 use rustbox_inbound_tun::{TunInbound, TunInboundConfig as RuntimeTunInboundConfig};
 use rustbox_kernel::{FlowSink, Service};
+use rustbox_kernel::{ObservabilitySink, TokioHost};
 use rustbox_types::Host;
 use std::sync::Arc;
 
@@ -152,7 +152,7 @@ pub(crate) fn compose_inbounds(
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let platform_proxy = if config.platform_http_proxy {
-                    Some(rustbox_host_api::PlatformProxyConfig {
+                    Some(rustbox_kernel::PlatformProxyConfig {
                         listen: platform_proxy_listen.clone().ok_or_else(|| {
                             ComposeError::Config(ConfigError::new(
                                 "TUN platform_http_proxy requires a mixed or http-connect inbound",

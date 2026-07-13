@@ -7,11 +7,11 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use ipstack::{IpStack, IpStackConfig, IpStackStream};
-use rustbox_host_api::net::socket_addr_to_endpoint;
-use rustbox_host_api::{
+use rustbox_io::{DatagramSocket, IoError, IoErrorKind, PacketDevice};
+use rustbox_kernel::net::socket_addr_to_endpoint;
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
 };
-use rustbox_io::{DatagramSocket, IoError, IoErrorKind, PacketDevice};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink};
 use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network};
 #[cfg(test)]

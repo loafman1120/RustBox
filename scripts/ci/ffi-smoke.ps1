@@ -40,8 +40,8 @@ if ($HttpTarget) {
 
 $RootDir = Resolve-Path (Join-Path $PSScriptRoot "../..")
 $TargetDir = Join-Path $RootDir "target/debug"
-$Source = Join-Path $RootDir "crates/rustbox-ffi/tests/c/dynamic_library_smoke.c"
-$IncludeDir = Join-Path $RootDir "crates/rustbox-ffi/include"
+$Source = Join-Path $RootDir "apps/rustbox-ffi/tests/c/dynamic_library_smoke.c"
+$IncludeDir = Join-Path $RootDir "apps/rustbox-ffi/include"
 $OutputDir = Join-Path $RootDir "target/ci-ffi-smoke"
 $Executable = Join-Path $OutputDir $(if ($IsWindows) { "ffi-consumer.exe" } else { "ffi-consumer" })
 $ObjectFile = Join-Path $OutputDir "dynamic_library_smoke.obj"

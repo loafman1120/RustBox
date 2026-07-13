@@ -3,11 +3,11 @@
 //! 本 crate 位于 L2 Kernel，负责 Flow 生命周期、元数据增强、路由决策、
 //! 出站分发和通用 relay。它不依赖具体运行时、平台适配器或协议入口。
 
+pub mod host;
+pub use host::*;
+
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use rustbox_host_api::{
-    BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
-};
 use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind, stream_close};
 use rustbox_route::Router;
 use rustbox_types::{Endpoint, FlowId, FlowMeta, Network, OutboundId, RejectReason, RouteDecision};

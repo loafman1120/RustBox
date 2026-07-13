@@ -17,11 +17,11 @@ use anytls::{AsyncReadWrite, DialOutFunc};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use rustbox_host_api::{
+use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -785,7 +785,7 @@ mod tests {
     use anytls::proxy::session::new_server_session;
     use core::num::NonZeroU64;
     use rcgen::{CertifiedKey, generate_simple_self_signed};
-    use rustbox_host_api::TokioHost;
+    use rustbox_kernel::TokioHost;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use rustls::ServerConfig;
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};

@@ -2,8 +2,8 @@
 //!
 //! transport 描述字节如何到达对端，和 outbound 协议语义分离。
 
-use rustbox_host_api::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_io::ByteStream;
+use rustbox_kernel::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_types::Endpoint;
 use std::sync::Arc;
 

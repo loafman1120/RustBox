@@ -1,0 +1,22 @@
+[package]
+name = "rustbox-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+rustbox = { path = "../../crates/rustbox" }
+rustbox-config = { path = "../../crates/control/rustbox-config" }
+rustbox-config-file = { path = "../../crates/rustbox-config-file" }
+rustbox-control = { path = "../../crates/control/rustbox-control" }
+rustbox-observability = { path = "../../crates/rustbox-observability" }
+
+[build-dependencies]
+cc = "1"
+
+[lints.rust]
+# Raw pointers and exported symbols are confined to this crate.
+unsafe_code = "allow"

@@ -7,11 +7,11 @@
 use core::pin::Pin;
 use core::str::FromStr;
 use core::task::{Context, Poll};
-use rustbox_host_api::{
+use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
+use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect,
 };
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use shadowsocks::config::{ServerConfig, ServerType};
@@ -323,7 +323,7 @@ fn io_error(err: io::Error) -> IoError {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_host_api::TokioHost;
+    use rustbox_kernel::TokioHost;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use shadowsocks::relay::tcprelay::proxy_listener::ProxyListener;
     use std::future::poll_fn;

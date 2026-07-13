@@ -7,6 +7,7 @@ mod app;
 mod compose;
 mod control;
 mod error;
+mod hosted;
 mod platform;
 mod routing;
 mod runtime;
@@ -16,6 +17,7 @@ pub(crate) use compose::RuntimeGraphBuilder;
 pub(crate) use app::ControlGrpcOptions;
 pub use app::{RustBox, RustBoxError, RustBoxOptions};
 pub use error::ComposeError;
+pub use hosted::{HostedError, HostedRequestId, HostedRequestState, HostedRustBox};
 
 #[cfg(test)]
 mod tests;

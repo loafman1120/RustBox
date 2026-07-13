@@ -1,9 +1,9 @@
 //! 具体观测 sink。
 //!
-//! 可移植 crate 只发出 `rustbox-host-api` 的结构化事件；本 crate 决定事件
+//! 数据面只发出 `rustbox-kernel::host` 的结构化事件；本模块决定事件
 //! 如何打印、过滤或记录，避免核心绑定具体日志框架。
 
-use rustbox_host_api::{BoxFuture, Event, EventKind, EventLevel, EventTarget, ObservabilitySink};
+use rustbox_kernel::{BoxFuture, Event, EventKind, EventLevel, EventTarget, ObservabilitySink};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};

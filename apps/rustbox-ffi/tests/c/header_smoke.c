@@ -5,7 +5,6 @@ _Static_assert(sizeof(RustBoxEngineHandle) == 8, "engine handle must be 64-bit")
 _Static_assert(sizeof(RustBoxStatusCode) == 4, "status code must match repr(C)");
 _Static_assert(sizeof(RustBoxEngineStateCode) == 4, "state code must match repr(C)");
 _Static_assert(sizeof(RustBoxFfiEngineSnapshot) == 32, "snapshot layout changed");
-_Static_assert(sizeof(RustBoxFfiMetricsSnapshot) == 112, "metrics layout changed");
 #endif
 
 size_t rustbox_ffi_c_snapshot_size(void) {
@@ -16,10 +15,6 @@ size_t rustbox_ffi_c_snapshot_size(void) {
     (void)handle;
     (void)snapshot;
     return sizeof(RustBoxFfiEngineSnapshot);
-}
-
-size_t rustbox_ffi_c_metrics_size(void) {
-    return sizeof(RustBoxFfiMetricsSnapshot);
 }
 
 uint32_t rustbox_ffi_c_call_abi_version(void) {

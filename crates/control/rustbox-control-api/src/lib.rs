@@ -4,7 +4,7 @@
 //! value snapshots and coarse control commands without exposing kernel internals.
 
 use rustbox_control::{ControlState, EngineCommand, EngineSnapshot, EngineState};
-use rustbox_host_api::{Event, EventKind, EventLevel};
+use rustbox_kernel::{Event, EventKind, EventLevel};
 use rustbox_observability::{
     ConnectionState, ConnectionStats, MetricsSnapshot, ObservabilityQuery, ObservabilitySnapshot,
     ObservabilityStore,
@@ -591,7 +591,7 @@ fn format_level(level: EventLevel) -> &'static str {
 mod tests {
     use super::*;
     use pb::rust_box_control_server::RustBoxControl;
-    use rustbox_host_api::{Event, ObservabilitySink};
+    use rustbox_kernel::{Event, ObservabilitySink};
     use rustbox_types::FlowId;
     use std::num::NonZeroU64;
     use tonic::Code;

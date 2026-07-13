@@ -4,8 +4,8 @@
 //! The wire header and address encoding follow the upstream implementation.
 //! Runtime integration is native RustBox and has no `meow-*` dependency.
 
-use rustbox_host_api::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_io::{ByteStream, DatagramSocket};
+use rustbox_kernel::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};

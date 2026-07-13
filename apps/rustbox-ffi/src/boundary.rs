@@ -1,11 +1,51 @@
 use crate::abi::{RustBoxFfiDiagnostic, RustBoxStatusCode};
-use crate::error::RustBoxFfiError;
+use rustbox::HostedError;
 use rustbox_config::SourceConfig;
-use rustbox_config_file::{FileConfig, parse_toml_source, parse_toml_str};
+use rustbox_config_file::{ConfigFileError, parse_toml_source};
 use std::ffi::CString;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RustBoxFfiError {
+    pub(crate) code: RustBoxStatusCode,
+    pub(crate) diagnostic: String,
+}
+
+impl RustBoxFfiError {
+    pub(crate) fn new(code: RustBoxStatusCode, diagnostic: impl Into<String>) -> Self {
+        Self {
+            code,
+            diagnostic: diagnostic.into(),
+        }
+    }
+
+    pub(crate) fn unknown_handle() -> Self {
+        Self::new(RustBoxStatusCode::NotFound, "unknown handle")
+    }
+
+    pub(crate) fn lock_poisoned() -> Self {
+        Self::new(
+            RustBoxStatusCode::LockPoisoned,
+            "engine table lock is poisoned",
+        )
+    }
+}
+
+impl From<ConfigFileError> for RustBoxFfiError {
+    fn from(error: ConfigFileError) -> Self {
+        Self::new(RustBoxStatusCode::InvalidConfig, error.message)
+    }
+}
+
+pub(crate) fn hosted_error(error: HostedError) -> RustBoxFfiError {
+    let code = match &error {
+        HostedError::UnknownRequest => RustBoxStatusCode::NotFound,
+        _ => RustBoxStatusCode::RuntimeError,
+    };
+    RustBoxFfiError::new(code, error.to_string())
+}
 
 pub(crate) fn call(
     diagnostic: *mut RustBoxFfiDiagnostic,
@@ -42,14 +82,6 @@ pub(crate) fn parse_config_bytes(
     len: usize,
 ) -> Result<SourceConfig, RustBoxFfiError> {
     parse_toml_source(config_text(bytes, len)?).map_err(Into::into)
-}
-
-pub(crate) fn parse_file_config_bytes(
-    bytes: *const u8,
-    len: usize,
-) -> Result<FileConfig, RustBoxFfiError> {
-    let text = config_text(bytes, len)?;
-    parse_toml_str(text).map_err(Into::into)
 }
 
 fn config_text<'a>(bytes: *const u8, len: usize) -> Result<&'a str, RustBoxFfiError> {

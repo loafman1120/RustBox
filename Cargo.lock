@@ -2832,7 +2832,6 @@ dependencies = [
  "rustbox-config",
  "rustbox-control",
  "rustbox-control-api",
- "rustbox-host-api",
  "rustbox-inbound-anytls",
  "rustbox-inbound-http",
  "rustbox-inbound-socks5",
@@ -2896,7 +2895,7 @@ version = "0.1.0"
 dependencies = [
  "regex",
  "rustbox-dns-core",
- "rustbox-host-api",
+ "rustbox-kernel",
  "rustbox-types",
 ]
 
@@ -2932,7 +2931,7 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "rustbox-control",
- "rustbox-host-api",
+ "rustbox-kernel",
  "rustbox-observability",
  "rustbox-types",
  "tokio",
@@ -2946,7 +2945,7 @@ name = "rustbox-dns-core"
 version = "0.1.0"
 dependencies = [
  "futures",
- "rustbox-host-api",
+ "rustbox-kernel",
  "rustbox-types",
 ]
 
@@ -2960,18 +2959,6 @@ dependencies = [
  "rustbox-config-file",
  "rustbox-control",
  "rustbox-observability",
- "rustbox-types",
- "tokio",
-]
-
-[[package]]
-name = "rustbox-host-api"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.2.17",
- "rustbox-io",
- "rustbox-types",
- "tokio",
 ]
 
 [[package]]
@@ -2980,7 +2967,6 @@ version = "0.1.0"
 dependencies = [
  "rcgen",
  "rustbox-anytls",
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-outbound-anytls",
@@ -3000,7 +2986,6 @@ name = "rustbox-inbound-http"
 version = "0.1.0"
 dependencies = [
  "base64",
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-outbound-direct",
@@ -3014,7 +2999,6 @@ name = "rustbox-inbound-socks5"
 version = "0.1.0"
 dependencies = [
  "fast-socks5",
- "rustbox-host-api",
  "rustbox-inbound-http",
  "rustbox-io",
  "rustbox-kernel",
@@ -3028,7 +3012,6 @@ dependencies = [
 name = "rustbox-inbound-transparent"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3039,7 +3022,6 @@ dependencies = [
 name = "rustbox-inbound-tun"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-stack",
@@ -3050,7 +3032,6 @@ dependencies = [
 name = "rustbox-inspect"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-kernel",
  "rustbox-types",
 ]
@@ -3067,7 +3048,7 @@ dependencies = [
 name = "rustbox-kernel"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
+ "getrandom 0.2.17",
  "rustbox-io",
  "rustbox-route",
  "rustbox-test-host",
@@ -3079,7 +3060,7 @@ dependencies = [
 name = "rustbox-observability"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
+ "rustbox-kernel",
  "rustbox-types",
 ]
 
@@ -3089,7 +3070,6 @@ version = "0.1.0"
 dependencies = [
  "rcgen",
  "rustbox-anytls",
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3104,7 +3084,6 @@ dependencies = [
 name = "rustbox-outbound-direct"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3115,7 +3094,6 @@ name = "rustbox-outbound-http"
 version = "0.1.0"
 dependencies = [
  "base64",
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3126,7 +3104,6 @@ dependencies = [
 name = "rustbox-outbound-shadowsocks"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3139,7 +3116,6 @@ name = "rustbox-outbound-socks5"
 version = "0.1.0"
 dependencies = [
  "fast-socks5",
- "rustbox-host-api",
  "rustbox-inbound-socks5",
  "rustbox-io",
  "rustbox-kernel",
@@ -3153,7 +3129,6 @@ dependencies = [
 name = "rustbox-outbound-trojan"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3168,7 +3143,6 @@ dependencies = [
 name = "rustbox-outbound-vless"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3190,7 +3164,6 @@ dependencies = [
  "hmac",
  "md-5",
  "rand 0.9.5",
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3209,8 +3182,8 @@ version = "0.1.0"
 dependencies = [
  "net-route",
  "nix 0.31.3",
- "rustbox-host-api",
  "rustbox-io",
+ "rustbox-kernel",
  "rustbox-types",
  "tokio",
  "tun-rs",
@@ -3234,7 +3207,6 @@ name = "rustbox-stack"
 version = "0.1.0"
 dependencies = [
  "ipstack",
- "rustbox-host-api",
  "rustbox-io",
  "rustbox-kernel",
  "rustbox-types",
@@ -3245,8 +3217,8 @@ dependencies = [
 name = "rustbox-test-host"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
+ "rustbox-kernel",
  "rustbox-types",
  "tokio",
 ]
@@ -3255,8 +3227,8 @@ dependencies = [
 name = "rustbox-transport"
 version = "0.1.0"
 dependencies = [
- "rustbox-host-api",
  "rustbox-io",
+ "rustbox-kernel",
  "rustbox-types",
 ]
 

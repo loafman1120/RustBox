@@ -9,7 +9,7 @@ pub use rustbox_dns_core::{
     DnsCacheConfig, DnsConfig, DnsHijackTarget, DnsRecordType, DnsRuleAction, DnsRuleConfig,
     DnsRuleMatcher, DnsServerConfig, DnsServerProtocol, FakeIpConfig,
 };
-pub use rustbox_host_api::{RouteMode, TransparentRedirectMode, TunDnsMode};
+pub use rustbox_kernel::{RouteMode, TransparentRedirectMode, TunDnsMode};
 use rustbox_types::{
     Endpoint, InboundId, IpCidr, Network, OutboundId, PortRange, RejectReason, RouteDecision,
 };

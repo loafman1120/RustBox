@@ -5,14 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rustbox-host-api = { path = "../../host/rustbox-host-api" }
+getrandom = "0.2"
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-route = { path = "../rustbox-route" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
-tokio = { version = "1", features = ["io-util"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
 
 [dev-dependencies]
-rustbox-test-host = { path = "../../host/rustbox-test-host" }
+rustbox-test-host = { path = "../rustbox-test-host" }
 
 [lints]
 workspace = true

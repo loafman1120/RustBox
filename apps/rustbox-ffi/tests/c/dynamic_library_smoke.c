@@ -11,6 +11,19 @@ static int fail(int code, const char *operation,
     return code;
 }
 
+static RustBoxStatusCode await_request(
+        RustBoxEngineHandle engine, RustBoxRequestHandle request,
+        RustBoxFfiDiagnostic *diagnostic) {
+    RustBoxRequestStateCode state = RUSTBOX_REQUEST_PENDING;
+    RustBoxStatusCode status;
+    while (state == RUSTBOX_REQUEST_PENDING) {
+        status = rustbox_engine_request_poll(engine, request, &state, diagnostic);
+        if (status != RUSTBOX_STATUS_OK) return status;
+    }
+    return state == RUSTBOX_REQUEST_SUCCEEDED
+        ? RUSTBOX_STATUS_OK : RUSTBOX_STATUS_RUNTIME_ERROR;
+}
+
 /* This is a standalone native consumer. CI compiles it separately and links it
  * against the produced RustBox shared library, exercising the public ABI in the
  * same way as an application embedding RustBox. */
@@ -18,11 +31,12 @@ int main(int argc, char **argv) {
     RustBoxFfiDiagnostic diagnostic = { RUSTBOX_STATUS_OK, NULL };
     RustBoxEngineHandle engine = 0;
     RustBoxFfiEngineSnapshot snapshot = { RUSTBOX_ENGINE_CREATED, 0, 0, 0 };
-    RustBoxFfiMetricsSnapshot metrics = { 0 };
     RustBoxStatusCode status;
+    RustBoxRequestHandle request = 0;
     unsigned long proxy_port;
     char curl_command[2048];
     char response[256];
+    char config[1024];
     FILE *response_file;
 
     if (argc != 4) {
@@ -36,18 +50,30 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (rustbox_ffi_abi_version() != 1) {
+    if (rustbox_ffi_abi_version() != 2) {
         fprintf(stderr, "unexpected RustBox FFI ABI version\n");
         return 1;
     }
 
-    status = rustbox_engine_create_default_http_proxy(
-        (uint16_t)proxy_port, &engine, &diagnostic);
+    if (snprintf(config, sizeof(config),
+                 "schema_version = 1\n"
+                 "[[inbounds]]\nid = \"http\"\ntype = \"http-connect\"\n"
+                 "listen = \"127.0.0.1:%lu\"\n"
+                 "[[outbounds]]\nid = \"direct\"\ntype = \"direct\"\n"
+                 "[[routes]]\ntype = \"default\"\noutbound = \"direct\"\n",
+                 proxy_port) < 0) {
+        return 2;
+    }
+    status = rustbox_engine_create(
+        (const uint8_t *)config, strlen(config), &engine, &diagnostic);
     if (status != RUSTBOX_STATUS_OK || engine == 0) {
         return fail(2, "create", &diagnostic);
     }
 
-    status = rustbox_engine_start(engine, &diagnostic);
+    status = rustbox_engine_start(engine, &request, &diagnostic);
+    if (status == RUSTBOX_STATUS_OK) {
+        status = await_request(engine, request, &diagnostic);
+    }
     if (status != RUSTBOX_STATUS_OK) {
         (void)rustbox_engine_destroy(engine, NULL);
         return fail(3, "start", &diagnostic);
@@ -83,24 +109,18 @@ int main(int argc, char **argv) {
     }
     fclose(response_file);
 
-    status = rustbox_engine_metrics(engine, &metrics, &diagnostic);
-    if (status != RUSTBOX_STATUS_OK || metrics.services_started != 1 ||
-        metrics.connections_accepted == 0 || metrics.routes_selected == 0 ||
-        metrics.inbound_to_outbound_bytes == 0 ||
-        metrics.outbound_to_inbound_bytes == 0) {
-        (void)rustbox_engine_destroy(engine, NULL);
-        return fail(7, "traffic metrics", &diagnostic);
+    status = rustbox_engine_stop(engine, &request, &diagnostic);
+    if (status == RUSTBOX_STATUS_OK) {
+        status = await_request(engine, request, &diagnostic);
     }
-
-    status = rustbox_engine_stop(engine, &diagnostic);
     if (status != RUSTBOX_STATUS_OK) {
         (void)rustbox_engine_destroy(engine, NULL);
-        return fail(8, "stop", &diagnostic);
+        return fail(7, "stop", &diagnostic);
     }
 
     status = rustbox_engine_destroy(engine, &diagnostic);
     if (status != RUSTBOX_STATUS_OK) {
-        return fail(9, "destroy", &diagnostic);
+        return fail(8, "destroy", &diagnostic);
     }
 
     rustbox_diagnostic_clear(&diagnostic);

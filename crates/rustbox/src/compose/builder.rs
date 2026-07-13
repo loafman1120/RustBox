@@ -1,8 +1,8 @@
 use super::{compose_engine, compose_inbounds};
 use crate::{ComposeError, runtime::ComposedRuntime};
 use rustbox_config::{CompiledConfig, ConfigCompiler, SourceConfig};
-use rustbox_host_api::{NoopObservabilitySink, ObservabilitySink, TokioHost};
 use rustbox_kernel::FlowSink;
+use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink, TokioHost};
 #[cfg(test)]
 use rustbox_types::Endpoint;
 use std::sync::Arc;
