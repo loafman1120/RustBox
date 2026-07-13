@@ -40,6 +40,31 @@ jobs:
         shell: pwsh
         run: ./scripts/build.ps1 -Fmt
 
+  # Compile the public FFI boundary with the same NDK toolchain used by apps.
+  android:
+    name: Android (arm64-v8a)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust and cargo-ndk
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo install cargo-ndk --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android
+      - name: Build Android FFI library
+        shell: pwsh
+        run: ./scripts/build-mobile.ps1 -Platform Android -AndroidTargets arm64-v8a -Locked
+      - name: Upload Android library
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustbox-ffi-android-arm64-v8a
+          path: dist/android/arm64-v8a/librustbox_ffi.so
+          if-no-files-found: error
+
   # ── Build: compile, test, clippy, doc, upload artifact ─────────
   build:
     name: Build (${{ matrix.os }})
@@ -138,10 +163,20 @@ jobs:
           path: target/ci-proxy-smoke/logs
           if-no-files-found: ignore
 
-  e2e-tun-windows:
-    name: E2E Windows Wintun lifecycle
-    runs-on: windows-latest
+  e2e-tun-lifecycle:
+    name: E2E TUN lifecycle (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+            cache_key: tun-e2e-linux
+          - os: windows-latest
+            label: Windows
+            cache_key: tun-e2e-windows
     steps:
       - uses: actions/checkout@v7
       - name: Install stable Rust
@@ -150,55 +185,67 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: tun-e2e-windows
+          shared-key: ${{ matrix.cache_key }}
       - name: Download official Wintun 0.14.1
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile $env:RUNNER_TEMP\wintun.zip
           Expand-Archive $env:RUNNER_TEMP\wintun.zip -DestinationPath $env:RUNNER_TEMP\wintun
+      - name: Open and close a real Linux TUN device
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTBOX_TUN_E2E: "1"
+        run: sudo -E "$(command -v cargo)" test --locked -p rustbox-platform current::packet_device::tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
       - name: Open and close a real Wintun adapter
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         env:
           RUSTBOX_TUN_E2E: "1"
           RUSTBOX_WINTUN_DLL: ${{ runner.temp }}\wintun\wintun\bin\amd64\wintun.dll
         run: cargo test --locked -p rustbox-platform current::packet_device::tests::opens_and_closes_real_wintun_when_e2e_is_enabled -- --exact --nocapture
 
-  e2e-tun-linux:
-    name: E2E Linux TUN lifecycle
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tun-e2e-linux
-      - name: Open and close a real Linux TUN device
-        env:
-          RUSTBOX_TUN_E2E: "1"
-        run: sudo -E "$(command -v cargo)" test --locked -p rustbox-platform current::packet_device::tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
-
   # Full TUN data path: curl -> OS TUN -> RustBox -> mock SOCKS5 -> fixed HTTP response.
-  e2e-tun-data-windows:
-    name: E2E Windows TUN data path
+  e2e-tun-data:
+    name: E2E TUN data path (${{ matrix.label }})
     needs: build
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+            artifact: rustbox-app-ubuntu-latest
+            log_suffix: linux
+          - os: windows-latest
+            label: Windows
+            artifact: rustbox-app-windows-latest
+            log_suffix: windows
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: rustbox-app-windows-latest
+          name: ${{ matrix.artifact }}
           path: target/debug
+      - name: Fix permissions (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: chmod +x target/debug/rustbox-app
       - name: Download official Wintun 0.14.1
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile $env:RUNNER_TEMP\wintun.zip
           Expand-Archive $env:RUNNER_TEMP\wintun.zip -DestinationPath $env:RUNNER_TEMP\wintun
-      - name: Run TUN data path e2e
+      - name: Run TUN data path e2e (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: sudo -E "$(command -v pwsh)" -NoLogo -NoProfile -File ./scripts/ci/tun-smoke.ps1
+        env:
+          RUSTBOX_CI_DUMP_LOGS: "1"
+      - name: Run TUN data path e2e (Windows)
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         env:
           RUSTBOX_WINTUN_DLL: ${{ runner.temp }}\wintun\wintun\bin\amd64\wintun.dll
@@ -208,33 +255,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-tun-data-windows-logs
-          path: target/ci-tun-smoke/logs
-          if-no-files-found: ignore
-
-  e2e-tun-data-linux:
-    name: E2E Linux TUN data path
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: rustbox-app-ubuntu-latest
-          path: target/debug
-      - name: Fix permissions
-        run: chmod +x target/debug/rustbox-app
-      - name: Run TUN data path e2e
-        shell: bash
-        run: sudo -E "$(command -v pwsh)" -NoLogo -NoProfile -File ./scripts/ci/tun-smoke.ps1
-        env:
-          RUSTBOX_CI_DUMP_LOGS: "1"
-      - name: Upload TUN e2e logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-tun-data-linux-logs
+          name: e2e-tun-data-${{ matrix.log_suffix }}-logs
           path: target/ci-tun-smoke/logs
           if-no-files-found: ignore
 

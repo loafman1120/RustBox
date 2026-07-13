@@ -42,3 +42,28 @@ builds the shared library, separately compiles a native C application, links
 the two artifacts dynamically, and sends an HTTP request through the proxy
 created by the public ABI. The test validates the response body before stopping
 and destroying the engine.
+
+## Mobile builds
+
+Android is compiled in CI for `arm64-v8a`. For a local release build, install
+`cargo-ndk`, set `ANDROID_NDK_HOME`, and run:
+
+```powershell
+./scripts/build-mobile.ps1 -Platform Android -Locked
+```
+
+This produces ABI-specific shared libraries under `dist/android` for
+`arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86`. Pass
+`-AndroidTargets arm64-v8a` to build only the most common physical-device ABI,
+or use `-AndroidApi 24` to change the minimum Android API (the default is 21).
+
+iOS builds are available as a lightweight macOS/Xcode-only path:
+
+```powershell
+./scripts/build-mobile.ps1 -Platform IOS -Locked
+```
+
+The iOS command must run on macOS with Xcode. It builds arm64 device code plus
+arm64 and x86_64 simulator code, then creates
+`dist/ios/RustBoxFFI.xcframework` with the public C header included. The
+XCFramework can be linked directly by a Flutter iOS plugin.
