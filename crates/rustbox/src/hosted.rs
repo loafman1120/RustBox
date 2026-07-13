@@ -16,11 +16,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 type Reply<T> = mpsc::SyncSender<Result<T, HostedError>>;
+type RequestResult = Result<(), String>;
+type RequestMap = HashMap<HostedRequestId, Option<RequestResult>>;
+type SharedRequests = Arc<Mutex<RequestMap>>;
 
 enum Command {
     StartAsync(HostedRequestId),
     StopAsync(HostedRequestId),
-    ReloadAsync(HostedRequestId, SourceConfig),
+    ReloadAsync(HostedRequestId, Box<SourceConfig>),
     Snapshot(Reply<EngineSnapshot>),
     Shutdown,
 }
@@ -67,7 +70,7 @@ impl From<RustBoxError> for HostedError {
 pub struct HostedRustBox {
     commands: Sender<Command>,
     next_request: AtomicU64,
-    requests: Arc<Mutex<HashMap<HostedRequestId, Option<Result<(), String>>>>>,
+    requests: SharedRequests,
 }
 
 impl HostedRustBox {
@@ -114,7 +117,7 @@ impl HostedRustBox {
     }
 
     pub fn reload(&self, source: SourceConfig) -> Result<HostedRequestId, HostedError> {
-        self.submit(|request| Command::ReloadAsync(request, source))
+        self.submit(|request| Command::ReloadAsync(request, Box::new(source)))
     }
 
     /// Polls and consumes a completed request. Pending requests remain registered.
@@ -177,7 +180,7 @@ fn run_worker(
     runtime: tokio::runtime::Runtime,
     mut engine: RustBox,
     commands: Receiver<Command>,
-    requests: Arc<Mutex<HashMap<HostedRequestId, Option<Result<(), String>>>>>,
+    requests: SharedRequests,
 ) {
     while let Ok(command) = commands.recv() {
         match command {
@@ -199,7 +202,7 @@ fn run_worker(
                 &requests,
                 request,
                 runtime
-                    .block_on(engine.reload(source))
+                    .block_on(engine.reload(*source))
                     .map_err(|error| format!("{error:?}")),
             ),
             Command::Snapshot(reply) => {
@@ -213,11 +216,7 @@ fn run_worker(
     }
 }
 
-fn complete_request(
-    requests: &Mutex<HashMap<HostedRequestId, Option<Result<(), String>>>>,
-    request: HostedRequestId,
-    result: Result<(), String>,
-) {
+fn complete_request(requests: &Mutex<RequestMap>, request: HostedRequestId, result: RequestResult) {
     if let Ok(mut requests) = requests.lock()
         && let Some(entry) = requests.get_mut(&request)
     {
