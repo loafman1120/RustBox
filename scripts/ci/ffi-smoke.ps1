@@ -82,12 +82,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "failed to build rustbox-ffi" }
 
     if ($IsWindows) {
-        $Clang = Get-Command clang -CommandType Application -ErrorAction SilentlyContinue
+        $Clang = Get-Command clang -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
         if ($Clang) {
             & $Clang.Source $Source "-I$IncludeDir" -DRUSTBOX_SHARED `
                 (Join-Path $TargetDir "rustbox_ffi.dll.lib") -o $Executable
         } else {
-            $Cl = Get-Command cl -CommandType Application -ErrorAction Stop
+            $Cl = Get-Command cl -CommandType Application -ErrorAction Stop |
+                Select-Object -First 1
             & $Cl.Source /nologo /W4 /DRUSTBOX_SHARED /D_CRT_SECURE_NO_WARNINGS "/I$IncludeDir" $Source `
                 "/Fo:$ObjectFile" "/Fe:$Executable" /link (Join-Path $TargetDir "rustbox_ffi.dll.lib")
         }
