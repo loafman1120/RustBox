@@ -38,13 +38,13 @@ jobs:
           shared-key: lint
       - name: Check formatting
         shell: pwsh
-        run: ./scripts/build.ps1 -Fmt
+        run: ./scripts/build/rust.ps1 -Fmt
 
-  # Compile the public FFI boundary with the same NDK toolchain used by apps.
-  android:
-    name: Android (arm64-v8a)
+  # Compile and execute the public lifecycle ABI inside Android, as an app would.
+  e2e-ffi-android:
+    name: E2E FFI lifecycle (Android x86_64)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
       - name: Install stable Rust and cargo-ndk
@@ -54,15 +54,45 @@ jobs:
           cargo install cargo-ndk --locked
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: android
-      - name: Build Android FFI library
-        shell: pwsh
-        run: ./scripts/build-mobile.ps1 -Platform Android -AndroidTargets arm64-v8a -Locked
+          shared-key: ffi-e2e-android
+      - name: Run lifecycle consumer in Android Emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          disable-animations: true
+          script: pwsh -NoLogo -NoProfile -File ./scripts/test/ffi.ps1 -Platform Android
       - name: Upload Android library
         uses: actions/upload-artifact@v7
         with:
-          name: rustbox-ffi-android-arm64-v8a
-          path: dist/android/arm64-v8a/librustbox_ffi.so
+          name: rustbox-ffi-android-x86_64
+          path: dist/android/x86_64/librustbox_ffi.so
+          if-no-files-found: error
+
+  # Build the same C lifecycle consumer against the iOS static library and run
+  # it inside an arm64 iOS Simulator. The release build also assembles the
+  # XCFramework consumed by Flutter.
+  e2e-ffi-ios:
+    name: E2E FFI lifecycle (iOS arm64)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ffi-e2e-ios
+      - name: Run lifecycle consumer in iOS Simulator
+        shell: pwsh
+        run: ./scripts/test/ffi.ps1 -Platform IOS
+      - name: Upload iOS XCFramework
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustbox-ffi-ios-xcframework
+          path: dist/ios/RustBoxFFI.xcframework
           if-no-files-found: error
 
   # ── Build: compile, test, clippy, doc, upload artifact ─────────
@@ -90,19 +120,19 @@ jobs:
 
       - name: Clippy
         shell: pwsh
-        run: ./scripts/build.ps1 -Clippy -AllTargets -Locked
+        run: ./scripts/build/rust.ps1 -Clippy -AllTargets -Locked
 
       - name: Test
         shell: pwsh
-        run: ./scripts/build.ps1 -Test -AllTargets -Locked
+        run: ./scripts/build/rust.ps1 -Test -AllTargets -Locked
 
       - name: Build docs
         shell: pwsh
-        run: ./scripts/build.ps1 -Doc -AllTargets -Locked
+        run: ./scripts/build/rust.ps1 -Doc -AllTargets -Locked
 
       - name: Build CLI
         shell: pwsh
-        run: ./scripts/build.ps1 -Build -Locked
+        run: ./scripts/build/rust.ps1 -Build -Locked
 
       - name: Validate example configs (all)
         shell: pwsh
@@ -153,15 +183,7 @@ jobs:
         shell: pwsh
         env:
           RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
-          RUSTBOX_CI_DUMP_LOGS: "1"
-        run: ./scripts/ci/proxy-smoke.ps1
-      - name: Upload inbound e2e logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-inbound-logs-${{ matrix.os }}
-          path: target/ci-proxy-smoke/logs
-          if-no-files-found: ignore
+        run: ./scripts/test/proxy.ps1
 
   e2e-tun-lifecycle:
     name: E2E TUN lifecycle (${{ matrix.label }})
@@ -218,11 +240,9 @@ jobs:
           - os: ubuntu-latest
             label: Linux
             artifact: rustbox-app-ubuntu-latest
-            log_suffix: linux
           - os: windows-latest
             label: Windows
             artifact: rustbox-app-windows-latest
-            log_suffix: windows
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -241,23 +261,13 @@ jobs:
       - name: Run TUN data path e2e (Linux)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
-        run: sudo -E "$(command -v pwsh)" -NoLogo -NoProfile -File ./scripts/ci/tun-smoke.ps1
-        env:
-          RUSTBOX_CI_DUMP_LOGS: "1"
+        run: sudo -E "$(command -v pwsh)" -NoLogo -NoProfile -File ./scripts/test/tun.ps1
       - name: Run TUN data path e2e (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         env:
           RUSTBOX_WINTUN_DLL: ${{ runner.temp }}\wintun\wintun\bin\amd64\wintun.dll
-          RUSTBOX_CI_DUMP_LOGS: "1"
-        run: ./scripts/ci/tun-smoke.ps1
-      - name: Upload TUN e2e logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-tun-data-${{ matrix.log_suffix }}-logs
-          path: target/ci-tun-smoke/logs
-          if-no-files-found: ignore
+        run: ./scripts/test/tun.ps1
 
   # ── E2E outbound: RustBox → upstream proxy → target ────────────
   #     curl → rustbox inbound → $outbound → sing-box → target
@@ -306,15 +316,7 @@ jobs:
         env:
           SING_BOX_CACHE_DIR: ${{ runner.temp }}/rustbox-ci-sing-box
           RUSTBOX_SBOX_OUTBOUND: ${{ matrix.outbound }}
-          RUSTBOX_CI_DUMP_LOGS: "1"
-        run: ./scripts/ci/sing-box-smoke.ps1
-      - name: Upload outbound e2e logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-outbound-${{ matrix.outbound }}-${{ matrix.os }}
-          path: target/ci-singbox-smoke/logs
-          if-no-files-found: ignore
+        run: ./scripts/test/outbound.ps1
 
   # ── E2E gRPC: external grpcurl against control API ───────────
   e2e-grpc:
@@ -341,7 +343,7 @@ jobs:
         run: chmod +x target/debug/rustbox-app
       - name: Run gRPC e2e
         shell: pwsh
-        run: ./scripts/ci/control-grpc-smoke.ps1
+        run: ./scripts/test/grpc.ps1
 
   # Native C consumer -> async FFI -> HTTP proxy -> local HTTP target.
   e2e-ffi:
@@ -369,4 +371,4 @@ jobs:
           shared-key: ffi-e2e
       - name: Run async FFI HTTP data-path smoke
         shell: pwsh
-        run: ./scripts/ci/ffi-smoke.ps1
+        run: ./scripts/test/ffi.ps1

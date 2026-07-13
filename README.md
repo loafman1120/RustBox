@@ -143,5 +143,5 @@ cargo test --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 $env:RUSTBOX_SBOX_OUTBOUND = "anytls"
-./scripts/ci/sing-box-smoke.ps1
+./scripts/test/outbound.ps1
 ```

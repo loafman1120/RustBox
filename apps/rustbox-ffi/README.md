@@ -37,7 +37,7 @@ against `include/rustbox.h` and link `rustbox_ffi` (`rustbox_ffi.dll`,
 with the platform C compiler, links them to the Rust exports, and executes a
 complete C-driven create/start/snapshot/stop/destroy lifecycle.
 
-CI also runs `scripts/ci/ffi-smoke.ps1` on Linux, Windows, and macOS. This
+CI also runs `scripts/test/ffi.ps1` on Linux, Windows, and macOS. This
 builds the shared library, separately compiles a native C application, links
 the two artifacts dynamically, and sends an HTTP request through the proxy
 created by the public ABI. The test validates the response body before stopping
@@ -49,7 +49,7 @@ Android is compiled in CI for `arm64-v8a`. For a local release build, install
 `cargo-ndk`, set `ANDROID_NDK_HOME`, and run:
 
 ```powershell
-./scripts/build-mobile.ps1 -Platform Android -Locked
+./scripts/build/mobile.ps1 -Platform Android -Locked
 ```
 
 This produces ABI-specific shared libraries under `dist/android` for
@@ -60,10 +60,16 @@ or use `-AndroidApi 24` to change the minimum Android API (the default is 21).
 iOS builds are available as a lightweight macOS/Xcode-only path:
 
 ```powershell
-./scripts/build-mobile.ps1 -Platform IOS -Locked
+./scripts/build/mobile.ps1 -Platform IOS -Locked
 ```
 
 The iOS command must run on macOS with Xcode. It builds arm64 device code plus
 arm64 and x86_64 simulator code, then creates
 `dist/ios/RustBoxFFI.xcframework` with the public C header included. The
 XCFramework can be linked directly by a Flutter iOS plugin.
+
+CI runs `mobile_lifecycle_smoke.c` as a real native consumer in an Android
+x86_64 Emulator and an iOS arm64 Simulator. Both mobile jobs exercise ABI
+version discovery and the complete asynchronous create, start, snapshot,
+reload, stop, and destroy lifecycle. The existing desktop FFI E2E additionally
+checks the HTTP proxy data path on Linux, Windows, and macOS.

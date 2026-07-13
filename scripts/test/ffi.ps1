@@ -1,12 +1,63 @@
 #!/usr/bin/env pwsh
 [CmdletBinding()]
 param(
+    [ValidateSet("Desktop", "Android", "IOS")]
+    [string] $Platform = "Desktop",
     [switch] $HttpTarget,
     [int] $ListenPort
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+$RootDir = Resolve-Path (Join-Path $PSScriptRoot "../..")
+
+if ($Platform -ne "Desktop") {
+    $Source = Join-Path $RootDir "apps/rustbox-ffi/tests/c/mobile_lifecycle_smoke.c"
+    $IncludeDir = Join-Path $RootDir "apps/rustbox-ffi/include"
+    $OutputDir = Join-Path $RootDir "target/ci-ffi-mobile-smoke"
+    New-Item -ItemType Directory -Force $OutputDir | Out-Null
+    Push-Location $RootDir
+    try {
+        if ($Platform -eq "Android") {
+            ./scripts/build/mobile.ps1 -Platform Android -AndroidTargets x86_64 -Locked
+            $Prebuilt = Get-ChildItem (Join-Path $env:ANDROID_NDK_HOME "toolchains/llvm/prebuilt") -Directory | Select-Object -First 1
+            if (-not $Prebuilt) { throw "Android NDK LLVM toolchain was not found." }
+            $Clang = Join-Path $Prebuilt.FullName "bin/x86_64-linux-android21-clang"
+            $Executable = Join-Path $OutputDir "ffi-lifecycle"
+            & $Clang $Source "-I$IncludeDir" "-L$(Join-Path $RootDir 'dist/android/x86_64')" -lrustbox_ffi -o $Executable
+            if ($LASTEXITCODE -ne 0) { throw "Failed to compile Android lifecycle consumer." }
+            & adb push $Executable /data/local/tmp/ffi-lifecycle
+            & adb push (Join-Path $RootDir "dist/android/x86_64/librustbox_ffi.so") /data/local/tmp/librustbox_ffi.so
+            & adb shell chmod 755 /data/local/tmp/ffi-lifecycle
+            & adb shell "LD_LIBRARY_PATH=/data/local/tmp /data/local/tmp/ffi-lifecycle"
+            if ($LASTEXITCODE -ne 0) { throw "Android FFI lifecycle consumer failed." }
+            return
+        }
+
+        if (-not $IsMacOS) { throw "iOS lifecycle E2E requires macOS and Xcode." }
+        ./scripts/build/mobile.ps1 -Platform IOS -IosTargets aarch64-apple-ios,aarch64-apple-ios-sim -Locked
+        $Sdk = (& xcrun --sdk iphonesimulator --show-sdk-path).Trim()
+        $AppBundle = Join-Path $OutputDir "RustBoxFfiLifecycle.app"
+        New-Item -ItemType Directory -Force $AppBundle | Out-Null
+        Copy-Item (Join-Path $RootDir "apps/rustbox-ffi/tests/ios/Info.plist") (Join-Path $AppBundle "Info.plist") -Force
+        $Executable = Join-Path $AppBundle "ffi-lifecycle-ios"
+        $Library = Join-Path $RootDir "target/aarch64-apple-ios-sim/release/librustbox_ffi.a"
+        & xcrun --sdk iphonesimulator clang -target arm64-apple-ios13.0-simulator $Source "-I$IncludeDir" $Library -framework Security -framework SystemConfiguration -lresolv -liconv "-isysroot" $Sdk -o $Executable
+        if ($LASTEXITCODE -ne 0) { throw "Failed to compile iOS lifecycle consumer." }
+        & codesign --force --sign - $AppBundle
+        $Device = (& xcrun simctl list devices available -j | ConvertFrom-Json).devices.PSObject.Properties.Value | ForEach-Object { $_ } | Where-Object { $_.name -like "iPhone*" } | Select-Object -First 1
+        if (-not $Device) { throw "No available iOS Simulator device was found." }
+        & xcrun simctl boot $Device.udid 2>$null
+        & xcrun simctl bootstatus $Device.udid -b
+        & xcrun simctl install $Device.udid $AppBundle
+        & xcrun simctl launch --console --terminate-running-process $Device.udid dev.rustbox.ffi-lifecycle-smoke
+        if ($LASTEXITCODE -ne 0) { throw "iOS FFI lifecycle consumer failed." }
+        return
+    } finally {
+        Pop-Location
+    }
+}
 
 if ($HttpTarget) {
     $Listener = [System.Net.Sockets.TcpListener]::new(
@@ -38,7 +89,6 @@ if ($HttpTarget) {
     exit 0
 }
 
-$RootDir = Resolve-Path (Join-Path $PSScriptRoot "../..")
 $TargetDir = Join-Path $RootDir "target/debug"
 $Source = Join-Path $RootDir "apps/rustbox-ffi/tests/c/dynamic_library_smoke.c"
 $IncludeDir = Join-Path $RootDir "apps/rustbox-ffi/include"

@@ -3,11 +3,11 @@
 .SYNOPSIS
     Build the RustBox FFI library for Android or iOS.
 .EXAMPLE
-    ./scripts/build-mobile.ps1 -Platform Android
+    ./scripts/build/mobile.ps1 -Platform Android
 .EXAMPLE
-    ./scripts/build-mobile.ps1 -Platform Android -AndroidTargets arm64-v8a,x86_64
+    ./scripts/build/mobile.ps1 -Platform Android -AndroidTargets arm64-v8a,x86_64
 .EXAMPLE
-    ./scripts/build-mobile.ps1 -Platform IOS
+    ./scripts/build/mobile.ps1 -Platform IOS
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +29,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-$RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
+$RootDir = Resolve-Path (Join-Path $PSScriptRoot "../..")
 $Profile = $Debug ? "debug" : "release"
 $BuildFlag = $Debug ? @() : @("--release")
 $LockedFlag = $Locked ? @("--locked") : @()
