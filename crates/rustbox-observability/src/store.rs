@@ -45,7 +45,7 @@ impl ObservabilityStore {
             .collect()
     }
 
-    pub fn query_events(&self, query: ObservabilityQuery) -> Vec<Event> {
+    pub fn query_events(&self, query: &ObservabilityQuery) -> Vec<Event> {
         let inner = self.inner.lock().expect("observability store lock");
         let mut events = inner
             .events
@@ -64,7 +64,13 @@ impl ObservabilityStore {
     fn record(&self, event: Event) {
         let mut inner = self.inner.lock().expect("observability store lock");
         inner.apply_event(&event);
-        if let Some(flow_id) = completed_flow_id(&event) {
+        if let Some(flow_id) = matches!(
+            event.kind,
+            EventKind::FlowCompleted { .. } | EventKind::FlowFailed { .. }
+        )
+        .then(|| event.flow_id.map(|id| id.get()))
+        .flatten()
+        {
             inner.completed_connections.push_back(flow_id);
         }
         while inner.completed_connections.len() > self.connection_limit {
@@ -173,15 +179,6 @@ struct ObservabilityStoreInner {
     connections: HashMap<u64, ConnectionStats>,
     events: std::collections::VecDeque<Event>,
     completed_connections: std::collections::VecDeque<u64>,
-}
-
-fn completed_flow_id(event: &Event) -> Option<u64> {
-    matches!(
-        event.kind,
-        EventKind::FlowCompleted { .. } | EventKind::FlowFailed { .. }
-    )
-    .then(|| event.flow_id.map(|id| id.get()))
-    .flatten()
 }
 
 impl ObservabilityStoreInner {

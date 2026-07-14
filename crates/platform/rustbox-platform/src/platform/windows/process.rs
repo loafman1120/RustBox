@@ -5,11 +5,11 @@ impl ProcessLookup for WindowsPlatform {
         &self,
         key: ConnectionKey,
     ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>> {
-        Box::pin(async move { lookup_windows_process(key) })
+        Box::pin(async move { lookup_windows_process(&key) })
     }
 }
 
-fn lookup_windows_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
+fn lookup_windows_process(key: &ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
     let command = match key.network {
         rustbox_types::Network::Tcp => "Get-NetTCPConnection",
         rustbox_types::Network::Udp => "Get-NetUDPEndpoint",

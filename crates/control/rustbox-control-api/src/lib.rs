@@ -308,7 +308,7 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
         let events = self
             .state
             .observability
-            .query_events(query)
+            .query_events(&query)
             .into_iter()
             .map(event_to_proto)
             .collect();

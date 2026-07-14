@@ -112,7 +112,7 @@ mod tests {
             EventKind::Diagnostic("http".to_string()),
         )));
 
-        let events = store.query_events(ObservabilityQuery {
+        let events = store.query_events(&ObservabilityQuery {
             min_level: Some(EventLevel::Warn),
             target_prefix: Some("rustbox.inbound".to_string()),
             flow_id: None,

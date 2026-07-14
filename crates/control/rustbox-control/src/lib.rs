@@ -145,7 +145,7 @@ mod tests {
         let parsed = ConfigCompiler::parse(source).expect("parse");
         let normalized = ConfigCompiler::normalize(parsed).expect("normalize");
         let validated = ConfigCompiler::validate(normalized).expect("validate");
-        let compiled = ConfigCompiler::compile(validated).expect("compile");
+        let compiled = ConfigCompiler::compile(&validated).expect("compile");
         let mut state = ControlState::new(EngineSnapshot::created());
 
         state.apply_command(EngineCommand::Reload(compiled));

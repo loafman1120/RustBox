@@ -31,8 +31,8 @@ impl ComposedRuntime {
         self.generation = generation;
     }
 
-    pub(crate) fn engine(&self) -> Arc<Engine> {
-        self.engine.clone()
+    pub(crate) fn outbound_count(&self) -> usize {
+        self.engine.outbound_count()
     }
 
     pub(crate) fn service_count(&self) -> usize {
@@ -119,7 +119,7 @@ impl RuntimeSupervisor {
     pub(crate) fn outbound_count(&self) -> usize {
         self.active
             .as_ref()
-            .map_or(0, |runtime| runtime.engine().outbound_count())
+            .map_or(0, ComposedRuntime::outbound_count)
     }
 
     pub(crate) async fn start(&mut self, generation: u64) -> Result<(), ComposeError> {

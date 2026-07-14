@@ -32,28 +32,6 @@ impl SourceConfig {
             }],
         }
     }
-
-    pub fn default_socks5_proxy(listen: Endpoint) -> Self {
-        Self {
-            inbounds: vec![InboundConfig {
-                id: "socks5".to_string(),
-                kind: InboundConfigKind::Socks5 {
-                    listen,
-                    username: None,
-                    password: None,
-                },
-            }],
-            outbounds: vec![OutboundConfig {
-                id: "direct".to_string(),
-                kind: OutboundConfigKind::Direct,
-            }],
-            dns: None,
-            route_rule_sets: Vec::new(),
-            routes: vec![RouteRuleConfig::Default {
-                outbound: "direct".to_string(),
-            }],
-        }
-    }
 }
 
 /// 运行图构造使用的类型化计划，逻辑 ID 已解析为稳定内部 ID。

@@ -529,7 +529,6 @@ fn poll_datagram_direction(
             Poll::Ready(Ok((len, target))) => {
                 state.len = len;
                 state.target = Some(target);
-                continue;
             }
             Poll::Ready(Err(err)) if err.kind == IoErrorKind::Closed => {
                 return Poll::Ready(Ok(DatagramPoll::Finished));

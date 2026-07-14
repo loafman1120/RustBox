@@ -99,7 +99,7 @@ impl RustBox {
             state: EngineState::Prepared,
             generation: 0,
             inbound_count: runtime.service_count(),
-            outbound_count: runtime.engine().outbound_count(),
+            outbound_count: runtime.outbound_count(),
         };
         let control_grpc = options
             .control_grpc
@@ -124,23 +124,12 @@ impl RustBox {
         Self::with_observability(SourceConfig::default_http_proxy(listen), observability)
     }
 
-    pub fn default_socks5_proxy(listen: Endpoint) -> Result<Self, RustBoxError> {
-        Self::new(SourceConfig::default_socks5_proxy(listen))
-    }
-
-    pub fn default_socks5_proxy_with_observability(
-        listen: Endpoint,
-        observability: Arc<dyn ObservabilitySink>,
-    ) -> Result<Self, RustBoxError> {
-        Self::with_observability(SourceConfig::default_socks5_proxy(listen), observability)
-    }
-
     pub fn snapshot(&self) -> &EngineSnapshot {
         &self.snapshot
     }
 
     pub fn control_grpc_addr(&self) -> Option<SocketAddr> {
-        self.control_grpc.as_ref().map(|service| service.listen())
+        self.control_grpc.as_ref().map(ControlGrpcService::listen)
     }
 
     /// Wait for the next coarse control command issued through the configured API.

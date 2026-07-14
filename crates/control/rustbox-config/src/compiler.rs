@@ -40,10 +40,20 @@ impl ConfigCompiler {
             match &outbound.kind {
                 OutboundConfigKind::Socks5 {
                     username, password, ..
-                } => validate_optional_credentials("socks5", logical_id, username, password)?,
+                } => validate_optional_credentials(
+                    "socks5",
+                    logical_id,
+                    username.as_deref(),
+                    password.as_deref(),
+                )?,
                 OutboundConfigKind::Http {
                     username, password, ..
-                } => validate_optional_credentials("http", logical_id, username, password)?,
+                } => validate_optional_credentials(
+                    "http",
+                    logical_id,
+                    username.as_deref(),
+                    password.as_deref(),
+                )?,
                 OutboundConfigKind::Shadowsocks {
                     method, password, ..
                 } => {
@@ -102,7 +112,12 @@ impl ConfigCompiler {
                     ..
                 } => {
                     validate_proxy_protocol_config(
-                        "vmess", logical_id, uuid, security, tls, transport,
+                        "vmess",
+                        logical_id,
+                        uuid,
+                        security.as_deref(),
+                        tls.as_ref(),
+                        transport.as_deref(),
                     )?;
                     validate_tcp_transport("vmess", logical_id, transport.as_deref())?;
                     if alter_id.is_some_and(|value| value != 0) {
@@ -119,7 +134,12 @@ impl ConfigCompiler {
                     ..
                 } => {
                     validate_proxy_protocol_config(
-                        "vless", logical_id, uuid, flow, tls, transport,
+                        "vless",
+                        logical_id,
+                        uuid,
+                        flow.as_deref(),
+                        tls.as_ref(),
+                        transport.as_deref(),
                     )?;
                     validate_tcp_transport("vless", logical_id, transport.as_deref())?;
                     if flow.as_deref().is_some_and(|value| !value.is_empty()) {
@@ -138,7 +158,7 @@ impl ConfigCompiler {
                         "trojan",
                         logical_id,
                         password,
-                        tls,
+                        tls.as_ref(),
                         transport.as_deref(),
                     )?;
                     validate_tcp_transport("trojan", logical_id, transport.as_deref())?;
@@ -149,7 +169,13 @@ impl ConfigCompiler {
                     }
                 }
                 OutboundConfigKind::AnyTls { password, tls, .. } => {
-                    validate_secret_protocol_config("anytls", logical_id, password, tls, None)?;
+                    validate_secret_protocol_config(
+                        "anytls",
+                        logical_id,
+                        password,
+                        tls.as_ref(),
+                        None,
+                    )?;
                     if tls.as_ref().is_some_and(|tls| !tls.enabled) {
                         return Err(ConfigError::new(format!(
                             "anytls outbound `{logical_id}` requires TLS"
@@ -174,17 +200,28 @@ impl ConfigCompiler {
             match &inbound.kind {
                 InboundConfigKind::Mixed {
                     username, password, ..
-                } => {
-                    validate_optional_credentials("mixed inbound", logical_id, username, password)?
-                }
+                } => validate_optional_credentials(
+                    "mixed inbound",
+                    logical_id,
+                    username.as_deref(),
+                    password.as_deref(),
+                )?,
                 InboundConfigKind::HttpConnect {
                     username, password, ..
-                } => validate_optional_credentials("http inbound", logical_id, username, password)?,
+                } => validate_optional_credentials(
+                    "http inbound",
+                    logical_id,
+                    username.as_deref(),
+                    password.as_deref(),
+                )?,
                 InboundConfigKind::Socks5 {
                     username, password, ..
-                } => {
-                    validate_optional_credentials("socks5 inbound", logical_id, username, password)?
-                }
+                } => validate_optional_credentials(
+                    "socks5 inbound",
+                    logical_id,
+                    username.as_deref(),
+                    password.as_deref(),
+                )?,
                 InboundConfigKind::AnyTls { password, tls, .. } => {
                     if password.is_empty() {
                         return Err(ConfigError::new(format!(
@@ -264,7 +301,7 @@ impl ConfigCompiler {
         })
     }
 
-    pub fn compile(validated: ValidatedConfig) -> Result<CompiledConfig, ConfigError> {
+    pub fn compile(validated: &ValidatedConfig) -> Result<CompiledConfig, ConfigError> {
         // 编译阶段把用户可读的逻辑 ID 映射为内核使用的稳定非零 ID。
         let inbounds = validated
             .source
@@ -610,8 +647,8 @@ enum OutboundKind {
 fn validate_optional_credentials(
     protocol: &str,
     logical_id: &str,
-    username: &Option<String>,
-    password: &Option<String>,
+    username: Option<&str>,
+    password: Option<&str>,
 ) -> Result<(), ConfigError> {
     // 代理认证字段成对出现，避免运行时猜测“空用户名”或“空密码”的含义。
     if username.is_some() != password.is_some() {
@@ -619,7 +656,7 @@ fn validate_optional_credentials(
             "{protocol} `{logical_id}` must set username and password together"
         )));
     }
-    if username.as_deref() == Some("") || password.as_deref() == Some("") {
+    if username == Some("") || password == Some("") {
         return Err(ConfigError::new(format!(
             "{protocol} `{logical_id}` credentials must not be empty"
         )));
@@ -733,28 +770,28 @@ fn validate_proxy_protocol_config(
     protocol: &str,
     logical_id: &str,
     uuid: &str,
-    option: &Option<String>,
-    tls: &Option<OutboundTlsConfig>,
-    transport: &Option<String>,
+    option: Option<&str>,
+    tls: Option<&OutboundTlsConfig>,
+    transport: Option<&str>,
 ) -> Result<(), ConfigError> {
     if uuid.is_empty() {
         return Err(ConfigError::new(format!(
             "{protocol} outbound `{logical_id}` uuid must not be empty"
         )));
     }
-    if option.as_deref() == Some("") {
+    if option == Some("") {
         return Err(ConfigError::new(format!(
             "{protocol} outbound `{logical_id}` optional protocol field must not be empty"
         )));
     }
-    validate_tls_and_transport(protocol, logical_id, tls, transport.as_deref())
+    validate_tls_and_transport(protocol, logical_id, tls, transport)
 }
 
 fn validate_secret_protocol_config(
     protocol: &str,
     logical_id: &str,
     password: &str,
-    tls: &Option<OutboundTlsConfig>,
+    tls: Option<&OutboundTlsConfig>,
     transport: Option<&str>,
 ) -> Result<(), ConfigError> {
     if password.is_empty() {
@@ -768,7 +805,7 @@ fn validate_secret_protocol_config(
 fn validate_tls_and_transport(
     protocol: &str,
     logical_id: &str,
-    tls: &Option<OutboundTlsConfig>,
+    tls: Option<&OutboundTlsConfig>,
     transport: Option<&str>,
 ) -> Result<(), ConfigError> {
     if transport == Some("") {
@@ -782,7 +819,7 @@ fn validate_tls_and_transport(
                 "{protocol} outbound `{logical_id}` tls.server_name must not be empty"
             )));
         }
-        if tls.alpn.iter().any(|value| value.is_empty()) {
+        if tls.alpn.iter().any(String::is_empty) {
             return Err(ConfigError::new(format!(
                 "{protocol} outbound `{logical_id}` tls.alpn must not contain empty values"
             )));

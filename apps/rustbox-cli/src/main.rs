@@ -14,8 +14,19 @@ use std::path::PathBuf;
 async fn main() {
     init_tracing();
     let cli = Cli::parse();
-    let control_api_config = control_api_config_from_cli(&cli.control)
-        .unwrap_or_else(|err| Cli::command().error(ErrorKind::ValueValidation, err).exit());
+    let control_api_config = cli.control.control_grpc.map(|listen| {
+        let auth = cli
+            .control
+            .control_token
+            .clone()
+            .or_else(|| std::env::var("RUSTBOX_CONTROL_TOKEN").ok())
+            .map_or_else(AuthPolicy::disabled, AuthPolicy::bearer_token);
+        ControlApiConfig {
+            listen,
+            auth,
+            ..ControlApiConfig::default()
+        }
+    });
     let (mut runtime, listen) = match cli.command {
         CliCommand::PlatformCapabilities => {
             print_platform_capabilities();
@@ -140,21 +151,4 @@ fn print_platform_capabilities() {
     println!("  route_control: {:?}", capabilities.route_control);
     println!("  transparent_proxy: {:?}", capabilities.transparent_proxy);
     println!("  process_lookup: {:?}", capabilities.process_lookup);
-}
-
-fn control_api_config_from_cli(args: &ControlArgs) -> Result<Option<ControlApiConfig>, String> {
-    let Some(listen) = args.control_grpc else {
-        return Ok(None);
-    };
-    let auth = args
-        .control_token
-        .clone()
-        .or_else(|| std::env::var("RUSTBOX_CONTROL_TOKEN").ok())
-        .map(AuthPolicy::bearer_token)
-        .unwrap_or_else(AuthPolicy::disabled);
-    Ok(Some(ControlApiConfig {
-        listen,
-        auth,
-        ..ControlApiConfig::default()
-    }))
 }

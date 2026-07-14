@@ -136,16 +136,8 @@ impl TomlConfigDocument {
             ConfigFileError::new(format!("configuration validation failed: {error}"))
         })?;
 
-        let inbounds = self
-            .inbounds
-            .into_iter()
-            .map(TomlInboundConfig::into_source)
-            .collect::<Result<Vec<_>, _>>()?;
-        let outbounds = self
-            .outbounds
-            .into_iter()
-            .map(TomlOutboundConfig::into_source)
-            .collect::<Result<Vec<_>, _>>()?;
+        let inbounds = self.inbounds.into_iter().map(Into::into).collect();
+        let outbounds = self.outbounds.into_iter().map(Into::into).collect();
         let routes = self
             .routes
             .into_iter()
@@ -252,54 +244,54 @@ struct TomlAnyTlsInboundTlsConfig {
     alpn: Vec<String>,
 }
 
-impl TomlInboundConfig {
-    fn into_source(self) -> Result<InboundConfig, ConfigFileError> {
-        match self {
-            Self::Mixed {
+impl From<TomlInboundConfig> for InboundConfig {
+    fn from(value: TomlInboundConfig) -> Self {
+        match value {
+            TomlInboundConfig::Mixed {
                 id,
                 listen,
                 username,
                 password,
-            } => Ok(InboundConfig {
+            } => InboundConfig {
                 id,
                 kind: InboundConfigKind::Mixed {
                     listen,
                     username,
                     password,
                 },
-            }),
-            Self::HttpConnect {
+            },
+            TomlInboundConfig::HttpConnect {
                 id,
                 listen,
                 username,
                 password,
-            } => Ok(InboundConfig {
+            } => InboundConfig {
                 id,
                 kind: InboundConfigKind::HttpConnect {
                     listen,
                     username,
                     password,
                 },
-            }),
-            Self::Socks5 {
+            },
+            TomlInboundConfig::Socks5 {
                 id,
                 listen,
                 username,
                 password,
-            } => Ok(InboundConfig {
+            } => InboundConfig {
                 id,
                 kind: InboundConfigKind::Socks5 {
                     listen,
                     username,
                     password,
                 },
-            }),
-            Self::AnyTls {
+            },
+            TomlInboundConfig::AnyTls {
                 id,
                 listen,
                 password,
                 tls,
-            } => Ok(InboundConfig {
+            } => InboundConfig {
                 id,
                 kind: InboundConfigKind::AnyTls {
                     listen,
@@ -310,8 +302,8 @@ impl TomlInboundConfig {
                         alpn: tls.alpn,
                     },
                 },
-            }),
-            Self::Tun {
+            },
+            TomlInboundConfig::Tun {
                 id,
                 interface_name,
                 addresses,
@@ -323,7 +315,7 @@ impl TomlInboundConfig {
                 dns_hijack,
                 platform_http_proxy,
                 auto_redirect,
-            } => Ok(InboundConfig {
+            } => InboundConfig {
                 id,
                 kind: InboundConfigKind::Tun(TunInboundConfig {
                     interface_name,
@@ -339,22 +331,19 @@ impl TomlInboundConfig {
                     strict_route,
                     route_includes,
                     route_excludes,
-                    dns_hijack: dns_hijack
-                        .into_iter()
-                        .map(TomlDnsHijackConfig::into_source)
-                        .collect::<Result<Vec<_>, _>>()?,
+                    dns_hijack: dns_hijack.into_iter().map(Into::into).collect(),
                     platform_http_proxy,
                     auto_redirect,
                 }),
-            }),
-            Self::Transparent {
+            },
+            TomlInboundConfig::Transparent {
                 id,
                 listen,
                 network,
                 mode,
                 auto_rules,
                 mark,
-            } => Ok(InboundConfig {
+            } => InboundConfig {
                 id,
                 kind: InboundConfigKind::Transparent(TransparentInboundConfig {
                     listen,
@@ -363,7 +352,7 @@ impl TomlInboundConfig {
                     auto_rules,
                     mark,
                 }),
-            }),
+            },
         }
     }
 }
@@ -453,71 +442,71 @@ enum TomlOutboundConfig {
     },
 }
 
-impl TomlOutboundConfig {
-    fn into_source(self) -> Result<OutboundConfig, ConfigFileError> {
-        match self {
-            Self::Direct { id } => Ok(OutboundConfig {
+impl From<TomlOutboundConfig> for OutboundConfig {
+    fn from(value: TomlOutboundConfig) -> Self {
+        match value {
+            TomlOutboundConfig::Direct { id } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Direct,
-            }),
-            Self::Block { id } => Ok(OutboundConfig {
+            },
+            TomlOutboundConfig::Block { id } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Block,
-            }),
-            Self::Socks5 {
+            },
+            TomlOutboundConfig::Socks5 {
                 id,
                 server,
                 username,
                 password,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Socks5 {
                     server,
                     username,
                     password,
                 },
-            }),
-            Self::Http {
+            },
+            TomlOutboundConfig::Http {
                 id,
                 server,
                 username,
                 password,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Http {
                     server,
                     username,
                     password,
                 },
-            }),
-            Self::Shadowsocks {
+            },
+            TomlOutboundConfig::Shadowsocks {
                 id,
                 server,
                 method,
                 password,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Shadowsocks {
                     server,
                     method,
                     password,
                 },
-            }),
-            Self::Selector {
+            },
+            TomlOutboundConfig::Selector {
                 id,
                 outbounds,
                 default,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Selector { outbounds, default },
-            }),
-            Self::Urltest {
+            },
+            TomlOutboundConfig::Urltest {
                 id,
                 outbounds,
                 url,
                 interval_seconds,
                 tolerance_ms,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::UrlTest {
                     outbounds,
@@ -525,8 +514,8 @@ impl TomlOutboundConfig {
                     interval_seconds,
                     tolerance_ms,
                 },
-            }),
-            Self::Vmess {
+            },
+            TomlOutboundConfig::Vmess {
                 id,
                 server,
                 uuid,
@@ -534,7 +523,7 @@ impl TomlOutboundConfig {
                 alter_id,
                 tls,
                 transport,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Vmess {
                     server,
@@ -544,15 +533,15 @@ impl TomlOutboundConfig {
                     tls: tls.map(Into::into),
                     transport,
                 },
-            }),
-            Self::Vless {
+            },
+            TomlOutboundConfig::Vless {
                 id,
                 server,
                 uuid,
                 flow,
                 tls,
                 transport,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Vless {
                     server,
@@ -561,14 +550,14 @@ impl TomlOutboundConfig {
                     tls: tls.map(Into::into),
                     transport,
                 },
-            }),
-            Self::Trojan {
+            },
+            TomlOutboundConfig::Trojan {
                 id,
                 server,
                 password,
                 tls,
                 transport,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::Trojan {
                     server,
@@ -576,20 +565,20 @@ impl TomlOutboundConfig {
                     tls: tls.map(Into::into),
                     transport,
                 },
-            }),
-            Self::Anytls {
+            },
+            TomlOutboundConfig::Anytls {
                 id,
                 server,
                 password,
                 tls,
-            } => Ok(OutboundConfig {
+            } => OutboundConfig {
                 id,
                 kind: OutboundConfigKind::AnyTls {
                     server,
                     password,
                     tls: tls.map(Into::into),
                 },
-            }),
+            },
         }
     }
 }
@@ -637,11 +626,7 @@ struct TomlDnsConfig {
 impl TomlDnsConfig {
     fn into_source(self) -> Result<DnsConfig, ConfigFileError> {
         Ok(DnsConfig {
-            servers: self
-                .servers
-                .into_iter()
-                .map(TomlDnsServerConfig::into_source)
-                .collect::<Result<Vec<_>, _>>()?,
+            servers: self.servers.into_iter().map(Into::into).collect(),
             rules: self
                 .rules
                 .into_iter()
@@ -649,15 +634,8 @@ impl TomlDnsConfig {
                 .collect::<Result<Vec<_>, _>>()?,
             final_server: self.final_server,
             cache: self.cache.map(Into::into).unwrap_or_default(),
-            fake_ip: self
-                .fake_ip
-                .map(TomlFakeIpConfig::into_source)
-                .transpose()?,
-            hijack: self
-                .hijack
-                .into_iter()
-                .map(TomlDnsHijackConfig::into_source)
-                .collect::<Result<Vec<_>, _>>()?,
+            fake_ip: self.fake_ip.map(Into::into),
+            hijack: self.hijack.into_iter().map(Into::into).collect(),
         })
     }
 }
@@ -673,14 +651,14 @@ struct TomlDnsServerConfig {
     outbound: Option<String>,
 }
 
-impl TomlDnsServerConfig {
-    fn into_source(self) -> Result<DnsServerConfig, ConfigFileError> {
-        Ok(DnsServerConfig {
-            id: self.id,
-            protocol: self.protocol.into(),
-            endpoint: self.endpoint,
-            outbound: self.outbound,
-        })
+impl From<TomlDnsServerConfig> for DnsServerConfig {
+    fn from(value: TomlDnsServerConfig) -> Self {
+        Self {
+            id: value.id,
+            protocol: value.protocol.into(),
+            endpoint: value.endpoint,
+            outbound: value.outbound,
+        }
     }
 }
 
@@ -833,13 +811,13 @@ struct TomlFakeIpConfig {
     ttl_seconds: u32,
 }
 
-impl TomlFakeIpConfig {
-    fn into_source(self) -> Result<FakeIpConfig, ConfigFileError> {
-        Ok(FakeIpConfig {
-            enabled: self.enabled,
-            ipv4_pool: self.ipv4_pool,
-            ttl_seconds: self.ttl_seconds,
-        })
+impl From<TomlFakeIpConfig> for FakeIpConfig {
+    fn from(value: TomlFakeIpConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            ipv4_pool: value.ipv4_pool,
+            ttl_seconds: value.ttl_seconds,
+        }
     }
 }
 
@@ -852,12 +830,12 @@ struct TomlDnsHijackConfig {
     network: Option<TomlNetwork>,
 }
 
-impl TomlDnsHijackConfig {
-    fn into_source(self) -> Result<DnsHijackTarget, ConfigFileError> {
-        Ok(DnsHijackTarget {
-            network: self.network.map(Into::into),
-            endpoint: self.endpoint,
-        })
+impl From<TomlDnsHijackConfig> for DnsHijackTarget {
+    fn from(value: TomlDnsHijackConfig) -> Self {
+        Self {
+            network: value.network.map(Into::into),
+            endpoint: value.endpoint,
+        }
     }
 }
 
@@ -898,7 +876,7 @@ impl TomlRouteRuleConfig {
                 reject,
                 matcher,
             } => Ok(RouteRuleConfig::Rule {
-                matcher: RouteMatcherConfig::Conditions(Box::new((*matcher).into_source()?)),
+                matcher: RouteMatcherConfig::Conditions(Box::new((*matcher).into())),
                 action: route_action(outbound, reject)?,
             }),
             Self::Logical {
@@ -938,9 +916,9 @@ enum TomlRouteMatcherConfig {
 impl TomlRouteMatcherConfig {
     fn into_source(self) -> Result<RouteMatcherConfig, ConfigFileError> {
         match self {
-            Self::Rule { matcher } => Ok(RouteMatcherConfig::Conditions(Box::new(
-                (*matcher).into_source()?,
-            ))),
+            Self::Rule { matcher } => {
+                Ok(RouteMatcherConfig::Conditions(Box::new((*matcher).into())))
+            }
             Self::Logical {
                 mode,
                 rules,
@@ -995,22 +973,32 @@ struct TomlRouteMatchFields {
     invert: bool,
 }
 
-impl TomlRouteMatchFields {
-    fn into_source(self) -> Result<RouteMatchConfig, ConfigFileError> {
-        Ok(RouteMatchConfig {
-            inbound: self.inbound,
-            network: self.network.into_iter().map(Into::into).collect(),
-            domain: self.domain,
-            domain_suffix: self.domain_suffix,
-            domain_keyword: self.domain_keyword,
-            domain_regex: self.domain_regex,
-            ip_cidr: self.ip_cidr,
-            source_ip_cidr: self.source_ip_cidr,
-            port: parse_port_ranges(self.port, self.port_range)?,
-            source_port: parse_port_ranges(self.source_port, self.source_port_range)?,
-            rule_set: self.rule_set,
-            invert: self.invert,
-        })
+impl From<TomlRouteMatchFields> for RouteMatchConfig {
+    fn from(value: TomlRouteMatchFields) -> Self {
+        Self {
+            inbound: value.inbound,
+            network: value.network.into_iter().map(Into::into).collect(),
+            domain: value.domain,
+            domain_suffix: value.domain_suffix,
+            domain_keyword: value.domain_keyword,
+            domain_regex: value.domain_regex,
+            ip_cidr: value.ip_cidr,
+            source_ip_cidr: value.source_ip_cidr,
+            port: value
+                .port
+                .into_iter()
+                .map(PortRange::single)
+                .chain(value.port_range)
+                .collect(),
+            source_port: value
+                .source_port
+                .into_iter()
+                .map(PortRange::single)
+                .chain(value.source_port_range)
+                .collect(),
+            rule_set: value.rule_set,
+            invert: value.invert,
+        }
     }
 }
 
@@ -1176,15 +1164,6 @@ fn route_action(
             "route rule must not set outbound and reject together",
         )),
     }
-}
-
-fn parse_port_ranges(
-    ports: Vec<u16>,
-    ranges: Vec<PortRange>,
-) -> Result<Vec<PortRange>, ConfigFileError> {
-    let mut parsed = ports.into_iter().map(PortRange::single).collect::<Vec<_>>();
-    parsed.extend(ranges);
-    Ok(parsed)
 }
 
 fn resolve_config_path(base_dir: Option<&Path>, path: &str) -> PathBuf {

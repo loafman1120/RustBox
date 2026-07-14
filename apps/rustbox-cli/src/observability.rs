@@ -30,12 +30,13 @@ impl ObservabilityArgs {
         &self,
         file: Option<&FileObservabilityConfig>,
     ) -> Result<ObservabilityConfig, String> {
-        let configured = file
-            .map(FileObservabilityConfig::runtime_config)
-            .unwrap_or_else(|| ObservabilityConfig {
+        let configured = file.map_or_else(
+            || ObservabilityConfig {
                 level: LevelFilter::from_env(),
                 output: ObservabilityOutput::Console,
-            });
+            },
+            FileObservabilityConfig::runtime_config,
+        );
         let level = self.level.unwrap_or(configured.level);
         let configured_output = configured.output;
         let output = match self.output {
@@ -50,7 +51,11 @@ impl ObservabilityArgs {
                 let path = self
                     .file
                     .clone()
-                    .or_else(|| output_path(&configured_output).cloned())
+                    .or_else(|| match &configured_output {
+                        ObservabilityOutput::Console => None,
+                        ObservabilityOutput::File(path)
+                        | ObservabilityOutput::ConsoleAndFile(path) => Some(path.clone()),
+                    })
                     .ok_or_else(|| format!("--observability-output {} requires --observability-file or a file path in the TOML config", selector.cli_name()))?;
                 match selector {
                     OutputSelector::File => ObservabilityOutput::File(path),
@@ -86,13 +91,6 @@ impl OutputSelector {
             Self::File => "file",
             Self::ConsoleAndFile => "console-and-file",
         }
-    }
-}
-
-fn output_path(output: &ObservabilityOutput) -> Option<&PathBuf> {
-    match output {
-        ObservabilityOutput::Console => None,
-        ObservabilityOutput::File(path) | ObservabilityOutput::ConsoleAndFile(path) => Some(path),
     }
 }
 

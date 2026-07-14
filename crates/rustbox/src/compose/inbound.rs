@@ -21,7 +21,7 @@ pub(crate) fn compose_inbounds(
     inbounds: Vec<CompiledInbound>,
     host: &Arc<TokioNetworkProvider>,
     observability: &Arc<dyn ObservabilitySink>,
-    sink: Arc<dyn FlowSink>,
+    sink: &Arc<dyn FlowSink>,
 ) -> Result<Vec<Box<dyn Service>>, ComposeError> {
     let mut services: Vec<Box<dyn Service>> = Vec::new();
     let platform_proxy_listen = inbounds.iter().find_map(|inbound| match &inbound.kind {

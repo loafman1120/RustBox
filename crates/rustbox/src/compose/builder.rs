@@ -32,11 +32,6 @@ impl RuntimeGraphBuilder {
         Self::new().compose_source(SourceConfig::default_http_proxy(listen))
     }
 
-    #[cfg(test)]
-    pub(crate) fn default_socks5_proxy(listen: Endpoint) -> Result<ComposedRuntime, ComposeError> {
-        Self::new().compose_source(SourceConfig::default_socks5_proxy(listen))
-    }
-
     pub(crate) fn compose_source(
         self,
         source: SourceConfig,
@@ -44,14 +39,14 @@ impl RuntimeGraphBuilder {
         let parsed = ConfigCompiler::parse(source).map_err(ComposeError::Config)?;
         let normalized = ConfigCompiler::normalize(parsed).map_err(ComposeError::Config)?;
         let validated = ConfigCompiler::validate(normalized).map_err(ComposeError::Config)?;
-        let compiled = ConfigCompiler::compile(validated).map_err(ComposeError::Config)?;
+        let compiled = ConfigCompiler::compile(&validated).map_err(ComposeError::Config)?;
         self.compose(compiled)
     }
 
     fn compose(self, compiled: CompiledConfig) -> Result<ComposedRuntime, ComposeError> {
         let engine = compose_engine(&compiled, &self.host, &self.observability)?;
         let sink: Arc<dyn FlowSink> = engine.clone();
-        let services = compose_inbounds(compiled.inbounds, &self.host, &self.observability, sink)?;
+        let services = compose_inbounds(compiled.inbounds, &self.host, &self.observability, &sink)?;
         Ok(ComposedRuntime::new(engine, services))
     }
 }

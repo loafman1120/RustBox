@@ -33,16 +33,7 @@ fn composes_default_http_proxy_runtime_graph() {
     let runtime =
         RuntimeGraphBuilder::default_http_proxy(Endpoint::localhost_v4(0)).expect("compose");
 
-    assert_eq!(runtime.engine().outbound_count(), 1);
-    assert_eq!(runtime.service_count(), 1);
-}
-
-#[test]
-fn composes_default_socks5_proxy_runtime_graph() {
-    let runtime =
-        RuntimeGraphBuilder::default_socks5_proxy(Endpoint::localhost_v4(0)).expect("compose");
-
-    assert_eq!(runtime.engine().outbound_count(), 1);
+    assert_eq!(runtime.outbound_count(), 1);
     assert_eq!(runtime.service_count(), 1);
 }
 
@@ -208,7 +199,7 @@ fn composes_first_batch_proxy_outbounds() {
         .compose_source(source)
         .expect("compose proxy outbounds");
 
-    assert_eq!(runtime.engine().outbound_count(), 4);
+    assert_eq!(runtime.outbound_count(), 4);
     assert_eq!(runtime.service_count(), 1);
 }
 
@@ -235,7 +226,7 @@ fn composes_mixed_inbound_runtime_graph() {
         .compose_source(source)
         .expect("compose mixed inbound");
 
-    assert_eq!(runtime.engine().outbound_count(), 1);
+    assert_eq!(runtime.outbound_count(), 1);
     assert_eq!(runtime.service_count(), 1);
 }
 
@@ -264,7 +255,7 @@ fn composes_selector_as_static_child_route() {
         .compose_source(source)
         .expect("compose selector");
 
-    assert_eq!(runtime.engine().outbound_count(), 1);
+    assert_eq!(runtime.outbound_count(), 1);
     assert_eq!(runtime.service_count(), 1);
 }
 
@@ -322,7 +313,7 @@ fn composes_vmess_vless_and_trojan_runtime_graphs() {
         let runtime = RuntimeGraphBuilder::new()
             .compose_source(source)
             .unwrap_or_else(|error| panic!("compose {protocol}: {error:?}"));
-        assert_eq!(runtime.engine().outbound_count(), 1, "{protocol}");
+        assert_eq!(runtime.outbound_count(), 1, "{protocol}");
         assert_eq!(runtime.service_count(), 1, "{protocol}");
     }
 }
@@ -350,7 +341,7 @@ fn composes_anytls_outbound_runtime_graph() {
         .compose_source(source)
         .expect("compose anytls outbound");
 
-    assert_eq!(runtime.engine().outbound_count(), 1);
+    assert_eq!(runtime.outbound_count(), 1);
     assert_eq!(runtime.service_count(), 1);
 }
 
@@ -389,7 +380,7 @@ fn composes_tun_inbound_runtime_graph_on_supported_platforms() {
 
     if rustbox_platform::SUPPORTS_TUN {
         let runtime = result.expect("compose tun inbound");
-        assert_eq!(runtime.engine().outbound_count(), 1);
+        assert_eq!(runtime.outbound_count(), 1);
         assert_eq!(runtime.service_count(), 1);
     } else {
         let error = match result {
