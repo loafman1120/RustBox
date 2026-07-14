@@ -1,7 +1,7 @@
 use crate::{ComposeError, routing::route_table};
 use rustbox_config::{CompiledConfig, CompiledOutboundKind, ConfigError};
 use rustbox_kernel::Engine;
-use rustbox_kernel::{ObservabilitySink, TokioHost};
+use rustbox_kernel::{ObservabilitySink, TokioNetworkProvider};
 use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
 use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 pub(crate) fn compose_engine(
     compiled: &CompiledConfig,
-    host: &Arc<TokioHost>,
+    host: &Arc<TokioNetworkProvider>,
     observability: &Arc<dyn ObservabilitySink>,
 ) -> Result<Arc<Engine>, ComposeError> {
     let router = route_table(compiled);

@@ -8,12 +8,13 @@ pub use host::*;
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind, stream_close};
+use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind};
 use rustbox_route::Router;
 use rustbox_types::{Endpoint, FlowId, FlowMeta, Network, OutboundId, RejectReason, RouteDecision};
 use std::collections::HashMap;
 use std::future::poll_fn;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 
 /// 数据面进入内核后的基本工作单元。
 pub struct Flow {
@@ -34,14 +35,16 @@ pub trait FlowSink: Send + Sync {
 
 /// 长生命周期组件的统一生命周期接口。
 pub trait Service: Send {
-    fn start(&mut self, ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>>;
+    fn start(&mut self, ctx: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>>;
 
     fn stop(&mut self) -> BoxFuture<'_, Result<(), ServiceError>>;
 }
 
-#[derive(Clone, Copy)]
-pub struct ServiceContext<'a> {
-    pub engine_name: &'a str,
+#[derive(Clone, Default)]
+pub struct ServiceContext {
+    pub generation: u64,
+    pub accept_tasks: TaskScope,
+    pub session_tasks: TaskScope,
 }
 
 /// inbound 只负责接入外部连接并创建 Flow，不参与路由选择。
@@ -407,8 +410,8 @@ pub async fn relay_stream(
         )
         .map_err(|err| RelayError::new(err.to_string()));
 
-    let _ = stream_close(&mut *inbound).await;
-    let _ = stream_close(&mut *outbound).await;
+    let _ = inbound.shutdown().await;
+    let _ = outbound.shutdown().await;
     result
 }
 

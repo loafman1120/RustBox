@@ -3167,9 +3167,9 @@ dependencies = [
 name = "rustbox-dns-core"
 version = "0.1.0"
 dependencies = [
- "futures",
  "rustbox-kernel",
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]
@@ -3249,6 +3249,7 @@ dependencies = [
  "rustbox-kernel",
  "rustbox-stack",
  "rustbox-types",
+ "tokio",
 ]
 
 [[package]]
@@ -3271,12 +3272,12 @@ dependencies = [
 name = "rustbox-kernel"
 version = "0.1.0"
 dependencies = [
- "getrandom 0.2.17",
  "rustbox-io",
  "rustbox-route",
  "rustbox-test-host",
  "rustbox-types",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -3411,10 +3412,6 @@ dependencies = [
  "tokio",
  "tun-rs",
 ]
-
-[[package]]
-name = "rustbox-registry"
-version = "0.1.0"
 
 [[package]]
 name = "rustbox-route"
@@ -4171,6 +4168,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

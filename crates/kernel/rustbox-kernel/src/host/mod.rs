@@ -6,12 +6,14 @@
 pub mod net;
 mod tokio_host;
 
-pub use tokio_host::TokioHost;
+pub use tokio_host::TokioNetworkProvider;
 
 use core::future::Future;
 use core::pin::Pin;
 use rustbox_io::{ByteStream, DatagramSocket, PacketDevice};
 use rustbox_types::{Endpoint, IpAddress, IpCidr, Network};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type AcceptedStream = (Box<dyn ByteStream>, Endpoint);
@@ -41,25 +43,53 @@ pub trait StreamListener: Send {
     fn accept(&mut self) -> BoxFuture<'_, Result<AcceptedStream, NetError>>;
 }
 
-/// 时钟能力端口，用于超时、定时器和可确定性测试。
-pub trait Clock: Send + Sync {
-    fn now(&self) -> HostInstant;
-
-    fn sleep_until(&self, deadline: HostInstant) -> BoxFuture<'_, ()>;
+/// 一组由组合根拥有的 Tokio 任务。
+#[derive(Clone, Debug)]
+pub struct TaskScope {
+    cancellation: CancellationToken,
+    tracker: TaskTracker,
 }
 
-/// 熵能力端口，避免协议代码隐式绑定平台随机源。
-pub trait Entropy: Send + Sync {
-    fn fill(&self, output: &mut [u8]) -> Result<(), EntropyError>;
+impl TaskScope {
+    pub fn new() -> Self {
+        Self {
+            cancellation: CancellationToken::new(),
+            tracker: TaskTracker::new(),
+        }
+    }
+
+    pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        let cancellation = self.cancellation.clone();
+        self.tracker.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {}
+                _ = task => {}
+            }
+        });
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    pub fn close(&self) {
+        self.tracker.close();
+    }
+
+    pub async fn wait(&self) {
+        self.tracker.wait().await;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tracker.is_empty()
+    }
 }
 
-/// 任务派生能力端口，让后台任务拥有显式生命周期归属。
-pub trait TaskSpawner: Send + Sync {
-    fn spawn(&self, name: TaskName, task: BoxFuture<'static, ()>)
-    -> Result<TaskHandle, SpawnError>;
-
-    /// Cancel a previously spawned background task. Cancellation is idempotent.
-    fn cancel(&self, handle: TaskHandle) -> Result<(), SpawnError>;
+impl Default for TaskScope {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// 包设备能力端口，TUN/Wintun/VpnService 等平台设施从这里进入系统。
@@ -139,29 +169,6 @@ pub struct AcceptedTransparentStream {
     pub stream: Box<dyn ByteStream>,
     pub peer: Endpoint,
     pub original_destination: Endpoint,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct HostInstant {
-    monotonic_millis: u64,
-}
-
-impl HostInstant {
-    pub fn from_millis(monotonic_millis: u64) -> Self {
-        Self { monotonic_millis }
-    }
-
-    pub fn as_millis(self) -> u64 {
-        self.monotonic_millis
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TaskName(pub String);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct TaskHandle {
-    pub id: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -422,9 +429,40 @@ macro_rules! capability_error {
 }
 
 capability_error!(NetError);
-capability_error!(EntropyError);
-capability_error!(SpawnError);
 capability_error!(PacketDeviceError);
 capability_error!(NetworkControlError);
 capability_error!(ProcessLookupError);
 capability_error!(TransparentProxyError);
+
+#[cfg(test)]
+mod task_scope_tests {
+    use super::TaskScope;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_and_drains_tracked_tasks() {
+        let scope = TaskScope::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_flag = DropFlag(dropped.clone());
+        scope.spawn(async move {
+            let _flag = task_flag;
+            core::future::pending::<()>().await;
+        });
+
+        scope.close();
+        scope.cancel();
+        scope.wait().await;
+
+        assert!(scope.is_empty());
+        assert!(dropped.load(Ordering::Acquire));
+    }
+}

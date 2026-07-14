@@ -1,5 +1,5 @@
 use crate::{
-    ComposeError, RuntimeGraphBuilder, control::ControlGrpcService, runtime::ComposedRuntime,
+    ComposeError, RuntimeGraphBuilder, control::ControlGrpcService, runtime::RuntimeSupervisor,
 };
 use rustbox_config::SourceConfig;
 use rustbox_control::{EngineCommand, EngineSnapshot, EngineState};
@@ -59,7 +59,7 @@ impl Default for RustBoxOptions {
 pub struct RustBox {
     source: SourceConfig,
     observability: Arc<dyn ObservabilitySink>,
-    runtime: ComposedRuntime,
+    runtime: RuntimeSupervisor,
     snapshot: EngineSnapshot,
     control_grpc: Option<ControlGrpcService>,
 }
@@ -107,7 +107,7 @@ impl RustBox {
         Ok(Self {
             source,
             observability,
-            runtime,
+            runtime: RuntimeSupervisor::new(runtime),
             snapshot,
             control_grpc,
         })
@@ -161,26 +161,27 @@ impl RustBox {
             self.snapshot.state,
             EngineState::Stopped | EngineState::Failed
         ) {
-            self.runtime = RuntimeGraphBuilder::with_observability(self.observability.clone())
+            let runtime = RuntimeGraphBuilder::with_observability(self.observability.clone())
                 .compose_source(self.source.clone())?;
+            self.runtime = RuntimeSupervisor::new(runtime);
             self.snapshot.inbound_count = self.runtime.service_count();
-            self.snapshot.outbound_count = self.runtime.engine().outbound_count();
+            self.snapshot.outbound_count = self.runtime.outbound_count();
             self.snapshot.state = EngineState::Prepared;
         }
-        if let Err(error) = self.runtime.start("rustbox").await {
+        if let Err(error) = self.runtime.start(self.snapshot.generation).await {
             self.snapshot.state = EngineState::Failed;
             self.sync_control_snapshot();
             return Err(error);
         }
         self.snapshot.state = EngineState::Running;
         self.sync_control_snapshot();
-        if let Some(control) = &mut self.control_grpc {
-            if let Err(error) = control.start().await {
-                let _ = self.runtime.stop().await;
-                self.snapshot.state = EngineState::Failed;
-                self.sync_control_snapshot();
-                return Err(error);
-            }
+        if let Some(control) = &mut self.control_grpc
+            && let Err(error) = control.start().await
+        {
+            let _ = self.runtime.stop().await;
+            self.snapshot.state = EngineState::Failed;
+            self.sync_control_snapshot();
+            return Err(error);
         }
         Ok(())
     }
@@ -211,22 +212,24 @@ impl RustBox {
         let next = RuntimeGraphBuilder::with_observability(self.observability.clone())
             .compose_source(source.clone())?;
         let was_running = self.snapshot.state == EngineState::Running;
+        let next_generation = self.snapshot.generation.saturating_add(1);
 
         if was_running {
-            self.stop().await?;
+            if let Err(error) = self.runtime.reload(next, next_generation).await {
+                self.snapshot.state = EngineState::Failed;
+                self.sync_control_snapshot();
+                return Err(error);
+            }
+            self.snapshot.state = EngineState::Running;
+        } else {
+            self.runtime.replace(next, next_generation);
+            self.snapshot.state = EngineState::Prepared;
         }
-
         self.source = source;
-        self.runtime = next;
-        self.snapshot.generation = self.snapshot.generation.saturating_add(1);
+        self.snapshot.generation = next_generation;
         self.snapshot.inbound_count = self.runtime.service_count();
-        self.snapshot.outbound_count = self.runtime.engine().outbound_count();
-        self.snapshot.state = EngineState::Prepared;
-
-        if was_running && let Err(error) = self.start().await {
-            self.snapshot.state = EngineState::Failed;
-            return Err(error);
-        }
+        self.snapshot.outbound_count = self.runtime.outbound_count();
+        self.sync_control_snapshot();
         Ok(())
     }
 

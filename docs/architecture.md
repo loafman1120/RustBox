@@ -46,7 +46,7 @@ RustBox/
 │   └── rustbox-cli/                 # CLI 二进制（crate 名 rustbox-app）
 ├── crates/
 │   ├── foundation/                  # 稳定类型与共享 Tokio I/O 契约
-│   ├── kernel/                      # 数据面、路由、registry、host 能力
+│   ├── kernel/                      # 数据面、路由与平台能力端口
 │   ├── control/                     # 配置模型、控制面与 gRPC API
 │   ├── modules/                     # DNS、inspection、inbound/outbound、协议与栈
 │   ├── platform/                    # 操作系统能力实现
@@ -66,7 +66,7 @@ RustBox/
 相对早期布局，近期有四项较大的组织调整：
 
 1. CLI 从 `apps/rustbox` 更名为 `apps/rustbox-cli`，应用入口统一放在 `apps/`。
-2. 独立 `rustbox-host-api` 被移除；host trait、网络转换与 `TokioHost` 归入
+2. 独立 `rustbox-host-api` 被移除；host trait、网络转换与 `TokioNetworkProvider` 归入
    `crates/kernel/rustbox-kernel/src/host/`，测试实现归入 `kernel/rustbox-test-host`。
 3. `apps/rustbox-ffi` C ABI 与 `HostedRustBox` actor 已移除，由
    `packages/rustbox_flutter` 的异步 Future API 取代；其 Rust bridge
@@ -106,6 +106,11 @@ TOML → SourceConfig → normalize → validate → compile → RustBox
 - `reload`：构建新图；新 flow 使用新图，存量 flow 继续持有旧资源。
 - `snapshot`：向 CLI、Flutter 和控制 API 提供统一只读状态。
 - `stop`：停接纳，停后台任务，排空或取消会话，最后回滚平台配置；操作必须有界且幂等。
+
+`RuntimeSupervisor` 持有当前 generation，并让旧 generation 在后台排空。
+每一代有独立的 Tokio `TaskScope`：accept scope 在 reload/stop 时立即取消，session
+scope 最多排空 30 秒后取消。`TaskScope` 直接由 `CancellationToken + TaskTracker`
+组成；模块不创建 runtime，也不通过全局 spawner 隐藏任务所有权。
 
 ## 数据面
 
@@ -153,7 +158,7 @@ outbound：`direct` / `block`（编译为 `Reject` 决策）/ `socks5` / `http` 
 
 ## 近期工作
 
-1. dispatcher / supervisor：把 TUN 和 transparent 的 accept loop 与长 flow 解耦，并补充 UDP / per-flow session 容量与超时淘汰。
+1. session limits：为 TCP/UDP flow 增加统一并发容量、空闲超时与淘汰策略。
 2. UDP：按真实目标路由、限制并发、记录元数据。
 3. inspection + DNS：bounded payload 重放、SNI / Host 提取、独立 resolver；接入 `ProcessLookup`。
 4. runtime outbound graph：selector 切换、URLTest 健康检查、child 选择记录、循环检测。

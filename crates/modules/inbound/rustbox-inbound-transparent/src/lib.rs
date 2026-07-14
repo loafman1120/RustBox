@@ -7,8 +7,8 @@
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rustbox_kernel::{
-    BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink, TaskName,
-    TaskSpawner, TransparentProxyProvider, TransparentRedirectMode, TransparentTcpBind,
+    BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink, TaskScope,
+    TransparentProxyProvider, TransparentRedirectMode, TransparentTcpBind,
 };
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network};
@@ -24,7 +24,6 @@ pub struct TransparentProxyInbound {
     id: InboundId,
     listen: Endpoint,
     provider: Arc<dyn TransparentProxyProvider>,
-    spawner: Arc<dyn TaskSpawner>,
     sink: Arc<dyn FlowSink>,
     config: TransparentInboundConfig,
     observability: Arc<dyn ObservabilitySink>,
@@ -38,7 +37,6 @@ impl TransparentProxyInbound {
         id: InboundId,
         listen: Endpoint,
         provider: Arc<dyn TransparentProxyProvider>,
-        spawner: Arc<dyn TaskSpawner>,
         sink: Arc<dyn FlowSink>,
         config: TransparentInboundConfig,
     ) -> Self {
@@ -46,7 +44,6 @@ impl TransparentProxyInbound {
             id,
             listen,
             provider,
-            spawner,
             sink,
             config,
             observability: Arc::new(NoopObservabilitySink),
@@ -76,7 +73,7 @@ impl Inbound for TransparentProxyInbound {
 }
 
 impl Service for TransparentProxyInbound {
-    fn start(&mut self, _ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>> {
+    fn start(&mut self, ctx: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async move {
             if self.started.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::new("transparent inbound already started"));
@@ -115,14 +112,10 @@ impl Service for TransparentProxyInbound {
             let sink = Arc::clone(&self.sink);
             let observability = Arc::clone(&self.observability);
             let next_flow_id = Arc::clone(&self.next_flow_id);
-            self.spawner
-                .spawn(
-                    TaskName("transparent-inbound-accept".to_string()),
-                    Box::pin(async move {
-                        accept_loop(id, listener, sink, observability, next_flow_id).await;
-                    }),
-                )
-                .map_err(|err| ServiceError::new(err.message))?;
+            let sessions = ctx.session_tasks.clone();
+            ctx.accept_tasks.spawn(async move {
+                accept_loop(id, listener, sink, sessions, observability, next_flow_id).await;
+            });
 
             self.observability
                 .emit(Event::new(
@@ -160,6 +153,7 @@ async fn accept_loop(
     inbound_id: InboundId,
     mut listener: Box<dyn rustbox_kernel::TransparentStreamListener>,
     sink: Arc<dyn FlowSink>,
+    sessions: TaskScope,
     observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
 ) {
@@ -214,7 +208,10 @@ async fn accept_loop(
             payload: FlowPayload::Stream(accepted.stream),
         };
 
-        let _ = sink.submit(flow).await;
+        let sink = sink.clone();
+        sessions.spawn(async move {
+            let _ = sink.submit(flow).await;
+        });
     }
 }
 
@@ -229,16 +226,14 @@ mod tests {
     use std::sync::Mutex;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-    #[test]
-    fn starts_with_transparent_provider() {
+    #[tokio::test]
+    async fn starts_with_transparent_provider() {
         let provider = Arc::new(FakeTransparentProvider);
-        let spawner = Arc::new(FakeSpawner);
         let sink = Arc::new(RecordingSink::default());
         let mut inbound = TransparentProxyInbound::new(
             InboundId::new(NonZeroU64::new(1).expect("id")),
             Endpoint::localhost_v4(12345),
             provider,
-            spawner,
             sink,
             TransparentInboundConfig {
                 mode: TransparentRedirectMode::Redirect,
@@ -246,10 +241,10 @@ mod tests {
             },
         );
 
-        block_on_ready(inbound.start(ServiceContext {
-            engine_name: "test",
-        }))
-        .expect("start transparent inbound");
+        inbound
+            .start(ServiceContext::default())
+            .await
+            .expect("start transparent inbound");
 
         assert_eq!(
             inbound.local_endpoint(),
@@ -290,26 +285,6 @@ mod tests {
             &mut self,
         ) -> BoxFuture<'_, Result<AcceptedTransparentStream, TransparentProxyError>> {
             Box::pin(async { Err(TransparentProxyError::new("done")) })
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeSpawner;
-
-    impl rustbox_kernel::TaskSpawner for FakeSpawner {
-        fn spawn(
-            &self,
-            _name: rustbox_kernel::TaskName,
-            _task: BoxFuture<'static, ()>,
-        ) -> Result<rustbox_kernel::TaskHandle, rustbox_kernel::SpawnError> {
-            Ok(rustbox_kernel::TaskHandle { id: 1 })
-        }
-
-        fn cancel(
-            &self,
-            _handle: rustbox_kernel::TaskHandle,
-        ) -> Result<(), rustbox_kernel::SpawnError> {
-            Ok(())
         }
     }
 
@@ -356,16 +331,6 @@ mod tests {
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
-        }
-    }
-
-    fn block_on_ready<T>(future: impl core::future::Future<Output = T>) -> T {
-        let waker = std::task::Waker::noop();
-        let mut cx = std::task::Context::from_waker(waker);
-        let mut future = core::pin::pin!(future);
-        match future.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(value) => value,
-            std::task::Poll::Pending => panic!("future unexpectedly pending"),
         }
     }
 }

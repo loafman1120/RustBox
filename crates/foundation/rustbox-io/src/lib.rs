@@ -6,7 +6,7 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use rustbox_types::Endpoint;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// 可装入 trait object 的 Tokio 有序字节流。
 pub trait ByteStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -71,21 +71,6 @@ pub enum IoErrorKind {
     InvalidInput,
     Unsupported,
     Other,
-}
-
-/// 兼容现有模块错误模型的 Tokio 读操作。
-pub async fn stream_read(stream: &mut dyn ByteStream, buf: &mut [u8]) -> Result<usize, IoError> {
-    stream.read(buf).await.map_err(IoError::from)
-}
-
-/// 写完整个缓冲区，并在末尾 flush。
-pub async fn stream_write_all(stream: &mut dyn ByteStream, buf: &[u8]) -> Result<(), IoError> {
-    stream.write_all(buf).await.map_err(IoError::from)?;
-    stream.flush().await.map_err(IoError::from)
-}
-
-pub async fn stream_close(stream: &mut dyn ByteStream) -> Result<(), IoError> {
-    stream.shutdown().await.map_err(IoError::from)
 }
 
 impl From<std::io::Error> for IoError {

@@ -10,7 +10,7 @@ rustbox-types = { path = "../../../foundation/rustbox-types" }
 
 [dev-dependencies]
 rustbox-io = { path = "../../../foundation/rustbox-io" }
-tokio = { version = "1", features = ["io-util"] }
+tokio = { version = "1", features = ["io-util", "macros", "rt"] }
 
 [lints]
 workspace = true

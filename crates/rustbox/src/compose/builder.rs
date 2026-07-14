@@ -2,27 +2,27 @@ use super::{compose_engine, compose_inbounds};
 use crate::{ComposeError, runtime::ComposedRuntime};
 use rustbox_config::{CompiledConfig, ConfigCompiler, SourceConfig};
 use rustbox_kernel::FlowSink;
-use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink, TokioHost};
+use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink, TokioNetworkProvider};
 #[cfg(test)]
 use rustbox_types::Endpoint;
 use std::sync::Arc;
 
 pub(crate) struct RuntimeGraphBuilder {
-    host: Arc<TokioHost>,
+    host: Arc<TokioNetworkProvider>,
     observability: Arc<dyn ObservabilitySink>,
 }
 
 impl RuntimeGraphBuilder {
     pub(crate) fn new() -> Self {
         Self {
-            host: Arc::new(TokioHost::new()),
+            host: Arc::new(TokioNetworkProvider::new()),
             observability: Arc::new(NoopObservabilitySink),
         }
     }
 
     pub(crate) fn with_observability(observability: Arc<dyn ObservabilitySink>) -> Self {
         Self {
-            host: Arc::new(TokioHost::new()),
+            host: Arc::new(TokioNetworkProvider::new()),
             observability,
         }
     }

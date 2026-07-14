@@ -4,10 +4,11 @@
 //! 契约、缓存、规则和 FakeIP；真实 UDP/TCP/DoH/DoT/DoQ I/O 由后续 adapter
 //! 通过 `DnsTransport` 接入。
 
-use rustbox_kernel::{BoxFuture, Clock};
+use rustbox_kernel::BoxFuture;
 use rustbox_types::{Endpoint, Host, IpAddress, IpCidr, Network};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::time::{Duration, Instant};
 
 /// DNS 解析接口，输入查询，输出响应，不直接决定代理路由。
 pub trait Resolver: Send + Sync {
@@ -213,7 +214,6 @@ impl Resolver for RuleBasedResolver {
 
 pub struct CachingResolver {
     upstream: Arc<dyn Resolver>,
-    clock: Arc<dyn Clock>,
     enabled: bool,
     max_entries: usize,
     min_ttl_seconds: u32,
@@ -222,10 +222,9 @@ pub struct CachingResolver {
 }
 
 impl CachingResolver {
-    pub fn new(upstream: Arc<dyn Resolver>, clock: Arc<dyn Clock>, config: DnsCacheConfig) -> Self {
+    pub fn new(upstream: Arc<dyn Resolver>, config: DnsCacheConfig) -> Self {
         Self {
             upstream,
-            clock,
             enabled: config.enabled,
             max_entries: config.max_entries,
             min_ttl_seconds: config.min_ttl_seconds,
@@ -242,9 +241,9 @@ impl Resolver for CachingResolver {
                 return self.upstream.resolve(query).await;
             }
 
-            let now = self.clock.now().as_millis();
+            let now = Instant::now();
             if let Some(response) = self.entries.lock().expect("cache lock").get(&query)
-                && response.expires_at_millis > now
+                && response.expires_at > now
             {
                 return Ok(response.response.clone());
             }
@@ -269,7 +268,7 @@ impl Resolver for CachingResolver {
                     query,
                     CachedResponse {
                         response: response.clone(),
-                        expires_at_millis: now.saturating_add(u64::from(ttl) * 1000),
+                        expires_at: now + Duration::from_secs(u64::from(ttl)),
                     },
                 );
             }
@@ -281,7 +280,7 @@ impl Resolver for CachingResolver {
 #[derive(Clone, Debug)]
 struct CachedResponse {
     response: DnsResponse,
-    expires_at_millis: u64,
+    expires_at: Instant,
 }
 
 #[derive(Debug)]
@@ -492,8 +491,7 @@ fn fake_ip_response(address: IpAddress, ttl_seconds: u32) -> DnsResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbox_kernel::HostInstant;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn normalizes_dns_names() {
@@ -543,13 +541,11 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn cache_resolver_reuses_positive_response() {
-        let clock = Arc::new(TestClock::new());
+    #[tokio::test]
+    async fn cache_resolver_reuses_positive_response() {
         let upstream = Arc::new(CountingResolver::new());
         let cache = CachingResolver::new(
             upstream.clone(),
-            clock,
             DnsCacheConfig {
                 enabled: true,
                 max_entries: 8,
@@ -562,32 +558,10 @@ mod tests {
             record_type: DnsRecordType::A,
         };
 
-        futures::executor::block_on(cache.resolve(query.clone())).expect("first");
-        futures::executor::block_on(cache.resolve(query)).expect("second");
+        cache.resolve(query.clone()).await.expect("first");
+        cache.resolve(query).await.expect("second");
 
         assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
-    }
-
-    struct TestClock {
-        now: AtomicU64,
-    }
-
-    impl TestClock {
-        fn new() -> Self {
-            Self {
-                now: AtomicU64::new(1000),
-            }
-        }
-    }
-
-    impl Clock for TestClock {
-        fn now(&self) -> HostInstant {
-            HostInstant::from_millis(self.now.load(Ordering::SeqCst))
-        }
-
-        fn sleep_until(&self, _deadline: HostInstant) -> BoxFuture<'_, ()> {
-            Box::pin(async {})
-        }
     }
 
     struct CountingResolver {

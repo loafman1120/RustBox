@@ -13,13 +13,13 @@ use rustbox_inbound_transparent::{
 };
 use rustbox_inbound_tun::{TunInbound, TunInboundConfig as RuntimeTunInboundConfig};
 use rustbox_kernel::{FlowSink, Service};
-use rustbox_kernel::{ObservabilitySink, TokioHost};
+use rustbox_kernel::{ObservabilitySink, TokioNetworkProvider};
 use rustbox_types::Host;
 use std::sync::Arc;
 
 pub(crate) fn compose_inbounds(
     inbounds: Vec<CompiledInbound>,
-    host: &Arc<TokioHost>,
+    host: &Arc<TokioNetworkProvider>,
     observability: &Arc<dyn ObservabilitySink>,
     sink: Arc<dyn FlowSink>,
 ) -> Result<Vec<Box<dyn Service>>, ComposeError> {
@@ -37,9 +37,8 @@ pub(crate) fn compose_inbounds(
                 username,
                 password,
             } => {
-                let mut inbound =
-                    MixedInbound::new(inbound.id, listen, host.clone(), host.clone(), sink.clone())
-                        .with_observability(observability.clone());
+                let mut inbound = MixedInbound::new(inbound.id, listen, host.clone(), sink.clone())
+                    .with_observability(observability.clone());
                 if let (Some(username), Some(password)) = (username, password) {
                     inbound =
                         inbound.with_credentials(MixedInboundCredentials { username, password });
@@ -51,14 +50,9 @@ pub(crate) fn compose_inbounds(
                 username,
                 password,
             } => {
-                let mut inbound = HttpProxyInbound::new(
-                    inbound.id,
-                    listen,
-                    host.clone(),
-                    host.clone(),
-                    sink.clone(),
-                )
-                .with_observability(observability.clone());
+                let mut inbound =
+                    HttpProxyInbound::new(inbound.id, listen, host.clone(), sink.clone())
+                        .with_observability(observability.clone());
                 if let (Some(username), Some(password)) = (username, password) {
                     inbound =
                         inbound.with_credentials(HttpInboundCredentials { username, password });
@@ -70,14 +64,9 @@ pub(crate) fn compose_inbounds(
                 username,
                 password,
             } => {
-                let mut inbound = Socks5Inbound::new(
-                    inbound.id,
-                    listen,
-                    host.clone(),
-                    host.clone(),
-                    sink.clone(),
-                )
-                .with_observability(observability.clone());
+                let mut inbound =
+                    Socks5Inbound::new(inbound.id, listen, host.clone(), sink.clone())
+                        .with_observability(observability.clone());
                 if let (Some(username), Some(password)) = (username, password) {
                     inbound =
                         inbound.with_credentials(Socks5InboundCredentials { username, password });
@@ -113,7 +102,6 @@ pub(crate) fn compose_inbounds(
                         alpn: tls.alpn,
                     },
                     host.clone(),
-                    host.clone(),
                     sink.clone(),
                 )
                 .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?;
@@ -125,7 +113,6 @@ pub(crate) fn compose_inbounds(
                     inbound.id,
                     config.listen,
                     provider,
-                    host.clone(),
                     sink.clone(),
                     RuntimeTransparentInboundConfig {
                         mode: config.mode,
@@ -167,7 +154,6 @@ pub(crate) fn compose_inbounds(
                     inbound.id,
                     packet_devices,
                     network_control,
-                    host.clone(),
                     Box::new(stack),
                     sink.clone(),
                     RuntimeTunInboundConfig {

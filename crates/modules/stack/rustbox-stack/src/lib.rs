@@ -12,7 +12,7 @@ use rustbox_kernel::net::socket_addr_to_endpoint;
 use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
 };
-use rustbox_kernel::{Flow, FlowPayload, FlowSink};
+use rustbox_kernel::{Flow, FlowPayload, FlowSink, TaskScope};
 use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network};
 #[cfg(test)]
 use rustbox_types::{Host, IpAddress};
@@ -25,6 +25,7 @@ pub trait NetworkStack: Send + Sync {
         &mut self,
         device: Box<dyn PacketDevice>,
         sink: Arc<dyn FlowSink>,
+        sessions: TaskScope,
     ) -> BoxFuture<'_, Result<(), StackError>>;
 }
 
@@ -71,6 +72,7 @@ impl PacketFlowStack {
         &mut self,
         device: Box<dyn PacketDevice>,
         sink: Arc<dyn FlowSink>,
+        sessions: TaskScope,
     ) -> Result<(), StackError> {
         self.emit(
             EventLevel::Info,
@@ -103,7 +105,7 @@ impl PacketFlowStack {
                     .await;
                     let flow_sink = sink.clone();
                     let observability = self.observability.clone();
-                    tokio::spawn(async move {
+                    sessions.spawn(async move {
                         if let Err(err) = flow_sink.submit(flow).await {
                             observability
                                 .emit(Event::new(
@@ -141,8 +143,9 @@ impl NetworkStack for PacketFlowStack {
         &mut self,
         device: Box<dyn PacketDevice>,
         sink: Arc<dyn FlowSink>,
+        sessions: TaskScope,
     ) -> BoxFuture<'_, Result<(), StackError>> {
-        Box::pin(self.attach_inner(device, sink))
+        Box::pin(self.attach_inner(device, sink, sessions))
     }
 }
 
@@ -161,6 +164,7 @@ impl NetworkStack for PlannedStack {
         &mut self,
         _device: Box<dyn PacketDevice>,
         _sink: Arc<dyn FlowSink>,
+        _sessions: TaskScope,
     ) -> BoxFuture<'_, Result<(), StackError>> {
         Box::pin(async {
             Err(StackError::new(
@@ -450,6 +454,7 @@ mod tests {
                         packet: Some(packet),
                     }),
                     sink,
+                    TaskScope::new(),
                 )
                 .await
         });

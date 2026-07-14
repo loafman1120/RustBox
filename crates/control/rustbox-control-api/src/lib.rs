@@ -161,7 +161,7 @@ impl Error for ControlApiConfigError {}
 pub struct ControlApiState {
     observability: Arc<ObservabilityStore>,
     control: Arc<Mutex<ControlState>>,
-    command_tx: Option<mpsc::UnboundedSender<EngineCommand>>,
+    command_tx: Option<mpsc::Sender<EngineCommand>>,
 }
 
 impl ControlApiState {
@@ -173,7 +173,7 @@ impl ControlApiState {
         }
     }
 
-    pub fn with_command_sender(mut self, command_tx: mpsc::UnboundedSender<EngineCommand>) -> Self {
+    pub fn with_command_sender(mut self, command_tx: mpsc::Sender<EngineCommand>) -> Self {
         self.command_tx = Some(command_tx);
         self
     }
@@ -341,6 +341,19 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
     ) -> Result<Response<pb::EngineSnapshot>, Status> {
         self.auth
             .authorize(request.metadata(), Permission::Control)?;
+        if let Some(command_tx) = &self.state.command_tx {
+            command_tx
+                .try_send(EngineCommand::Stop)
+                .map_err(|error| match error {
+                    mpsc::error::TrySendError::Full(_) => {
+                        Status::resource_exhausted("control command queue is full")
+                    }
+                    mpsc::error::TrySendError::Closed(_) => {
+                        Status::unavailable("control command processor is unavailable")
+                    }
+                })?;
+        }
+
         let snapshot = {
             let mut state = self
                 .state
@@ -350,10 +363,6 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
             state.apply_command(EngineCommand::Stop);
             state.snapshot().clone()
         };
-
-        if let Some(command_tx) = &self.state.command_tx {
-            let _ = command_tx.send(EngineCommand::Stop);
-        }
 
         Ok(Response::new(engine_to_proto(snapshot)))
     }
@@ -678,7 +687,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_updates_state_and_sends_command() {
-        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        let (command_tx, mut command_rx) = mpsc::channel(1);
         let service = RustBoxControlService::new(
             sample_state(Some(command_tx)),
             AuthPolicy::disabled(),
@@ -698,7 +707,31 @@ mod tests {
         );
     }
 
-    fn sample_state(command_tx: Option<mpsc::UnboundedSender<EngineCommand>>) -> ControlApiState {
+    #[tokio::test]
+    async fn full_command_queue_does_not_publish_stopping_state() {
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        command_tx
+            .try_send(EngineCommand::Stop)
+            .expect("fill command queue");
+        let service = RustBoxControlService::new(
+            sample_state(Some(command_tx)),
+            AuthPolicy::disabled(),
+            DEFAULT_MAX_EVENTS_PER_QUERY,
+        );
+
+        let error = service
+            .stop(Request::new(pb::StopRequest {}))
+            .await
+            .expect_err("reject full queue");
+
+        assert_eq!(error.code(), Code::ResourceExhausted);
+        assert_eq!(
+            service.control_snapshot().expect("snapshot").state,
+            EngineState::Running
+        );
+    }
+
+    fn sample_state(command_tx: Option<mpsc::Sender<EngineCommand>>) -> ControlApiState {
         let store = Arc::new(ObservabilityStore::default());
         let flow_id = FlowId::new(NonZeroU64::new(7).expect("non-zero"));
         store_event(

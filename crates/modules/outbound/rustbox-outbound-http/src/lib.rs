@@ -6,7 +6,7 @@
 //! by opening the upstream proxy through `NetworkProvider`.
 
 use base64::Engine;
-use rustbox_io::{ByteStream, DatagramSocket, stream_write_all};
+use rustbox_io::{ByteStream, DatagramSocket};
 use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect,
@@ -15,7 +15,7 @@ use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, OutboundId};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 const MAX_CONNECT_RESPONSE_BYTES: usize = 16 * 1024;
 
@@ -174,9 +174,10 @@ async fn connect_tunnel(
     credentials: Option<&HttpProxyCredentials>,
 ) -> Result<HttpTunnelStream, OutboundError> {
     let request = connect_request(target, credentials);
-    stream_write_all(&mut *proxy_stream, request.as_bytes())
+    proxy_stream
+        .write_all(request.as_bytes())
         .await
-        .map_err(|err| OutboundError::new(err.message))?;
+        .map_err(|err| OutboundError::new(err.to_string()))?;
 
     let response = read_connect_response(&mut *proxy_stream).await?;
     let header_end = find_header_end(&response).expect("response reader returns complete headers");
@@ -222,9 +223,10 @@ async fn read_connect_response(stream: &mut dyn ByteStream) -> Result<Vec<u8>, O
                 "http proxy CONNECT response exceeded header limit",
             ));
         }
-        let read = rustbox_io::stream_read(stream, &mut buf)
+        let read = stream
+            .read(&mut buf)
             .await
-            .map_err(|err| OutboundError::new(err.message))?;
+            .map_err(|err| OutboundError::new(err.to_string()))?;
         if read == 0 {
             return Err(OutboundError::new(
                 "http proxy closed before CONNECT response completed",
@@ -313,7 +315,7 @@ impl AsyncWrite for HttpTunnelStream {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_kernel::TokioHost;
+    use rustbox_kernel::TokioNetworkProvider;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -321,7 +323,7 @@ mod tests {
     #[tokio::test]
     async fn http_outbound_connects_stream_through_connect_proxy() {
         let proxy = start_http_connect_proxy().await;
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
         let outbound = HttpProxyOutbound::new(outbound_id, proxy, host);
         let target = Endpoint::new(Host::domain("example.test"), 443);
@@ -332,7 +334,8 @@ mod tests {
             .await
             .expect("open http tunnel");
         let mut buf = [0_u8; 4];
-        rustbox_io::stream_read(&mut *stream, &mut buf)
+        stream
+            .read_exact(&mut buf)
             .await
             .expect("read prebuffered bytes");
         assert_eq!(&buf, b"pong");
@@ -351,7 +354,7 @@ mod tests {
                 .expect("write response");
         });
 
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
         let outbound = HttpProxyOutbound::new(outbound_id, proxy, host);
         let target = Endpoint::new(Host::domain("example.test"), 443);

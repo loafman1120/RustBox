@@ -323,7 +323,7 @@ fn io_error(err: io::Error) -> IoError {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_kernel::TokioHost;
+    use rustbox_kernel::TokioNetworkProvider;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use shadowsocks::relay::tcprelay::proxy_listener::ProxyListener;
     use std::future::poll_fn;
@@ -346,13 +346,9 @@ mod tests {
             .open_stream(OutboundContext { flow: &meta }, target)
             .await
             .expect("open shadowsocks stream");
-        rustbox_io::stream_write_all(&mut *stream, b"ping")
-            .await
-            .expect("write ping");
+        stream.write_all(b"ping").await.expect("write ping");
         let mut buf = [0_u8; 4];
-        rustbox_io::stream_read(&mut *stream, &mut buf)
-            .await
-            .expect("read pong");
+        stream.read_exact(&mut buf).await.expect("read pong");
 
         assert_eq!(&buf, b"pong");
     }
@@ -384,7 +380,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_shadowsocks_method() {
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
         let error = match ShadowsocksOutbound::new(
             outbound_id,
@@ -400,8 +396,8 @@ mod tests {
         assert!(error.message.contains("unsupported shadowsocks method"));
     }
 
-    async fn start_shadowsocks_tcp_server() -> (Arc<TokioHost>, Endpoint) {
-        let host = Arc::new(TokioHost::new());
+    async fn start_shadowsocks_tcp_server() -> (Arc<TokioNetworkProvider>, Endpoint) {
+        let host = Arc::new(TokioNetworkProvider::new());
         let config = server_config(Endpoint::localhost_v4(0));
         let context = ShadowsocksContext::new_shared(ServerType::Server);
         let listener = ProxyListener::bind(context, &config)
@@ -426,8 +422,8 @@ mod tests {
         (host, server)
     }
 
-    async fn start_shadowsocks_udp_server() -> (Arc<TokioHost>, Endpoint) {
-        let host = Arc::new(TokioHost::new());
+    async fn start_shadowsocks_udp_server() -> (Arc<TokioNetworkProvider>, Endpoint) {
+        let host = Arc::new(TokioNetworkProvider::new());
         let config = server_config(Endpoint::localhost_v4(0));
         let context = ShadowsocksContext::new_shared(ServerType::Server);
         let socket = ProxySocket::bind(context, &config)

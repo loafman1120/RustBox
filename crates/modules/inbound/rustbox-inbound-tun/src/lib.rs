@@ -8,8 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, InterfaceRef, NetworkControl, NetworkControlReason,
     NetworkOperation, NetworkTransaction, NoopObservabilitySink, ObservabilitySink,
-    PacketDeviceConfig, PacketDeviceProvider, RollbackPolicy, RouteMode, TaskName, TaskSpawner,
-    TunDnsMode,
+    PacketDeviceConfig, PacketDeviceProvider, RollbackPolicy, RouteMode, TunDnsMode,
 };
 use rustbox_kernel::{FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_stack::NetworkStack;
@@ -37,14 +36,12 @@ pub struct TunInbound {
     id: InboundId,
     packet_devices: Arc<dyn PacketDeviceProvider>,
     network_control: Arc<dyn NetworkControl>,
-    spawner: Arc<dyn TaskSpawner>,
     stack: Option<Box<dyn NetworkStack>>,
     sink: Arc<dyn FlowSink>,
     config: TunInboundConfig,
     observability: Arc<dyn ObservabilitySink>,
     started: AtomicBool,
     network_lease: Arc<Mutex<Option<rustbox_kernel::NetworkLease>>>,
-    stack_task: Option<rustbox_kernel::TaskHandle>,
 }
 
 impl TunInbound {
@@ -52,7 +49,6 @@ impl TunInbound {
         id: InboundId,
         packet_devices: Arc<dyn PacketDeviceProvider>,
         network_control: Arc<dyn NetworkControl>,
-        spawner: Arc<dyn TaskSpawner>,
         stack: Box<dyn NetworkStack>,
         sink: Arc<dyn FlowSink>,
         config: TunInboundConfig,
@@ -61,14 +57,12 @@ impl TunInbound {
             id,
             packet_devices,
             network_control,
-            spawner,
             stack: Some(stack),
             sink,
             config,
             observability: Arc::new(NoopObservabilitySink),
             started: AtomicBool::new(false),
             network_lease: Arc::new(Mutex::new(None)),
-            stack_task: None,
         }
     }
 
@@ -92,7 +86,7 @@ impl Inbound for TunInbound {
 }
 
 impl Service for TunInbound {
-    fn start(&mut self, _ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>> {
+    fn start(&mut self, ctx: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async move {
             if self.started.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::new("tun inbound already started"));
@@ -137,47 +131,22 @@ impl Service for TunInbound {
             let sink = self.sink.clone();
             let observability = self.observability.clone();
             let inbound_id = self.id;
-            let task = match self.spawner.spawn(
-                TaskName(format!("tun-inbound-stack-{inbound_id}")),
-                Box::pin(async move {
-                    if let Err(err) = stack.attach(lease.device, sink).await {
-                        observability
-                            .emit(Event::new(
-                                EventLevel::Error,
-                                "rustbox.inbound.tun",
-                                None,
-                                EventKind::Diagnostic(format!(
-                                    "tun/{inbound_id} stack stopped: {}",
-                                    err.message
-                                )),
-                            ))
-                            .await;
-                    }
-                }),
-            ) {
-                Ok(task) => task,
-                Err(err) => {
-                    let lease = self
-                        .network_lease
-                        .lock()
-                        .expect("tun inbound network lease lock")
-                        .take();
-                    if let Some(lease) = lease {
-                        self.network_control
-                            .release(lease)
-                            .await
-                            .map_err(|release| {
-                                ServiceError::new(format!(
-                                    "{}; network rollback failed: {}",
-                                    err.message, release.message
-                                ))
-                            })?;
-                    }
-                    self.started.store(false, Ordering::SeqCst);
-                    return Err(ServiceError::new(err.message));
+            let sessions = ctx.session_tasks.clone();
+            ctx.accept_tasks.spawn(async move {
+                if let Err(err) = stack.attach(lease.device, sink, sessions).await {
+                    observability
+                        .emit(Event::new(
+                            EventLevel::Error,
+                            "rustbox.inbound.tun",
+                            None,
+                            EventKind::Diagnostic(format!(
+                                "tun/{inbound_id} stack stopped: {}",
+                                err.message
+                            )),
+                        ))
+                        .await;
                 }
-            };
-            self.stack_task = Some(task);
+            });
 
             self.emit(
                 EventLevel::Info,
@@ -193,11 +162,6 @@ impl Service for TunInbound {
     fn stop(&mut self) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async {
             self.started.store(false, Ordering::SeqCst);
-            if let Some(task) = self.stack_task.take() {
-                self.spawner
-                    .cancel(task)
-                    .map_err(|err| ServiceError::new(err.message))?;
-            }
             let lease = self
                 .network_lease
                 .lock()
@@ -331,21 +295,18 @@ mod tests {
     use rustbox_kernel::{Flow, FlowError, FlowOutcome};
     use rustbox_kernel::{
         NetworkControlError, NetworkLease, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
-        SpawnError, TaskHandle,
     };
     use rustbox_types::{FlowId, RejectReason};
 
-    #[test]
-    fn starts_packet_device_and_applies_manual_transaction() {
+    #[tokio::test]
+    async fn starts_packet_device_and_applies_manual_transaction() {
         let packet_provider = Arc::new(FakePacketDeviceProvider);
         let network_control = Arc::new(FakeNetworkControl::default());
-        let spawner = Arc::new(FakeSpawner);
         let sink = Arc::new(RejectingSink);
         let mut inbound = TunInbound::new(
             InboundId::new(core::num::NonZeroU64::new(1).expect("id")),
             packet_provider,
             network_control.clone(),
-            spawner,
             Box::new(FakeStack),
             sink,
             TunInboundConfig {
@@ -365,10 +326,10 @@ mod tests {
             },
         );
 
-        block_on_ready(inbound.start(ServiceContext {
-            engine_name: "test",
-        }))
-        .expect("start tun");
+        inbound
+            .start(ServiceContext::default())
+            .await
+            .expect("start tun");
 
         let transactions = network_control.transactions.lock().expect("transactions");
         assert_eq!(transactions.len(), 1);
@@ -413,33 +374,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn stop_cancels_stack_and_releases_network_lease() {
+    #[tokio::test]
+    async fn stop_releases_network_lease() {
         let network_control = Arc::new(FakeNetworkControl::default());
-        let mut inbound = test_inbound(network_control.clone(), Arc::new(FakeSpawner));
-        block_on_ready(inbound.start(ServiceContext {
-            engine_name: "test",
-        }))
-        .expect("start");
+        let mut inbound = test_inbound(network_control.clone());
+        inbound
+            .start(ServiceContext::default())
+            .await
+            .expect("start");
 
-        block_on_ready(inbound.stop()).expect("stop");
+        inbound.stop().await.expect("stop");
 
-        assert_eq!(network_control.released.load(Ordering::SeqCst), 1);
-        assert!(inbound.network_lease().is_none());
-        assert!(!inbound.started.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn spawn_failure_rolls_back_network_lease_and_resets_started_state() {
-        let network_control = Arc::new(FakeNetworkControl::default());
-        let mut inbound = test_inbound(network_control.clone(), Arc::new(FailingSpawner));
-
-        let error = block_on_ready(inbound.start(ServiceContext {
-            engine_name: "test",
-        }))
-        .expect_err("spawn must fail");
-
-        assert!(error.message.contains("spawn rejected"));
         assert_eq!(network_control.released.load(Ordering::SeqCst), 1);
         assert!(inbound.network_lease().is_none());
         assert!(!inbound.started.load(Ordering::SeqCst));
@@ -485,15 +430,11 @@ mod tests {
         );
     }
 
-    fn test_inbound(
-        network_control: Arc<FakeNetworkControl>,
-        spawner: Arc<dyn TaskSpawner>,
-    ) -> TunInbound {
+    fn test_inbound(network_control: Arc<FakeNetworkControl>) -> TunInbound {
         TunInbound::new(
             InboundId::new(core::num::NonZeroU64::new(9).expect("id")),
             Arc::new(FakePacketDeviceProvider),
             network_control,
-            spawner,
             Box::new(FakeStack),
             Arc::new(RejectingSink),
             test_tun_config(),
@@ -570,39 +511,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakeSpawner;
-
-    impl TaskSpawner for FakeSpawner {
-        fn spawn(
-            &self,
-            _name: TaskName,
-            _task: BoxFuture<'static, ()>,
-        ) -> Result<TaskHandle, SpawnError> {
-            Ok(TaskHandle { id: 1 })
-        }
-
-        fn cancel(&self, _handle: TaskHandle) -> Result<(), SpawnError> {
-            Ok(())
-        }
-    }
-
-    struct FailingSpawner;
-
-    impl TaskSpawner for FailingSpawner {
-        fn spawn(
-            &self,
-            _name: TaskName,
-            _task: BoxFuture<'static, ()>,
-        ) -> Result<TaskHandle, SpawnError> {
-            Err(SpawnError::new("spawn rejected"))
-        }
-
-        fn cancel(&self, _handle: TaskHandle) -> Result<(), SpawnError> {
-            Ok(())
-        }
-    }
-
     struct FakeStack;
 
     impl NetworkStack for FakeStack {
@@ -610,6 +518,7 @@ mod tests {
             &mut self,
             _device: Box<dyn PacketDevice>,
             _sink: Arc<dyn FlowSink>,
+            _sessions: rustbox_kernel::TaskScope,
         ) -> BoxFuture<'_, Result<(), rustbox_stack::StackError>> {
             Box::pin(async { Ok(()) })
         }
@@ -641,16 +550,6 @@ mod tests {
         fn submit(&self, flow: Flow) -> BoxFuture<'_, Result<FlowOutcome, FlowError>> {
             let _ = FlowId::new(core::num::NonZeroU64::new(flow.meta.id.get()).expect("id"));
             Box::pin(async { Ok(FlowOutcome::Rejected(RejectReason::Policy)) })
-        }
-    }
-
-    fn block_on_ready<T>(future: impl core::future::Future<Output = T>) -> T {
-        let waker = std::task::Waker::noop();
-        let mut cx = std::task::Context::from_waker(waker);
-        let mut future = core::pin::pin!(future);
-        match future.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(value) => value,
-            std::task::Poll::Pending => panic!("future unexpectedly pending"),
         }
     }
 }

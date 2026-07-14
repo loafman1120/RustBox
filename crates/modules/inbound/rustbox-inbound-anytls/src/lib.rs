@@ -13,7 +13,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
-use rustbox_kernel::{BoxFuture, NetworkProvider, StreamListener, TaskName, TaskSpawner, TcpBind};
+use rustbox_kernel::{BoxFuture, NetworkProvider, StreamListener, TaskScope, TcpBind};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network};
 use rustls::ServerConfig;
@@ -43,7 +43,6 @@ pub struct AnyTlsInbound {
     id: InboundId,
     listen: Endpoint,
     network: Arc<dyn NetworkProvider>,
-    spawner: Arc<dyn TaskSpawner>,
     sink: Arc<dyn FlowSink>,
     acceptor: TlsAcceptor,
     password_hash: [u8; 32],
@@ -59,7 +58,6 @@ impl AnyTlsInbound {
         listen: Endpoint,
         config: AnyTlsServerConfig,
         network: Arc<dyn NetworkProvider>,
-        spawner: Arc<dyn TaskSpawner>,
         sink: Arc<dyn FlowSink>,
     ) -> Result<Self, AnyTlsInboundConfigError> {
         if config.password.is_empty() {
@@ -72,7 +70,6 @@ impl AnyTlsInbound {
             id,
             listen,
             network,
-            spawner,
             sink,
             acceptor: TlsAcceptor::from(Arc::new(tls)),
             password_hash: Sha256::digest(config.password.as_bytes()).into(),
@@ -98,7 +95,7 @@ impl Inbound for AnyTlsInbound {
 }
 
 impl Service for AnyTlsInbound {
-    fn start(&mut self, _ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>> {
+    fn start(&mut self, ctx: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async move {
             if self.started.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::new("anytls inbound already started"));
@@ -119,26 +116,21 @@ impl Service for AnyTlsInbound {
             let hash = self.password_hash;
             let padding = self.padding.clone();
             let sink = self.sink.clone();
-            let spawner = self.spawner.clone();
+            let sessions = ctx.session_tasks.clone();
             let next_flow_id = self.next_flow_id.clone();
-            self.spawner
-                .spawn(
-                    TaskName("anytls-inbound-accept".into()),
-                    Box::pin(async move {
-                        accept_loop(
-                            id,
-                            listener,
-                            acceptor,
-                            hash,
-                            padding,
-                            sink,
-                            spawner,
-                            next_flow_id,
-                        )
-                        .await;
-                    }),
+            ctx.accept_tasks.spawn(async move {
+                accept_loop(
+                    id,
+                    listener,
+                    acceptor,
+                    hash,
+                    padding,
+                    sink,
+                    sessions,
+                    next_flow_id,
                 )
-                .map_err(|error| ServiceError::new(error.message))?;
+                .await;
+            });
             Ok(())
         })
     }
@@ -159,53 +151,46 @@ async fn accept_loop(
     password_hash: [u8; 32],
     padding: Arc<tokio::sync::RwLock<PaddingFactory>>,
     sink: Arc<dyn FlowSink>,
-    spawner: Arc<dyn TaskSpawner>,
+    sessions: TaskScope,
     next_flow_id: Arc<AtomicU64>,
 ) {
     while let Ok((stream, peer)) = listener.accept().await {
         let acceptor = acceptor.clone();
         let padding = padding.clone();
         let sink = sink.clone();
-        let spawner_for_callback = spawner.clone();
+        let stream_sessions = sessions.clone();
         let next_flow_id = next_flow_id.clone();
-        let _ = spawner.spawn(
-            TaskName("anytls-inbound-session".into()),
-            Box::pin(async move {
-                let Ok(mut tls) = acceptor.accept(SharedByteStream::new(stream)).await else {
-                    return;
-                };
-                let mut received = [0_u8; 32];
-                if tls.read_exact(&mut received).await.is_err() || received != password_hash {
-                    return;
-                }
-                let Ok(padding_length) = tls.read_u16().await else {
-                    return;
-                };
-                let mut auth_padding = vec![0_u8; usize::from(padding_length)];
-                if tls.read_exact(&mut auth_padding).await.is_err() {
-                    return;
-                }
-                let callback = Box::new(move |stream: Arc<Stream>| {
-                    let sink = sink.clone();
-                    let peer = peer.clone();
-                    let next_flow_id = next_flow_id.clone();
-                    let _ = spawner_for_callback.spawn(
-                        TaskName("anytls-inbound-stream".into()),
-                        Box::pin(async move {
-                            if let Err(error) =
-                                submit_stream(inbound, peer, stream.clone(), sink, next_flow_id)
-                                    .await
-                            {
-                                let _ = stream.handshake_failure(&error.to_string()).await;
-                                let _ = stream.close().await;
-                            }
-                        }),
-                    );
+        sessions.spawn(async move {
+            let Ok(mut tls) = acceptor.accept(SharedByteStream::new(stream)).await else {
+                return;
+            };
+            let mut received = [0_u8; 32];
+            if tls.read_exact(&mut received).await.is_err() || received != password_hash {
+                return;
+            }
+            let Ok(padding_length) = tls.read_u16().await else {
+                return;
+            };
+            let mut auth_padding = vec![0_u8; usize::from(padding_length)];
+            if tls.read_exact(&mut auth_padding).await.is_err() {
+                return;
+            }
+            let callback = Box::new(move |stream: Arc<Stream>| {
+                let sink = sink.clone();
+                let peer = peer.clone();
+                let next_flow_id = next_flow_id.clone();
+                stream_sessions.spawn(async move {
+                    if let Err(error) =
+                        submit_stream(inbound, peer, stream.clone(), sink, next_flow_id).await
+                    {
+                        let _ = stream.handshake_failure(&error.to_string()).await;
+                        let _ = stream.close().await;
+                    }
                 });
-                let session = new_server_session(Box::new(tls), callback, padding).await;
-                let _ = session.run().await;
-            }),
-        );
+            });
+            let session = new_server_session(Box::new(tls), callback, padding).await;
+            let _ = session.run().await;
+        });
     }
 }
 
@@ -601,7 +586,7 @@ fn io_error(error: io::Error) -> IoError {
 mod tests {
     use super::*;
     use rcgen::generate_simple_self_signed;
-    use rustbox_kernel::TokioHost;
+    use rustbox_kernel::TokioNetworkProvider;
     use rustbox_kernel::{Engine, Outbound, Service};
     use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
     use rustbox_outbound_direct::DirectOutbound;
@@ -614,7 +599,7 @@ mod tests {
     async fn inbound_and_outbound_relay_tcp_through_kernel() {
         let certificate =
             generate_simple_self_signed(vec!["localhost".into()]).expect("certificate");
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let direct_id = OutboundId::new(NonZeroU64::new(1).unwrap());
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(direct_id)))
@@ -635,14 +620,11 @@ mod tests {
                 alpn: Vec::new(),
             },
             host.clone(),
-            host.clone(),
             sink,
         )
         .expect("inbound");
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start inbound");
         let server = inbound.local_endpoint().expect("listen endpoint");

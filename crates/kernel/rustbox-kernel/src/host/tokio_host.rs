@@ -2,54 +2,27 @@ use super::net::{
     endpoint_to_socket_addr as try_endpoint_to_socket_addr, ip_address_to_std as ip_to_std,
     socket_addr_to_endpoint,
 };
-use super::{
-    BoxFuture, Clock, Entropy, EntropyError, HostInstant, NetError, NetworkProvider, SpawnError,
-    StreamListener, TaskHandle, TaskName, TaskSpawner, TcpBind, TcpConnect, UdpBind,
-};
+use super::{BoxFuture, NetError, NetworkProvider, StreamListener, TcpBind, TcpConnect, UdpBind};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_types::{Endpoint, Host};
-use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::io::ReadBuf;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
-/// RustBox 默认使用的 Tokio 网络、时钟、随机数和任务实现。
-#[derive(Clone)]
-pub struct TokioHost {
-    inner: Arc<TokioHostInner>,
-}
+/// RustBox 默认使用的 Tokio 网络能力实现。
+#[derive(Clone, Default)]
+pub struct TokioNetworkProvider;
 
-impl TokioHost {
+impl TokioNetworkProvider {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(TokioHostInner {
-                started_at: Instant::now(),
-                next_task_id: AtomicU64::new(1),
-                tasks: Mutex::new(HashMap::new()),
-            }),
-        }
+        Self
     }
 }
 
-impl Default for TokioHost {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-struct TokioHostInner {
-    started_at: Instant,
-    next_task_id: AtomicU64,
-    tasks: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
-}
-
-impl NetworkProvider for TokioHost {
+impl NetworkProvider for TokioNetworkProvider {
     fn connect_tcp(
         &self,
         request: TcpConnect,
@@ -89,64 +62,6 @@ impl NetworkProvider for TokioHost {
             let socket = UdpSocket::bind(addr).await.map_err(net_error)?;
             Ok(Box::new(TokioUdpSocket { inner: socket }) as Box<dyn DatagramSocket>)
         })
-    }
-}
-
-impl Clock for TokioHost {
-    fn now(&self) -> HostInstant {
-        HostInstant::from_millis(self.inner.started_at.elapsed().as_millis() as u64)
-    }
-
-    fn sleep_until(&self, deadline: HostInstant) -> BoxFuture<'_, ()> {
-        let now = self.now();
-        Box::pin(async move {
-            let millis = deadline.as_millis().saturating_sub(now.as_millis());
-            tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
-        })
-    }
-}
-
-impl Entropy for TokioHost {
-    fn fill(&self, output: &mut [u8]) -> Result<(), EntropyError> {
-        getrandom::getrandom(output).map_err(|err| EntropyError::new(err.to_string()))
-    }
-}
-
-impl TaskSpawner for TokioHost {
-    fn spawn(
-        &self,
-        _name: TaskName,
-        task: BoxFuture<'static, ()>,
-    ) -> Result<TaskHandle, SpawnError> {
-        let id = self.inner.next_task_id.fetch_add(1, Ordering::Relaxed);
-        let inner = self.inner.clone();
-        let task = tokio::spawn(async move {
-            task.await;
-            inner
-                .tasks
-                .lock()
-                .expect("TokioHost task registry lock")
-                .remove(&id);
-        });
-        self.inner
-            .tasks
-            .lock()
-            .expect("TokioHost task registry lock")
-            .insert(id, task.abort_handle());
-        Ok(TaskHandle { id })
-    }
-
-    fn cancel(&self, handle: TaskHandle) -> Result<(), SpawnError> {
-        if let Some(task) = self
-            .inner
-            .tasks
-            .lock()
-            .expect("TokioHost task registry lock")
-            .remove(&handle.id)
-        {
-            task.abort();
-        }
-        Ok(())
     }
 }
 

@@ -349,7 +349,7 @@ mod tests {
     use super::*;
     use core::num::NonZeroU64;
     use rustbox_inbound_socks5::Socks5Inbound;
-    use rustbox_kernel::TokioHost;
+    use rustbox_kernel::TokioNetworkProvider;
     use rustbox_kernel::{Engine, FlowSink, Service, ServiceContext};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
@@ -386,13 +386,9 @@ mod tests {
             .await
             .expect("open socks stream");
 
-        rustbox_io::stream_write_all(&mut *stream, b"ping")
-            .await
-            .expect("write ping");
+        stream.write_all(b"ping").await.expect("write ping");
         let mut buf = [0_u8; 4];
-        rustbox_io::stream_read(&mut *stream, &mut buf)
-            .await
-            .expect("read pong");
+        stream.read_exact(&mut buf).await.expect("read pong");
         assert_eq!(&buf, b"pong");
     }
 
@@ -428,8 +424,8 @@ mod tests {
         assert_eq!(&buf[..len], b"pong");
     }
 
-    async fn start_socks5_proxy() -> (Arc<TokioHost>, Endpoint) {
-        let host = Arc::new(TokioHost::new());
+    async fn start_socks5_proxy() -> (Arc<TokioNetworkProvider>, Endpoint) {
+        let host = Arc::new(TokioNetworkProvider::new());
         let direct_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(direct_id)))
@@ -443,13 +439,10 @@ mod tests {
             InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
             Endpoint::localhost_v4(0),
             host.clone(),
-            host.clone(),
             sink,
         );
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start socks5 inbound");
         (host, inbound.local_endpoint().expect("proxy endpoint"))

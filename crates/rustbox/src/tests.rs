@@ -127,6 +127,41 @@ async fn rolls_back_runtime_when_control_grpc_cannot_bind() {
     assert_eq!(runtime.snapshot().state, EngineState::Failed);
 }
 
+#[tokio::test]
+async fn failed_reload_keeps_the_committed_source_and_generation() {
+    let previous = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("reserve previous address");
+    let previous_port = previous.local_addr().expect("previous address").port();
+    drop(previous);
+
+    let mut runtime = RustBox::default_http_proxy(Endpoint::localhost_v4(previous_port))
+        .expect("compose previous generation");
+    runtime.start().await.expect("start previous generation");
+
+    let occupied = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("reserve failed reload address");
+    let occupied_port = occupied.local_addr().expect("occupied address").port();
+    runtime
+        .reload(SourceConfig::default_http_proxy(Endpoint::localhost_v4(
+            occupied_port,
+        )))
+        .await
+        .expect_err("occupied reload address must fail");
+
+    assert_eq!(runtime.snapshot().state, EngineState::Failed);
+    assert_eq!(runtime.snapshot().generation, 0);
+    drop(occupied);
+
+    runtime
+        .start()
+        .await
+        .expect("restart the last committed source");
+    assert_eq!(runtime.snapshot().generation, 0);
+    runtime.stop().await.expect("stop recovered runtime");
+}
+
 #[test]
 fn composes_first_batch_proxy_outbounds() {
     let source = SourceConfig {

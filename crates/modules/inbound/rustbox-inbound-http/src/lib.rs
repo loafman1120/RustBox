@@ -8,10 +8,10 @@ use core::num::NonZeroU64;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
-use rustbox_io::{ByteStream, stream_close, stream_read, stream_write_all};
+use rustbox_io::ByteStream;
 use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
-    ObservabilitySink, StreamListener, TaskName, TaskSpawner, TcpBind,
+    ObservabilitySink, StreamListener, TaskScope, TcpBind,
 };
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_types::{
@@ -19,7 +19,7 @@ use rustbox_types::{
 };
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 const MAX_HEADER_BYTES: usize = 8192;
 
@@ -35,7 +35,6 @@ pub struct HttpProxyInbound {
     id: InboundId,
     listen: Endpoint,
     network: Arc<dyn NetworkProvider>,
-    spawner: Arc<dyn TaskSpawner>,
     sink: Arc<dyn FlowSink>,
     credentials: Option<HttpInboundCredentials>,
     observability: Arc<dyn ObservabilitySink>,
@@ -49,14 +48,12 @@ impl HttpProxyInbound {
         id: InboundId,
         listen: Endpoint,
         network: Arc<dyn NetworkProvider>,
-        spawner: Arc<dyn TaskSpawner>,
         sink: Arc<dyn FlowSink>,
     ) -> Self {
         Self {
             id,
             listen,
             network,
-            spawner,
             sink,
             credentials: None,
             observability: Arc::new(NoopObservabilitySink),
@@ -91,7 +88,7 @@ impl Inbound for HttpProxyInbound {
 }
 
 impl Service for HttpProxyInbound {
-    fn start(&mut self, _ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>> {
+    fn start(&mut self, ctx: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async move {
             if self.started.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::new("http inbound already started"));
@@ -126,27 +123,22 @@ impl Service for HttpProxyInbound {
 
             let id = self.id;
             let sink = Arc::clone(&self.sink);
-            let spawner = Arc::clone(&self.spawner);
+            let sessions = ctx.session_tasks.clone();
             let observability = Arc::clone(&self.observability);
             let credentials = self.credentials.clone();
             let next_flow_id = Arc::clone(&self.next_flow_id);
-            self.spawner
-                .spawn(
-                    TaskName("http-inbound-accept".to_string()),
-                    Box::pin(async move {
-                        accept_loop(
-                            id,
-                            listener,
-                            sink,
-                            spawner,
-                            observability,
-                            credentials,
-                            next_flow_id,
-                        )
-                        .await;
-                    }),
+            ctx.accept_tasks.spawn(async move {
+                accept_loop(
+                    id,
+                    listener,
+                    sink,
+                    sessions,
+                    observability,
+                    credentials,
+                    next_flow_id,
                 )
-                .map_err(|err| ServiceError::new(err.message))?;
+                .await;
+            });
             self.observability
                 .emit(Event::new(
                     EventLevel::Info,
@@ -193,7 +185,7 @@ async fn accept_loop(
     inbound_id: InboundId,
     mut listener: Box<dyn StreamListener>,
     sink: Arc<dyn FlowSink>,
-    spawner: Arc<dyn TaskSpawner>,
+    sessions: TaskScope,
     observability: Arc<dyn ObservabilitySink>,
     credentials: Option<HttpInboundCredentials>,
     next_flow_id: Arc<AtomicU64>,
@@ -225,21 +217,18 @@ async fn accept_loop(
         let observability = Arc::clone(&observability);
         let credentials = credentials.clone();
         let next_flow_id = Arc::clone(&next_flow_id);
-        let _ = spawner.spawn(
-            TaskName("http-inbound-connection".to_string()),
-            Box::pin(async move {
-                let _ = handle_http_proxy_connection(
-                    inbound_id,
-                    peer,
-                    stream,
-                    sink,
-                    observability,
-                    credentials,
-                    next_flow_id,
-                )
-                .await;
-            }),
-        );
+        sessions.spawn(async move {
+            let _ = handle_http_proxy_connection(
+                inbound_id,
+                peer,
+                stream,
+                sink,
+                observability,
+                credentials,
+                next_flow_id,
+            )
+            .await;
+        });
     }
 }
 
@@ -256,12 +245,12 @@ pub async fn handle_http_proxy_connection(
     let request = match read_proxy_request(&mut *stream, credentials.as_ref()).await {
         Ok(request) => request,
         Err(err) if err.message == "HTTP proxy authentication required" => {
-            let _ = stream_write_all(
-                &mut *stream,
-                b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"RustBox\"\r\n\r\n",
-            )
-            .await;
-            let _ = stream_close(&mut *stream).await;
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"RustBox\"\r\n\r\n",
+                )
+                .await;
+            let _ = stream.shutdown().await;
             return Err(err);
         }
         Err(err) => {
@@ -276,16 +265,17 @@ pub async fn handle_http_proxy_connection(
                     )),
                 ))
                 .await;
-            let _ = stream_write_all(&mut *stream, b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
-            let _ = stream_close(&mut *stream).await;
+            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
+            let _ = stream.shutdown().await;
             return Err(err);
         }
     };
 
     if request.is_connect {
-        stream_write_all(&mut *stream, b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
-            .map_err(|err| ServiceError::new(err.message))?;
+            .map_err(|err| ServiceError::new(err.to_string()))?;
     }
 
     let flow_id_raw = next_flow_id.fetch_add(1, Ordering::Relaxed);
@@ -324,9 +314,10 @@ async fn read_proxy_request(
     let mut bytes = Vec::new();
     let mut scratch = [0_u8; 512];
     while bytes.len() < MAX_HEADER_BYTES {
-        let read = stream_read(stream, &mut scratch)
+        let read = stream
+            .read(&mut scratch)
             .await
-            .map_err(|err| ServiceError::new(err.message))?;
+            .map_err(|err| ServiceError::new(err.to_string()))?;
         if read == 0 {
             return Err(ServiceError::new("connection closed before HTTP headers"));
         }
@@ -572,7 +563,7 @@ impl AsyncWrite for PrefixedByteStream {
 mod tests {
     use super::*;
     use core::num::NonZeroU64;
-    use rustbox_kernel::TokioHost;
+    use rustbox_kernel::TokioNetworkProvider;
     use rustbox_kernel::{Engine, Service};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
@@ -592,7 +583,7 @@ mod tests {
             socket.write_all(b"pong").await.expect("echo write");
         });
 
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(outbound_id)))
@@ -606,13 +597,10 @@ mod tests {
             InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
             Endpoint::localhost_v4(0),
             host.clone(),
-            host,
             sink,
         );
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start http inbound");
 
@@ -684,7 +672,7 @@ mod tests {
                 .expect("write response");
         });
 
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(outbound_id)))
@@ -698,13 +686,10 @@ mod tests {
             InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
             Endpoint::localhost_v4(0),
             host.clone(),
-            host,
             sink,
         );
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start http inbound");
 
@@ -744,7 +729,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_inbound_requires_basic_auth_when_configured() {
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(outbound_id)))
@@ -758,7 +743,6 @@ mod tests {
             InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
             Endpoint::localhost_v4(0),
             host.clone(),
-            host,
             sink,
         )
         .with_credentials(HttpInboundCredentials {
@@ -766,9 +750,7 @@ mod tests {
             password: "secret".to_string(),
         });
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start http inbound");
 

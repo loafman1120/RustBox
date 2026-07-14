@@ -124,6 +124,38 @@ mod tests {
     }
 
     #[test]
+    fn store_bounds_events_and_completed_connections() {
+        let store = ObservabilityStore::new(1);
+        for raw_id in [1, 2] {
+            let flow_id =
+                rustbox_types::FlowId::new(core::num::NonZeroU64::new(raw_id).expect("non-zero"));
+            block_on_ready(store.emit(Event::new(
+                EventLevel::Info,
+                "rustbox.kernel.flow",
+                Some(flow_id),
+                EventKind::FlowAccepted {
+                    source: "127.0.0.1:1000".to_string(),
+                    destination: "example.test:443".to_string(),
+                    network: "Tcp".to_string(),
+                },
+            )));
+            block_on_ready(store.emit(Event::new(
+                EventLevel::Info,
+                "rustbox.kernel.flow",
+                Some(flow_id),
+                EventKind::FlowCompleted {
+                    outcome: "Forwarded".to_string(),
+                },
+            )));
+        }
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.recent_events.len(), 1);
+        assert_eq!(snapshot.connections.len(), 1);
+        assert_eq!(snapshot.connections[0].flow_id, 2);
+    }
+
+    #[test]
     fn composite_fans_out_events() {
         let first = Arc::new(RecordingObservabilitySink::default());
         let second = Arc::new(RecordingObservabilitySink::default());

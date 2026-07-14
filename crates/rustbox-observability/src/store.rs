@@ -6,6 +6,7 @@ use crate::format::level_at_least;
 pub struct ObservabilityStore {
     inner: Mutex<ObservabilityStoreInner>,
     event_limit: usize,
+    connection_limit: usize,
 }
 
 impl ObservabilityStore {
@@ -13,6 +14,7 @@ impl ObservabilityStore {
         Self {
             inner: Mutex::new(ObservabilityStoreInner::default()),
             event_limit,
+            connection_limit: event_limit,
         }
     }
 
@@ -21,7 +23,7 @@ impl ObservabilityStore {
         ObservabilitySnapshot {
             metrics: inner.metrics.clone(),
             connections: inner.connections.values().cloned().collect(),
-            recent_events: inner.events.clone(),
+            recent_events: inner.events.iter().cloned().collect(),
         }
     }
 
@@ -62,9 +64,17 @@ impl ObservabilityStore {
     fn record(&self, event: Event) {
         let mut inner = self.inner.lock().expect("observability store lock");
         inner.apply_event(&event);
-        inner.events.push(event);
+        if let Some(flow_id) = completed_flow_id(&event) {
+            inner.completed_connections.push_back(flow_id);
+        }
+        while inner.completed_connections.len() > self.connection_limit {
+            if let Some(flow_id) = inner.completed_connections.pop_front() {
+                inner.connections.remove(&flow_id);
+            }
+        }
+        inner.events.push_back(event);
         if inner.events.len() > self.event_limit {
-            inner.events.remove(0);
+            inner.events.pop_front();
         }
     }
 }
@@ -161,7 +171,17 @@ impl ObservabilityQuery {
 struct ObservabilityStoreInner {
     metrics: MetricsSnapshot,
     connections: HashMap<u64, ConnectionStats>,
-    events: Vec<Event>,
+    events: std::collections::VecDeque<Event>,
+    completed_connections: std::collections::VecDeque<u64>,
+}
+
+fn completed_flow_id(event: &Event) -> Option<u64> {
+    matches!(
+        event.kind,
+        EventKind::FlowCompleted { .. } | EventKind::FlowFailed { .. }
+    )
+    .then(|| event.flow_id.map(|id| id.get()))
+    .flatten()
 }
 
 impl ObservabilityStoreInner {

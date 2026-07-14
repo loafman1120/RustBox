@@ -6,8 +6,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{
-    BoxFuture, Clock, Entropy, EntropyError, HostInstant, NetError, NetworkProvider,
-    StreamListener, TcpBind, TcpConnect, UdpBind,
+    BoxFuture, NetError, NetworkProvider, StreamListener, TcpBind, TcpConnect, UdpBind,
 };
 use rustbox_types::Endpoint;
 use std::collections::VecDeque;
@@ -57,42 +56,14 @@ impl TestHost {
             .bound_udp_endpoints
             .clone()
     }
-
-    pub fn advance_clock(&self, millis: u64) {
-        let mut state = self.inner.lock().expect("test host lock");
-        state.now = state.now.saturating_add(millis);
-    }
 }
 
 #[derive(Default)]
 struct TestHostState {
-    now: u64,
-    entropy_counter: u8,
     tcp_streams: VecDeque<MemoryStream>,
     connected_tcp_targets: Vec<Endpoint>,
     udp_sockets: VecDeque<MemoryDatagramSocket>,
     bound_udp_endpoints: Vec<Endpoint>,
-}
-
-impl Clock for TestHost {
-    fn now(&self) -> HostInstant {
-        HostInstant::from_millis(self.inner.lock().expect("test host lock").now)
-    }
-
-    fn sleep_until(&self, _deadline: HostInstant) -> BoxFuture<'_, ()> {
-        Box::pin(async {})
-    }
-}
-
-impl Entropy for TestHost {
-    fn fill(&self, output: &mut [u8]) -> Result<(), EntropyError> {
-        let mut state = self.inner.lock().expect("test host lock");
-        for byte in output {
-            *byte = state.entropy_counter;
-            state.entropy_counter = state.entropy_counter.wrapping_add(1);
-        }
-        Ok(())
-    }
 }
 
 impl NetworkProvider for TestHost {

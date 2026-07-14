@@ -7,9 +7,10 @@ license.workspace = true
 [dependencies]
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
+tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
-futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

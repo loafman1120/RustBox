@@ -785,11 +785,11 @@ mod tests {
     use anytls::proxy::session::new_server_session;
     use core::num::NonZeroU64;
     use rcgen::{CertifiedKey, generate_simple_self_signed};
-    use rustbox_kernel::TokioHost;
+    use rustbox_kernel::TokioNetworkProvider;
     use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
     use rustls::ServerConfig;
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
 
@@ -800,7 +800,7 @@ mod tests {
     #[tokio::test]
     async fn anytls_outbound_relays_tcp_bytes_through_local_server() {
         let server = start_anytls_server().await;
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
         let outbound = AnyTlsOutbound::new(
             outbound_id,
@@ -821,26 +821,20 @@ mod tests {
             .open_stream(OutboundContext { flow: &meta }, target)
             .await
             .expect("open anytls stream");
-        rustbox_io::stream_write_all(&mut *stream, b"ping")
-            .await
-            .expect("write ping");
+        stream.write_all(b"ping").await.expect("write ping");
         let mut response = [0_u8; 4];
-        let read = rustbox_io::stream_read(&mut *stream, &mut response)
-            .await
-            .expect("read pong");
+        let read = stream.read(&mut response).await.expect("read pong");
 
         assert_eq!(read, 4);
         assert_eq!(&response, b"pong");
-        rustbox_io::stream_close(&mut *stream)
-            .await
-            .expect("close anytls stream");
+        stream.shutdown().await.expect("close anytls stream");
     }
 
     // Verifies that UDP datagrams are relayed through a local AnyTLS server.
     #[tokio::test]
     async fn anytls_outbound_relays_udp_datagrams_through_local_server() {
         let server = start_anytls_server().await;
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
         let outbound = AnyTlsOutbound::new(
             outbound_id,
@@ -879,7 +873,7 @@ mod tests {
     // Verifies that an empty password is rejected before any connection is opened.
     #[tokio::test]
     async fn anytls_outbound_rejects_empty_password() {
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(9).expect("non-zero outbound id"));
         let error = match AnyTlsOutbound::new(
             outbound_id,

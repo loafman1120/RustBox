@@ -12,10 +12,10 @@ use fast_socks5::server::Socks5ServerProtocol;
 use fast_socks5::util::target_addr::TargetAddr;
 use fast_socks5::{ReplyError, Socks5Command, new_udp_header, parse_udp_request};
 use rustbox_inbound_http::{HttpInboundCredentials, handle_http_proxy_connection};
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind, stream_read};
+use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
-    ObservabilitySink, StreamListener, TaskName, TaskSpawner, TcpBind, UdpBind,
+    ObservabilitySink, StreamListener, TaskScope, TcpBind, UdpBind,
 };
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_types::{
@@ -24,7 +24,7 @@ use rustbox_types::{
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 /// SOCKS5 入口服务，当前支持无认证 CONNECT 隧道和 UDP ASSOCIATE。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,7 +43,6 @@ pub struct Socks5Inbound {
     id: InboundId,
     listen: Endpoint,
     network: Arc<dyn NetworkProvider>,
-    spawner: Arc<dyn TaskSpawner>,
     sink: Arc<dyn FlowSink>,
     credentials: Option<Socks5InboundCredentials>,
     observability: Arc<dyn ObservabilitySink>,
@@ -57,14 +56,12 @@ impl Socks5Inbound {
         id: InboundId,
         listen: Endpoint,
         network: Arc<dyn NetworkProvider>,
-        spawner: Arc<dyn TaskSpawner>,
         sink: Arc<dyn FlowSink>,
     ) -> Self {
         Self {
             id,
             listen,
             network,
-            spawner,
             sink,
             credentials: None,
             observability: Arc::new(NoopObservabilitySink),
@@ -103,7 +100,6 @@ pub struct MixedInbound {
     id: InboundId,
     listen: Endpoint,
     network: Arc<dyn NetworkProvider>,
-    spawner: Arc<dyn TaskSpawner>,
     sink: Arc<dyn FlowSink>,
     credentials: Option<MixedInboundCredentials>,
     observability: Arc<dyn ObservabilitySink>,
@@ -117,14 +113,12 @@ impl MixedInbound {
         id: InboundId,
         listen: Endpoint,
         network: Arc<dyn NetworkProvider>,
-        spawner: Arc<dyn TaskSpawner>,
         sink: Arc<dyn FlowSink>,
     ) -> Self {
         Self {
             id,
             listen,
             network,
-            spawner,
             sink,
             credentials: None,
             observability: Arc::new(NoopObservabilitySink),
@@ -159,7 +153,7 @@ impl Inbound for MixedInbound {
 }
 
 impl Service for MixedInbound {
-    fn start(&mut self, _ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>> {
+    fn start(&mut self, ctx: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async move {
             if self.started.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::new("mixed inbound already started"));
@@ -195,28 +189,23 @@ impl Service for MixedInbound {
             let id = self.id;
             let network = Arc::clone(&self.network);
             let sink = Arc::clone(&self.sink);
-            let spawner = Arc::clone(&self.spawner);
+            let sessions = ctx.session_tasks.clone();
             let observability = Arc::clone(&self.observability);
             let credentials = self.credentials.clone();
             let next_flow_id = Arc::clone(&self.next_flow_id);
-            self.spawner
-                .spawn(
-                    TaskName("mixed-inbound-accept".to_string()),
-                    Box::pin(async move {
-                        mixed_accept_loop(
-                            id,
-                            listener,
-                            network,
-                            sink,
-                            spawner,
-                            observability,
-                            credentials,
-                            next_flow_id,
-                        )
-                        .await;
-                    }),
+            ctx.accept_tasks.spawn(async move {
+                mixed_accept_loop(
+                    id,
+                    listener,
+                    network,
+                    sink,
+                    sessions,
+                    observability,
+                    credentials,
+                    next_flow_id,
                 )
-                .map_err(|err| ServiceError::new(err.message))?;
+                .await;
+            });
             self.observability
                 .emit(Event::new(
                     EventLevel::Info,
@@ -260,7 +249,7 @@ impl Service for MixedInbound {
 }
 
 impl Service for Socks5Inbound {
-    fn start(&mut self, _ctx: ServiceContext<'_>) -> BoxFuture<'_, Result<(), ServiceError>> {
+    fn start(&mut self, ctx: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async move {
             if self.started.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::new("socks5 inbound already started"));
@@ -296,28 +285,23 @@ impl Service for Socks5Inbound {
             let id = self.id;
             let network = Arc::clone(&self.network);
             let sink = Arc::clone(&self.sink);
-            let spawner = Arc::clone(&self.spawner);
+            let sessions = ctx.session_tasks.clone();
             let observability = Arc::clone(&self.observability);
             let credentials = self.credentials.clone();
             let next_flow_id = Arc::clone(&self.next_flow_id);
-            self.spawner
-                .spawn(
-                    TaskName("socks5-inbound-accept".to_string()),
-                    Box::pin(async move {
-                        accept_loop(
-                            id,
-                            listener,
-                            network,
-                            sink,
-                            spawner,
-                            observability,
-                            credentials,
-                            next_flow_id,
-                        )
-                        .await;
-                    }),
+            ctx.accept_tasks.spawn(async move {
+                accept_loop(
+                    id,
+                    listener,
+                    network,
+                    sink,
+                    sessions,
+                    observability,
+                    credentials,
+                    next_flow_id,
                 )
-                .map_err(|err| ServiceError::new(err.message))?;
+                .await;
+            });
             self.observability
                 .emit(Event::new(
                     EventLevel::Info,
@@ -366,7 +350,7 @@ async fn accept_loop(
     mut listener: Box<dyn StreamListener>,
     network: Arc<dyn NetworkProvider>,
     sink: Arc<dyn FlowSink>,
-    spawner: Arc<dyn TaskSpawner>,
+    sessions: TaskScope,
     observability: Arc<dyn ObservabilitySink>,
     credentials: Option<Socks5InboundCredentials>,
     next_flow_id: Arc<AtomicU64>,
@@ -395,22 +379,18 @@ async fn accept_loop(
 
         let network = Arc::clone(&network);
         let sink = Arc::clone(&sink);
-        let spawner = Arc::clone(&spawner);
         let ctx = ConnectionContext {
             inbound_id,
             network,
             sink,
-            spawner: Arc::clone(&spawner),
+            sessions: sessions.clone(),
             observability: Arc::clone(&observability),
             credentials: credentials.clone(),
             next_flow_id: Arc::clone(&next_flow_id),
         };
-        let _ = spawner.spawn(
-            TaskName("socks5-inbound-connection".to_string()),
-            Box::pin(async move {
-                let _ = handle_connection(ctx, peer, stream).await;
-            }),
-        );
+        sessions.spawn(async move {
+            let _ = handle_connection(ctx, peer, stream).await;
+        });
     }
 }
 
@@ -420,7 +400,7 @@ async fn mixed_accept_loop(
     mut listener: Box<dyn StreamListener>,
     network: Arc<dyn NetworkProvider>,
     sink: Arc<dyn FlowSink>,
-    spawner: Arc<dyn TaskSpawner>,
+    sessions: TaskScope,
     observability: Arc<dyn ObservabilitySink>,
     credentials: Option<MixedInboundCredentials>,
     next_flow_id: Arc<AtomicU64>,
@@ -449,28 +429,24 @@ async fn mixed_accept_loop(
 
         let network = Arc::clone(&network);
         let sink = Arc::clone(&sink);
-        let spawner = Arc::clone(&spawner);
-        let task_spawner = Arc::clone(&spawner);
+        let task_sessions = sessions.clone();
         let observability = Arc::clone(&observability);
         let credentials = credentials.clone();
         let next_flow_id = Arc::clone(&next_flow_id);
-        let _ = spawner.spawn(
-            TaskName("mixed-inbound-connection".to_string()),
-            Box::pin(async move {
-                let _ = handle_mixed_connection(
-                    inbound_id,
-                    peer,
-                    stream,
-                    network,
-                    sink,
-                    task_spawner,
-                    observability,
-                    credentials,
-                    next_flow_id,
-                )
-                .await;
-            }),
-        );
+        sessions.spawn(async move {
+            let _ = handle_mixed_connection(
+                inbound_id,
+                peer,
+                stream,
+                network,
+                sink,
+                task_sessions,
+                observability,
+                credentials,
+                next_flow_id,
+            )
+            .await;
+        });
     }
 }
 
@@ -484,7 +460,7 @@ struct ConnectionContext {
     inbound_id: InboundId,
     network: Arc<dyn NetworkProvider>,
     sink: Arc<dyn FlowSink>,
-    spawner: Arc<dyn TaskSpawner>,
+    sessions: TaskScope,
     observability: Arc<dyn ObservabilitySink>,
     credentials: Option<Socks5InboundCredentials>,
     next_flow_id: Arc<AtomicU64>,
@@ -497,15 +473,16 @@ async fn handle_mixed_connection(
     mut stream: Box<dyn ByteStream>,
     network: Arc<dyn NetworkProvider>,
     sink: Arc<dyn FlowSink>,
-    spawner: Arc<dyn TaskSpawner>,
+    sessions: TaskScope,
     observability: Arc<dyn ObservabilitySink>,
     credentials: Option<MixedInboundCredentials>,
     next_flow_id: Arc<AtomicU64>,
 ) -> Result<(), ServiceError> {
     let mut first = [0_u8; 1];
-    let read = stream_read(&mut *stream, &mut first)
+    let read = stream
+        .read(&mut first)
         .await
-        .map_err(|err| ServiceError::new(err.message))?;
+        .map_err(|err| ServiceError::new(err.to_string()))?;
     if read == 0 {
         return Err(ServiceError::new(
             "mixed inbound connection closed before protocol byte",
@@ -524,7 +501,7 @@ async fn handle_mixed_connection(
             inbound_id,
             network,
             sink,
-            spawner,
+            sessions,
             observability,
             credentials: socks_credentials,
             next_flow_id,
@@ -658,7 +635,7 @@ async fn handle_udp_associate(
         .map_err(|err| ServiceError::new(err.to_string()))?;
 
     let state = Arc::new(UdpAssociationState::new());
-    spawn_udp_control_watcher(Arc::clone(&ctx.spawner), stream, Arc::clone(&state))?;
+    spawn_udp_control_watcher(ctx.sessions.clone(), stream, Arc::clone(&state));
 
     let socket = Socks5UdpRelaySocket::new(relay_socket, peer.host.clone(), state);
     let flow = Flow {
@@ -711,28 +688,22 @@ fn udp_relay_bind_endpoint(association_target: &Endpoint, peer: &Endpoint) -> En
 }
 
 fn spawn_udp_control_watcher(
-    spawner: Arc<dyn TaskSpawner>,
+    sessions: TaskScope,
     mut stream: Box<dyn ByteStream>,
     state: Arc<UdpAssociationState>,
-) -> Result<(), ServiceError> {
-    spawner
-        .spawn(
-            TaskName("socks5-udp-control".to_string()),
-            Box::pin(async move {
-                let mut buf = [0_u8; 1];
-                loop {
-                    match stream_read(&mut *stream, &mut buf).await {
-                        Ok(0) | Err(_) => {
-                            state.close();
-                            break;
-                        }
-                        Ok(_) => {}
-                    }
+) {
+    sessions.spawn(async move {
+        let mut buf = [0_u8; 1];
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => {
+                    state.close();
+                    break;
                 }
-            }),
-        )
-        .map(|_| ())
-        .map_err(|err| ServiceError::new(err.message))
+                Ok(_) => {}
+            }
+        }
+    });
 }
 
 struct UdpAssociationState {
@@ -999,7 +970,7 @@ mod tests {
     use super::*;
     use core::num::NonZeroU64;
     use fast_socks5::{new_udp_header, parse_udp_request};
-    use rustbox_kernel::TokioHost;
+    use rustbox_kernel::TokioNetworkProvider;
     use rustbox_kernel::{Engine, Service};
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
@@ -1019,7 +990,7 @@ mod tests {
             socket.write_all(b"pong").await.expect("echo write");
         });
 
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(outbound_id)))
@@ -1033,13 +1004,10 @@ mod tests {
             InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
             Endpoint::localhost_v4(0),
             host.clone(),
-            host,
             sink,
         );
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start socks5 inbound");
 
@@ -1100,7 +1068,7 @@ mod tests {
             socket.write_all(b"pong").await.expect("echo write");
         });
 
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(outbound_id)))
@@ -1114,7 +1082,6 @@ mod tests {
             InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
             Endpoint::localhost_v4(0),
             host.clone(),
-            host,
             sink,
         )
         .with_credentials(Socks5InboundCredentials {
@@ -1122,9 +1089,7 @@ mod tests {
             password: "secret".to_string(),
         });
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start socks5 inbound");
 
@@ -1197,7 +1162,7 @@ mod tests {
             echo_socket.send_to(b"pong", peer).await.expect("echo send");
         });
 
-        let host = Arc::new(TokioHost::new());
+        let host = Arc::new(TokioNetworkProvider::new());
         let outbound_id = OutboundId::new(NonZeroU64::new(1).expect("non-zero outbound id"));
         let engine = Arc::new(
             Engine::builder(Box::new(StaticRouter::new(outbound_id)))
@@ -1211,13 +1176,10 @@ mod tests {
             InboundId::new(NonZeroU64::new(1).expect("non-zero inbound id")),
             Endpoint::localhost_v4(0),
             host.clone(),
-            host,
             sink,
         );
         inbound
-            .start(ServiceContext {
-                engine_name: "test",
-            })
+            .start(ServiceContext::default())
             .await
             .expect("start socks5 inbound");
 

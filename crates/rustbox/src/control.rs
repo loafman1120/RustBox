@@ -7,20 +7,22 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+const CONTROL_COMMAND_CAPACITY: usize = 32;
+
 pub(crate) struct ControlGrpcService {
     config: rustbox_control_api::ControlApiConfig,
     listen: SocketAddr,
     state: Arc<Mutex<ControlState>>,
     observability: Arc<ObservabilityStore>,
-    command_tx: mpsc::UnboundedSender<EngineCommand>,
-    command_rx: mpsc::UnboundedReceiver<EngineCommand>,
+    command_tx: mpsc::Sender<EngineCommand>,
+    command_rx: mpsc::Receiver<EngineCommand>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), rustbox_control_api::ControlApiError>>>,
 }
 
 impl ControlGrpcService {
     pub(crate) fn new(options: ControlGrpcOptions, snapshot: EngineSnapshot) -> Self {
-        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let (command_tx, command_rx) = mpsc::channel(CONTROL_COMMAND_CAPACITY);
         Self {
             listen: options.config.listen,
             config: options.config,

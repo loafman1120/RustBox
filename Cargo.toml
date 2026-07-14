@@ -12,7 +12,6 @@ members = [
     "crates/foundation/rustbox-io",
     "crates/kernel/rustbox-test-host",
     "crates/kernel/rustbox-kernel",
-    "crates/kernel/rustbox-registry",
     "crates/kernel/rustbox-route",
     "crates/modules/dns/rustbox-dns-core",
     "crates/modules/inspect/rustbox-inspect",
