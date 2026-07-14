@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 
 pub(crate) struct ControlGrpcService {
     config: rustbox_control_api::ControlApiConfig,
+    listen: SocketAddr,
     state: Arc<Mutex<ControlState>>,
     observability: Arc<ObservabilityStore>,
     command_tx: mpsc::UnboundedSender<EngineCommand>,
@@ -21,6 +22,7 @@ impl ControlGrpcService {
     pub(crate) fn new(options: ControlGrpcOptions, snapshot: EngineSnapshot) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         Self {
+            listen: options.config.listen,
             config: options.config,
             state: Arc::new(Mutex::new(ControlState::new(snapshot))),
             observability: options.observability,
@@ -32,7 +34,7 @@ impl ControlGrpcService {
     }
 
     pub(crate) fn listen(&self) -> SocketAddr {
-        self.config.listen
+        self.listen
     }
 
     pub(crate) fn replace_snapshot(&self, snapshot: EngineSnapshot) {
@@ -41,21 +43,30 @@ impl ControlGrpcService {
         }
     }
 
-    pub(crate) fn start(&mut self) {
+    pub(crate) async fn start(&mut self) -> Result<(), ComposeError> {
         if self.task.is_some() {
-            return;
+            return Ok(());
         }
+        let listener = tokio::net::TcpListener::bind(self.config.listen)
+            .await
+            .map_err(|error| {
+                ComposeError::Control(format!("failed to bind control gRPC: {error}"))
+            })?;
+        self.listen = listener.local_addr().map_err(|error| {
+            ComposeError::Control(format!("failed to read control gRPC address: {error}"))
+        })?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let state = ControlApiState::new(self.observability.clone(), self.state.clone())
             .with_command_sender(self.command_tx.clone());
         let config = self.config.clone();
         self.shutdown = Some(shutdown_tx);
         self.task = Some(tokio::spawn(async move {
-            rustbox_control_api::serve_grpc(config, state, async {
+            rustbox_control_api::serve_grpc_with_listener(config, state, listener, async {
                 let _ = shutdown_rx.await;
             })
             .await
         }));
+        Ok(())
     }
 
     pub(crate) async fn stop(&mut self) -> Result<(), ComposeError> {

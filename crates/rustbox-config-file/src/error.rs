@@ -3,7 +3,7 @@ use thiserror::Error;
 
 /// A stable, application-facing configuration diagnostic.
 ///
-/// The public `message` field is retained for the FFI and CLI facades while
+/// The public `message` field is retained for the Flutter and CLI facades while
 /// `Diagnostic` lets richer frontends render the same error consistently.
 #[derive(Clone, Debug, Diagnostic, Eq, Error, PartialEq)]
 #[error("{message}")]

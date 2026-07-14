@@ -50,6 +50,37 @@ Preview it locally with a static server rooted at `website/`; see
 cargo build --workspace
 ```
 
+## Flutter package
+
+`packages/rustbox_flutter` is the supported Dart/Flutter embedding surface. It
+uses `flutter_rust_bridge` 2.13.0-beta.5 and Flutter Native Assets to compile
+and bundle `rustbox-flutter-bridge` for Android, iOS, Windows, macOS, and Linux.
+Web and OHOS are not supported because RustBox depends on native Tokio, socket,
+TUN, and platform-control capabilities.
+
+```powershell
+cd packages/rustbox_flutter
+flutter pub get
+flutter_rust_bridge_codegen generate
+cd example
+flutter run
+```
+
+Applications initialize the bridge once, create an engine from TOML, then
+await lifecycle completion directly:
+
+```dart
+await RustBox.initialize();
+final engine = await RustBoxEngine.create(configToml: config);
+await engine.start();
+final snapshot = await engine.snapshot();
+await engine.close();
+```
+
+Native Assets builds from Rust source, so consumers need the pinned Rust 1.97.0
+toolchain. Generated Rust and Dart bridge files are committed; regenerate them
+after changing the bridge API and include the output in the same change.
+
 ## Run
 
 ```powershell
@@ -142,6 +173,9 @@ transparent inbound and is intentionally not stacked on a layer-3 TUN.
 cargo test --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cd packages/rustbox_flutter
+flutter analyze
+flutter test
 $env:RUSTBOX_SBOX_OUTBOUND = "anytls"
 ./scripts/test/outbound.ps1
 ```

@@ -40,61 +40,6 @@ jobs:
         shell: pwsh
         run: ./scripts/build/rust.ps1 -Fmt
 
-  # Build and execute the public lifecycle ABI on the mobile platforms that
-  # consume it. One matrix keeps the shared Rust setup and artifact contract in
-  # sync while platform-specific runner steps remain explicit.
-  e2e-ffi-mobile:
-    name: E2E FFI lifecycle (${{ matrix.label }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: Android
-            label: Android x86_64
-            os: ubuntu-latest
-            cache_key: ffi-e2e-android
-            artifact_name: rustbox-ffi-android-x86_64
-            artifact_path: dist/android/x86_64/librustbox_ffi.so
-          - platform: IOS
-            label: iOS arm64
-            os: macos-latest
-            cache_key: ffi-e2e-ios
-            artifact_name: rustbox-ffi-ios-xcframework
-            artifact_path: dist/ios/RustBoxFFI.xcframework
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - name: Install cargo-ndk
-        if: matrix.platform == 'Android'
-        run: |
-          cargo install cargo-ndk --locked
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ matrix.cache_key }}
-      - name: Run lifecycle consumer in Android Emulator
-        if: matrix.platform == 'Android'
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 29
-          arch: x86_64
-          disable-animations: true
-          script: pwsh -NoLogo -NoProfile -File ./scripts/test/ffi.ps1 -Platform Android
-      - name: Run lifecycle consumer in iOS Simulator
-        if: matrix.platform == 'IOS'
-        shell: pwsh
-        run: ./scripts/test/ffi.ps1 -Platform IOS
-      - name: Upload mobile FFI library
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
-          if-no-files-found: error
-
   # ── Build: compile, test, clippy, doc, upload artifact ─────────
   build:
     name: Build (${{ matrix.os }})
@@ -345,30 +290,135 @@ jobs:
         shell: pwsh
         run: ./scripts/test/grpc.ps1
 
-  # Native C consumer -> async FFI -> HTTP proxy -> local HTTP target.
-  e2e-ffi:
-    name: Smoke async FFI HTTP (${{ matrix.os }})
+  flutter-bindings:
+    name: Flutter bindings and codegen
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.6
+          channel: stable
+          cache: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flutter-bindings
+      - name: Install pinned bridge code generator
+        run: cargo install flutter_rust_bridge_codegen --version 2.13.0-beta.5 --locked
+      - name: Resolve package dependencies
+        working-directory: packages/rustbox_flutter
+        run: |
+          flutter pub get
+          cd example
+          flutter pub get
+      - name: Verify generated bindings are current
+        working-directory: packages/rustbox_flutter
+        run: |
+          flutter_rust_bridge_codegen generate
+          git diff --exit-code
+      - name: Analyze and test Dart facade
+        working-directory: packages/rustbox_flutter
+        run: |
+          dart format --output=none --set-exit-if-changed lib test example/lib example/integration_test
+          flutter analyze
+          flutter test
+
+  flutter-desktop:
+    name: Flutter lifecycle (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+        include:
+          - platform: linux
+            os: ubuntu-latest
+          - platform: windows
+            os: windows-latest
+          - platform: macos
+            os: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - name: Configure MSVC developer environment
-        if: matrix.os == 'windows-latest'
-        uses: ilammy/msvc-dev-cmd@v1
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.6
+          channel: stable
+          cache: true
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ffi-e2e
-      - name: Run async FFI HTTP data-path smoke
-        shell: pwsh
-        run: ./scripts/test/ffi.ps1
+          shared-key: flutter-${{ matrix.platform }}
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - name: Resolve example dependencies
+        working-directory: packages/rustbox_flutter/example
+        run: flutter pub get
+      - name: Build release application
+        working-directory: packages/rustbox_flutter/example
+        run: flutter build ${{ matrix.platform }} --release
+      - name: Run lifecycle integration test
+        working-directory: packages/rustbox_flutter/example
+        run: flutter test integration_test/simple_test.dart -d ${{ matrix.platform }}
+
+  flutter-android:
+    name: Flutter lifecycle (android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.6
+          channel: stable
+          cache: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flutter-android
+      - name: Resolve example dependencies
+        working-directory: packages/rustbox_flutter/example
+        run: flutter pub get
+      - name: Build release APK
+        working-directory: packages/rustbox_flutter/example
+        run: flutter build apk --release
+      - name: Run lifecycle test in emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          disable-animations: true
+          script: cd packages/rustbox_flutter/example && flutter test integration_test/simple_test.dart -d emulator-5554
+
+  flutter-ios:
+    name: Flutter lifecycle (ios)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.6
+          channel: stable
+          cache: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flutter-ios
+      - name: Resolve example dependencies
+        working-directory: packages/rustbox_flutter/example
+        run: flutter pub get
+      - name: Build release application
+        working-directory: packages/rustbox_flutter/example
+        run: flutter build ios --release --no-codesign
+      - name: Run lifecycle test in simulator
+        working-directory: packages/rustbox_flutter/example
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin)["devices"]; print(next(device["udid"] for devices in data.values() for device in devices if device["name"].startswith("iPhone")))')
+          xcrun simctl boot "$DEVICE_ID" || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          flutter test integration_test/simple_test.dart -d "$DEVICE_ID"

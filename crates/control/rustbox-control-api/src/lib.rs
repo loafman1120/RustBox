@@ -15,7 +15,9 @@ use std::fmt;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::metadata::MetadataMap;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -188,6 +190,7 @@ impl ControlApiState {
 #[derive(Debug)]
 pub enum ControlApiError {
     Config(ControlApiConfigError),
+    Bind(std::io::Error),
     Transport(tonic::transport::Error),
 }
 
@@ -195,6 +198,7 @@ impl fmt::Display for ControlApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(err) => write!(f, "invalid control API config: {err}"),
+            Self::Bind(err) => write!(f, "failed to bind control API: {err}"),
             Self::Transport(err) => write!(f, "control API transport failed: {err}"),
         }
     }
@@ -208,6 +212,23 @@ pub async fn serve_grpc(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ControlApiError> {
     config.validate().map_err(ControlApiError::Config)?;
+    let listener = TcpListener::bind(config.listen)
+        .await
+        .map_err(ControlApiError::Bind)?;
+    serve_grpc_with_listener(config, state, listener, shutdown).await
+}
+
+/// Serve on an already-bound Tokio listener.
+///
+/// Binding separately lets lifecycle owners report address conflicts before
+/// declaring the engine started and preserves the actual address for port `0`.
+pub async fn serve_grpc_with_listener(
+    config: ControlApiConfig,
+    state: ControlApiState,
+    listener: TcpListener,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ControlApiError> {
+    config.validate().map_err(ControlApiError::Config)?;
 
     let native = RustBoxControlService::new(
         state.clone(),
@@ -218,7 +239,7 @@ pub async fn serve_grpc(
         .add_service(pb::rust_box_control_server::RustBoxControlServer::new(
             native,
         ))
-        .serve_with_shutdown(config.listen, shutdown)
+        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
         .await
         .map_err(ControlApiError::Transport)
 }

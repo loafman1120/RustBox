@@ -9,22 +9,45 @@ crate or trait.
 The intended direction is:
 
 ```text
-apps / async embedding / ffi
-    -> rustbox composition root / rustbox::HostedRustBox
+apps/rustbox-cli + packages/rustbox_flutter/rust
+    -> rustbox composition root / async RustBox lifecycle
         -> control + module adapters + platform facade
             -> kernel + host capability ports
-                -> foundation types and I/O contracts
+                -> foundation types and shared Tokio I/O contracts
 ```
 
-Foundation crates must not learn about Tokio, operating-system handles, proxy
-protocols, or configuration formats. Protocol crates must not depend on the
-application composition root. Platform crates implement host capabilities and
-must not make routing decisions.
+`rustbox-types` remains runtime-neutral and dependency-free. `rustbox-io` may
+use Tokio's `AsyncRead` and `AsyncWrite` traits because Tokio is the workspace's
+single runtime, but foundation crates must not own concrete sockets,
+operating-system handles, proxy protocols, or configuration formats. Protocol
+crates must not depend on the application composition root. Platform crates
+implement host capabilities and must not make routing decisions.
+
+## Workspace layout
+
+The top-level directories have distinct ownership rules:
+
+| Location | Owns | Must not own |
+|---|---|---|
+| `apps/` | Product executables and process concerns | Reusable engine behavior |
+| `packages/` | Language/package-manager surfaces and their native bridges | A second engine lifecycle |
+| `crates/foundation/` | Runtime-neutral types and shared I/O contracts; Tokio stream traits are allowed in `rustbox-io` | Concrete sockets, OS handles, configuration formats |
+| `crates/kernel/` | Data-plane primitives, routing, registries, host capability ports | CLI or Flutter concerns |
+| `crates/control/` | Semantic configuration and control-plane APIs | Platform implementations |
+| `crates/modules/` | Protocols, inbounds, outbounds, inspection, DNS, transport, stack | Application composition |
+| `crates/platform/` | Target-specific implementations of kernel host capabilities | Routing policy |
+| `crates/rustbox*` | Composition/lifecycle, file configuration, and observability | Product-specific UI behavior |
+| `scripts/build/`, `scripts/test/` | Repository build and smoke/E2E entry points | Flutter package build logic |
+
+`packages/rustbox_flutter/rust` is both part of the Flutter package and a Cargo
+workspace member. Generated Flutter/bridge files stay with that package rather
+than being promoted into reusable Rust crates.
 
 ## Module boundaries
 
-- Application facade: public construction and lifecycle only.
-- Hosted facade (`rustbox/hosted.rs`): own a persistent Tokio runtime and adapt the shared async lifecycle to non-blocking request handles.
+- Application facade: public construction and async lifecycle only.
+- Flutter bridge: serialize access with Tokio synchronization while reusing the
+  executor supplied by `flutter_rust_bridge`.
 - Composition: translate compiled configuration into runtime objects.
 - Runtime: own an already composed engine and service collection.
 - Control: own control-plane tasks and channels.
@@ -59,6 +82,12 @@ checks are validated in `rustbox-config` before composition. Standard-library
 host capability contracts, Tokio implementations, and network conversions live
 in `rustbox-kernel::host`; they are separated by files rather than thin crates.
 
+The repository no longer contains a supported C ABI or a hosted synchronous
+runtime facade. `apps/rustbox-ffi`, `rustbox-host-api`, `HostedRustBox`, and the
+mobile/FFI scripts were removed. The supported non-CLI product surface is now
+`packages/rustbox_flutter`, whose async bridge reuses the shared `RustBox`
+lifecycle and keeps Flutter build/test concerns inside the package.
+
 The completed bounded splits are:
 
 1. `rustbox-config`: semantic models and compiler implementation.
@@ -70,9 +99,9 @@ The completed bounded splits are:
 4. Windows platform: network control, packet device, and process lookup.
 5. Observability: configuration/basic sinks, store/query model, host sinks, and
    event formatting.
-6. FFI: ABI value types, panic-safe pointer boundary, per-engine registry and
-   lifecycle ownership, exported calls, C header, and native header/link smoke
-   coverage.
+6. Flutter bridge: stable Dart facade, generated flutter_rust_bridge glue,
+   Native Assets build hook, direct async lifecycle calls, and five-platform
+   lifecycle coverage.
 
 The remaining candidates are deliberately outside this bounded pass:
 

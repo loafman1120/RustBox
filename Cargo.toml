@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "apps/rustbox-cli",
-    "apps/rustbox-ffi",
+    "packages/rustbox_flutter/rust",
     "crates/rustbox-config-file",
     "crates/rustbox",
     "crates/control/rustbox-config",
@@ -42,5 +42,5 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
-# Every workspace member inherits this unless it is the C ABI boundary.
+# Workspace crates inherit this unless they contain generated bridge glue.
 unsafe_code = "forbid"

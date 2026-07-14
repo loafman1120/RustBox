@@ -93,7 +93,7 @@ pub fn load_toml_file(path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileEr
     ConfigLoader::new().load(path)
 }
 
-/// 从 TOML 文本解析配置，供 CLI、测试和 FFI 文本入口复用。
+/// 从 TOML 文本解析配置，供 CLI、测试和 Flutter 文本入口复用。
 pub fn parse_toml_str(input: &str) -> Result<FileConfig, ConfigFileError> {
     ConfigLoader::new().parse(input)
 }

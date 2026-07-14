@@ -16,7 +16,7 @@ pub enum EngineCommand {
     DisableOutbound(OutboundId),
 }
 
-/// 面向 CLI、FFI、GUI 的引擎状态快照。
+/// 面向 CLI、Flutter 和控制 API 的引擎状态快照。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineSnapshot {
     pub state: EngineState,

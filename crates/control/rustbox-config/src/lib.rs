@@ -1,6 +1,6 @@
 //! 配置流水线类型。
 //!
-//! 文件、GUI、远程 API、FFI 等输入格式都应先转换为 `SourceConfig`，
+//! 文件、Flutter、远程 API 等输入格式都应先转换为 `SourceConfig`，
 //! 再进入解析、验证和编译阶段。运行时模块只接收编译后的类型化配置。
 
 use core::num::NonZeroU64;

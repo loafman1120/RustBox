@@ -90,8 +90,41 @@ async fn owns_control_grpc_lifecycle() {
         .start()
         .await
         .expect("start runtime and control gRPC");
+    assert_ne!(
+        runtime.control_grpc_addr().expect("control address").port(),
+        0,
+        "Tokio listener should expose the OS-assigned port"
+    );
     runtime.stop().await.expect("stop runtime and control gRPC");
     assert_eq!(runtime.snapshot().state, EngineState::Stopped);
+}
+
+#[tokio::test]
+async fn rolls_back_runtime_when_control_grpc_cannot_bind() {
+    let occupied = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("reserve address");
+    let listen = occupied.local_addr().expect("reserved address");
+    let options = RustBoxOptions::default().with_control_grpc(
+        ControlApiConfig {
+            listen,
+            ..ControlApiConfig::default()
+        },
+        Arc::new(ObservabilityStore::default()),
+    );
+    let mut runtime = RustBox::with_options(
+        SourceConfig::default_http_proxy(Endpoint::localhost_v4(0)),
+        options,
+    )
+    .expect("compose with control gRPC");
+
+    let error = runtime.start().await.expect_err("occupied port must fail");
+
+    assert!(matches!(
+        error,
+        ComposeError::Control(message) if message.contains("failed to bind")
+    ));
+    assert_eq!(runtime.snapshot().state, EngineState::Failed);
 }
 
 #[test]

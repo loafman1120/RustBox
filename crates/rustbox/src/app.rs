@@ -9,7 +9,7 @@ use rustbox_observability::ObservabilityStore;
 use rustbox_types::Endpoint;
 use std::{net::SocketAddr, sync::Arc};
 
-/// Shared application options used by CLI, FFI, and embedded hosts.
+/// Shared application options used by CLI, Flutter, and embedded hosts.
 pub struct RustBoxOptions {
     observability: Arc<dyn ObservabilitySink>,
     control_grpc: Option<ControlGrpcOptions>,
@@ -52,7 +52,7 @@ impl Default for RustBoxOptions {
     }
 }
 
-/// CLI、FFI 和嵌入式宿主共用的 RustBox 接口。
+/// CLI、Flutter bridge 和嵌入式宿主共用的 RustBox 接口。
 ///
 /// 构造函数完成配置校验和运行图装配；`start`、`stop` 和 `reload` 负责生命周期。
 /// 调用方不需要了解组合根、服务启动顺序或 Tokio host 的存在。
@@ -175,7 +175,12 @@ impl RustBox {
         self.snapshot.state = EngineState::Running;
         self.sync_control_snapshot();
         if let Some(control) = &mut self.control_grpc {
-            control.start();
+            if let Err(error) = control.start().await {
+                let _ = self.runtime.stop().await;
+                self.snapshot.state = EngineState::Failed;
+                self.sync_control_snapshot();
+                return Err(error);
+            }
         }
         Ok(())
     }

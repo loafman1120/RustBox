@@ -7,15 +7,16 @@
 
 ## 设计目标
 
-RustBox 是基于 Tokio 的模块化代理引擎。CLI、FFI 和未来 GUI 共用同一个 `RustBox` 生命周期，不各自维护引擎或配置编译逻辑。
+RustBox 是基于 Tokio 的模块化代理引擎。CLI 与 Flutter 插件共用同一个
+`RustBox` 生命周期，不各自维护引擎或配置编译逻辑。
 
 ```text
-CLI / async embedding       FFI / sync embedding
+CLI / async embedding       Flutter / Future API
         │
-        ├──────────► RustBox ◄──── rustbox::HostedRustBox
-        │              │          (Tokio runtime owner + command actor)
+        ├──────────► RustBox ◄──── Flutter async bridge
+        │              │          (uses the host Tokio executor)
         ▼              ▼
- async lifecycle    new / start / reload / snapshot / stop
+ async lifecycle    create / start / reload / snapshot / stop / close
         │
         ├── config + control + observability
         └── kernel + modules + platform
@@ -31,27 +32,65 @@ CLI / async embedding       FFI / sync embedding
 3. 平台能力留在 platform/host 边界，不能渗入可移植核心。
 4. trait 只用于确有多个实现的边界；无独立职责的 pass-through crate 应合并。
 
-嵌入式宿主通过 `rustbox::HostedRustBox` 使用长驻 Tokio runtime。引擎只在
-宿主工作线程上被访问，FFI/GUI 调用提交请求后立即返回，再通过 request handle
-查询结果；外部线程不会创建、进入或嵌套 Tokio runtime。CLI 和宿主 worker 最终
-都执行同一组异步 `rustbox::RustBox` 生命周期方法，不维护两套实现。
+Flutter bridge 直接暴露异步方法，并通过 Tokio `Mutex` 串行访问同一个 `RustBox`；
+`flutter_rust_bridge` 将调用映射成 Dart `Future`。桥接层不创建线程、不持有第二套
+runtime，也不使用 `block_on`。CLI 与 Flutter 都直接执行同一组异步生命周期方法。
+
+## 仓库组织
+
+当前 workspace 按“产品入口、可复用核心、语言包”分层：
+
+```text
+RustBox/
+├── apps/
+│   └── rustbox-cli/                 # CLI 二进制（crate 名 rustbox-app）
+├── crates/
+│   ├── foundation/                  # 稳定类型与共享 Tokio I/O 契约
+│   ├── kernel/                      # 数据面、路由、registry、host 能力
+│   ├── control/                     # 配置模型、控制面与 gRPC API
+│   ├── modules/                     # DNS、inspection、inbound/outbound、协议与栈
+│   ├── platform/                    # 操作系统能力实现
+│   ├── rustbox/                     # 组合根与公共异步生命周期
+│   ├── rustbox-config-file/         # TOML/文件配置入口
+│   └── rustbox-observability/       # 观测存储与 sink
+├── packages/
+│   └── rustbox_flutter/             # Dart API、Native Assets hook、Rust bridge、示例
+├── examples/                        # 示例配置
+├── scripts/
+│   ├── build/                       # 构建脚本
+│   └── test/                        # gRPC、代理、TUN、协议 smoke/E2E
+├── docs/                            # 架构与代码边界
+└── website/                         # 无依赖静态项目站点
+```
+
+相对早期布局，近期有四项较大的组织调整：
+
+1. CLI 从 `apps/rustbox` 更名为 `apps/rustbox-cli`，应用入口统一放在 `apps/`。
+2. 独立 `rustbox-host-api` 被移除；host trait、网络转换与 `TokioHost` 归入
+   `crates/kernel/rustbox-kernel/src/host/`，测试实现归入 `kernel/rustbox-test-host`。
+3. `apps/rustbox-ffi` C ABI 与 `HostedRustBox` actor 已移除，由
+   `packages/rustbox_flutter` 的异步 Future API 取代；其 Rust bridge
+   `packages/rustbox_flutter/rust` 是 Cargo workspace 成员。
+4. PowerShell 脚本收拢到 `scripts/build/` 与 `scripts/test/`；Flutter 的跨平台
+   构建则由 package 内的 Native Assets hook 负责，不再使用 mobile/FFI 构建脚本。
 
 ## 代码边界
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 基础 | `crates/foundation/*` | 公共类型（`Endpoint`/`FlowMeta`/`RouteDecision`/`Host`/…）与 I/O trait（`ByteStream`/`DatagramSocket`/`PacketDevice`），零依赖、零运行时 |
-| 外部入口 | `apps/rustbox-cli`、`apps/rustbox-ffi` | CLI 参数/信号以及非阻塞 C ABI；FFI 复用 `HostedRustBox` actor |
-| 公共入口 | `crates/rustbox` | 引擎装配、异步生命周期和同步托管生命周期 |
-| 控制与配置 | `crates/control/*`、`rustbox-config-file` | 解析、校验、编译、控制 API |
+| 基础 | `crates/foundation/*` | `rustbox-types` 保存无依赖公共类型（`Endpoint`/`FlowMeta`/`RouteDecision`/`Host`/…）；`rustbox-io` 保存共享 I/O trait，其中 `ByteStream` 直接采用 Tokio `AsyncRead + AsyncWrite`，但不包含具体 socket、OS handle 或配置逻辑 |
+| 外部入口 | `apps/rustbox-cli`、`packages/rustbox_flutter` | CLI 参数/信号以及基于 Native Assets 的 Dart/Flutter Future API；Flutter 的 Rust workspace 成员位于 `packages/rustbox_flutter/rust`，两者复用异步 `RustBox` 生命周期 |
+| 公共入口 | `crates/rustbox` | 引擎装配与统一异步生命周期 |
+| 控制与配置 | `crates/control/*`、`crates/rustbox-config-file` | 解析、校验、编译、控制 API |
 | 内核 | `crates/kernel/*` | flow、路由、relay、host 能力接口与 Tokio 默认实现 |
 | 模块：协议 | `crates/modules/protocol/*` | vendored 协议引擎（`rustbox-anytls`） |
-| 模块：连接面 | `crates/modules/inbound/*`、`outbound/*` | inbound / outbound 适配层；DNS、inspection、TUN 用户态栈、transport 辅助分别落在 `dns/`、`inspect/`、`stack/`、`transport/` |
+| 模块：连接面 | `crates/modules/inbound/*`、`crates/modules/outbound/*` | inbound / outbound 适配层；DNS、inspection、TUN 用户态栈、transport 辅助分别落在 `crates/modules/dns/`、`inspect/`、`stack/`、`transport/` |
 | 测试宿主 | `crates/kernel/rustbox-test-host` | kernel host 能力的内存测试实现 |
 | 平台 | `crates/platform/*` | Linux / Windows / macOS 平台适配；TUN、路由、transparent redirect |
-| 观测 | `rustbox-observability` | 事件、指标、连接快照及 sink |
+| 观测 | `crates/rustbox-observability` | 事件、指标、连接快照及 sink |
 
-允许的依赖方向是从上层装配到下层能力。协议模块不解析 CLI，FFI 不暴露 Rust 引用或 trait object，平台操作不进入 kernel/route。
+允许的依赖方向是从上层装配到下层能力。协议模块不解析 CLI，Flutter bridge
+不复制运行图或生命周期逻辑，平台操作不进入 kernel/route。
 
 ## 配置与生命周期
 
@@ -59,12 +98,13 @@ CLI / async embedding       FFI / sync embedding
 TOML → SourceConfig → normalize → validate → compile → RustBox
 ```
 
-文件解析与运行模型分离，因此 FFI、GUI 和测试可直接提交 `SourceConfig`。
+文件解析与运行模型分离。库调用者和测试可直接提交 `SourceConfig`；Flutter bridge
+接收 TOML 字符串，经 `rustbox-config-file` 解析后再进入相同的 `SourceConfig` 生命周期。
 
 - `new`：校验配置并准备运行图。
 - `start`：启动 inbound、后台任务和可选控制服务。
 - `reload`：构建新图；新 flow 使用新图，存量 flow 继续持有旧资源。
-- `snapshot`：向 CLI、FFI 和控制 API 提供统一只读状态。
+- `snapshot`：向 CLI、Flutter 和控制 API 提供统一只读状态。
 - `stop`：停接纳，停后台任务，排空或取消会话，最后回滚平台配置；操作必须有界且幂等。
 
 ## 数据面
@@ -107,7 +147,9 @@ inbound：`http-connect` / `socks5` / `mixed` / `tun` / `transparent` / `anytls`
 
 outbound：`direct` / `block`（编译为 `Reject` 决策）/ `socks5` / `http` / `shadowsocks` / `vmess`（AEAD only，`alter_id` 必须为 0，仅 `tcp` transport） / `vless`（plain，禁用 Vision `flow`） / `trojan`（必须 TLS） / `anytls` ；`selector` / `urltest` 解析并编译，运行时按 `default`（或首个 child）静态选择。
 
-横切：SourceConfig 四步 pipeline、CLI / FFI 共享 `RustBox` 生命周期、gRPC 控制 API、结构化观测、Linux / Windows / macOS TUN、Linux transparent redirect。配置型 `block` 决策也在 runtime graph 中生效。
+横切：SourceConfig 四步 pipeline、CLI / Flutter 共享 `RustBox` 生命周期、gRPC
+控制 API、结构化观测、Linux / Windows / macOS TUN、Linux transparent redirect。
+配置型 `block` 决策也在 runtime graph 中生效。
 
 ## 近期工作
 

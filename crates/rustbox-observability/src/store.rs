@@ -1,7 +1,7 @@
 use super::*;
 use crate::format::level_at_least;
 
-/// 可由控制面、FFI、HTTP/gRPC API 查询的观测状态。
+/// 可由控制面、嵌入宿主、HTTP/gRPC API 查询的观测状态。
 #[derive(Debug)]
 pub struct ObservabilityStore {
     inner: Mutex<ObservabilityStoreInner>,
