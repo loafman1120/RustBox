@@ -3115,10 +3115,13 @@ dependencies = [
 name = "rustbox-config"
 version = "0.1.0"
 dependencies = [
+ "garde",
  "regex",
  "rustbox-dns-core",
  "rustbox-kernel",
  "rustbox-types",
+ "serde",
+ "serde_with",
 ]
 
 [[package]]
@@ -3167,8 +3170,11 @@ dependencies = [
 name = "rustbox-dns-core"
 version = "0.1.0"
 dependencies = [
+ "garde",
  "rustbox-kernel",
  "rustbox-types",
+ "serde",
+ "serde_with",
  "tokio",
 ]
 
@@ -3276,6 +3282,7 @@ dependencies = [
  "rustbox-route",
  "rustbox-test-host",
  "rustbox-types",
+ "serde",
  "tokio",
  "tokio-util",
 ]
@@ -3455,6 +3462,9 @@ dependencies = [
 [[package]]
 name = "rustbox-types"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "rustc-demangle"

@@ -6,9 +6,13 @@ impl ConfigCompiler {
     }
 
     pub fn normalize(parsed: ParsedConfig) -> Result<NormalizedConfig, ConfigError> {
-        Ok(NormalizedConfig {
-            source: parsed.source,
-        })
+        let mut source = parsed.source;
+        for inbound in &mut source.inbounds {
+            if let InboundConfigKind::Tun(config) = &mut inbound.kind {
+                config.normalize_derived_modes();
+            }
+        }
+        Ok(NormalizedConfig { source })
     }
 
     pub fn validate(normalized: NormalizedConfig) -> Result<ValidatedConfig, ConfigError> {
@@ -935,15 +939,17 @@ fn validate_dns_config(dns: &DnsConfig, outbound_ids: &HashSet<String>) -> Resul
     }
 
     for rule in &dns.rules {
-        match &rule.action {
-            DnsRuleAction::Server(server) if !server_ids.contains(server) => {
+        match rule {
+            DnsRuleConfig::Server { server, .. } if !server_ids.contains(server) => {
                 return Err(ConfigError::new(format!(
                     "dns rule references unknown server `{server}`"
                 )));
             }
-            DnsRuleAction::Server(_) | DnsRuleAction::Reject | DnsRuleAction::FakeIp => {}
+            DnsRuleConfig::Server { .. }
+            | DnsRuleConfig::Reject { .. }
+            | DnsRuleConfig::FakeIp { .. } => {}
         }
-        if matches!(rule.action, DnsRuleAction::FakeIp)
+        if matches!(rule, DnsRuleConfig::FakeIp { .. })
             && !dns.fake_ip.as_ref().is_some_and(|fake_ip| fake_ip.enabled)
         {
             return Err(ConfigError::new(

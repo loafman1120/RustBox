@@ -269,7 +269,8 @@ fn split_host_port(value: &str) -> Result<(&str, &str), String> {
 }
 
 /// RustBox 数据面当前处理的网络类别。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Network {
     Tcp,
     Udp,

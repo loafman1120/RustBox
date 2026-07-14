@@ -1,4 +1,7 @@
 use super::*;
+use garde::Validate;
+use serde::Deserialize;
+use serde_with::{DisplayFromStr, serde_as};
 
 /// 格式无关的语义配置，是所有输入前端汇合后的统一模型。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,34 +48,44 @@ pub struct CompiledConfig {
 }
 
 /// inbound 的源配置，描述用户想暴露的入口类型和监听地址。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
 pub struct InboundConfig {
     pub id: String,
+    #[serde(flatten)]
+    #[garde(dive)]
     pub kind: InboundConfigKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[serde_as]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InboundConfigKind {
     /// mixed 入口，在同一 TCP 监听地址上接受 HTTP 代理和 SOCKS5。
     Mixed {
+        #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
         username: Option<String>,
         password: Option<String>,
     },
     /// HTTP 代理入口，监听本地 TCP 地址并支持 CONNECT 和普通 absolute-form 请求。
     HttpConnect {
+        #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
         username: Option<String>,
         password: Option<String>,
     },
     /// SOCKS5 入口，监听本地 TCP 地址并支持 CONNECT/UDP ASSOCIATE。
     Socks5 {
+        #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
         username: Option<String>,
         password: Option<String>,
     },
     /// AnyTLS 服务端入口，同时支持普通 TCP 流与 UOT datagram mode。
     AnyTls {
+        #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
         password: String,
         tls: AnyTlsInboundTlsConfig,
@@ -84,39 +97,83 @@ pub enum InboundConfigKind {
     Transparent(TransparentInboundConfig),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[serde_as]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(deny_unknown_fields)]
 pub struct TunInboundConfig {
     pub interface_name: Option<String>,
+    #[serde(default)]
+    #[serde_as(as = "Vec<DisplayFromStr>")]
     pub addresses: Vec<IpCidr>,
     pub mtu: Option<u16>,
+    #[serde(skip, default = "manual_route_mode")]
     pub route_mode: RouteMode,
+    #[serde(skip, default = "no_tun_dns")]
     pub dns_mode: TunDnsMode,
+    #[serde(default)]
     pub auto_route: bool,
+    #[serde(default)]
     pub strict_route: bool,
+    #[serde(default)]
+    #[serde_as(as = "Vec<DisplayFromStr>")]
     pub route_includes: Vec<IpCidr>,
+    #[serde(default)]
+    #[serde_as(as = "Vec<DisplayFromStr>")]
     pub route_excludes: Vec<IpCidr>,
+    #[serde(default)]
     pub dns_hijack: Vec<DnsHijackTarget>,
+    #[serde(default)]
     pub platform_http_proxy: bool,
+    #[serde(default)]
     pub auto_redirect: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl TunInboundConfig {
+    pub fn normalize_derived_modes(&mut self) {
+        self.route_mode = if self.strict_route {
+            RouteMode::Strict
+        } else if self.auto_route {
+            RouteMode::Auto
+        } else {
+            RouteMode::Manual
+        };
+        self.dns_mode = if self.dns_hijack.is_empty() {
+            TunDnsMode::None
+        } else {
+            TunDnsMode::Hijack
+        };
+    }
+}
+
+#[serde_as]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(deny_unknown_fields)]
 pub struct TransparentInboundConfig {
+    #[serde_as(as = "DisplayFromStr")]
     pub listen: Endpoint,
+    #[serde(default = "default_transparent_network")]
     pub network: TransparentNetwork,
+    #[serde(default = "default_transparent_mode")]
     pub mode: TransparentRedirectMode,
+    #[serde(default)]
     pub auto_rules: bool,
     pub mark: Option<u32>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(deny_unknown_fields)]
 pub struct AnyTlsInboundTlsConfig {
     pub certificate_path: String,
     pub private_key_path: String,
+    #[serde(default)]
     pub alpn: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TransparentNetwork {
     Tcp,
     Udp,
@@ -124,13 +181,19 @@ pub enum TransparentNetwork {
 }
 
 /// outbound 的源配置，描述可被路由引用的出站能力。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
 pub struct OutboundConfig {
     pub id: String,
+    #[serde(flatten)]
+    #[garde(dive)]
     pub kind: OutboundConfigKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[serde_as]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum OutboundConfigKind {
     /// 直连出站，对应 sing-box `direct` outbound。
     Direct,
@@ -142,6 +205,7 @@ pub enum OutboundConfigKind {
     /// SOCKS5 上游代理，对应 sing-box `socks` outbound 的基础字段。
     Socks5 {
         /// SOCKS5 代理服务器地址和端口。
+        #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         /// SOCKS5 用户名；设置时必须同时设置 `password`。
         username: Option<String>,
@@ -151,6 +215,7 @@ pub enum OutboundConfigKind {
     /// HTTP CONNECT 上游代理，对应 sing-box `http` outbound 的基础字段。
     Http {
         /// HTTP 代理服务器地址和端口。
+        #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         /// HTTP 代理认证用户名；设置时必须同时设置 `password`。
         username: Option<String>,
@@ -160,6 +225,7 @@ pub enum OutboundConfigKind {
     /// Shadowsocks 上游代理，对应 sing-box `shadowsocks` outbound 的基础字段。
     Shadowsocks {
         /// Shadowsocks 服务器地址和端口。
+        #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         /// Shadowsocks 加密方法名称，例如 `aes-128-gcm`。
         method: String,
@@ -174,18 +240,25 @@ pub enum OutboundConfigKind {
         default: Option<String>,
     },
     /// 延迟测试出站组，对应 sing-box `urltest` outbound 的基础字段。
+    #[serde(rename = "urltest")]
     UrlTest {
         /// 可参与测试的子出站逻辑 ID。
+        #[garde(length(min = 1))]
         outbounds: Vec<String>,
         /// 测试 URL。
+        #[serde(default = "default_urltest_url")]
         url: String,
         /// 测试间隔秒数。
+        #[serde(default = "default_urltest_interval_seconds")]
+        #[garde(range(min = 1))]
         interval_seconds: u64,
         /// 延迟容差毫秒数。
+        #[serde(default)]
         tolerance_ms: u16,
     },
     /// VMess AEAD 上游代理。
     Vmess {
+        #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         uuid: String,
         security: Option<String>,
@@ -195,6 +268,7 @@ pub enum OutboundConfigKind {
     },
     /// VLESS 上游代理；当前数据面支持普通 TCP 模式。
     Vless {
+        #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         uuid: String,
         flow: Option<String>,
@@ -203,25 +277,61 @@ pub enum OutboundConfigKind {
     },
     /// Trojan TLS 上游代理。
     Trojan {
+        #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         password: String,
         tls: Option<OutboundTlsConfig>,
         transport: Option<String>,
     },
     /// AnyTLS 上游代理；组合根通过 `rustbox-outbound-anytls` 实例化数据面。
+    #[serde(rename = "anytls")]
     AnyTls {
+        #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         password: String,
         tls: Option<OutboundTlsConfig>,
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(deny_unknown_fields)]
 pub struct OutboundTlsConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub server_name: Option<String>,
+    #[serde(default)]
     pub insecure: bool,
+    #[serde(default)]
     pub alpn: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_urltest_url() -> String {
+    "https://www.gstatic.com/generate_204".to_string()
+}
+
+fn default_urltest_interval_seconds() -> u64 {
+    300
+}
+
+fn default_transparent_network() -> TransparentNetwork {
+    TransparentNetwork::Tcp
+}
+
+fn default_transparent_mode() -> TransparentRedirectMode {
+    TransparentRedirectMode::Redirect
+}
+
+fn manual_route_mode() -> RouteMode {
+    RouteMode::Manual
+}
+
+fn no_tun_dns() -> TunDnsMode {
+    TunDnsMode::None
 }
 
 /// 路由源规则，使用逻辑 ID，尚不直接持有内部 `OutboundId`。

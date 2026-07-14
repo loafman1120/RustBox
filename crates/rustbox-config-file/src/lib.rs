@@ -18,7 +18,7 @@ mod tests {
     use super::*;
     use rustbox_config::{
         DnsRuleAction, DnsServerProtocol, InboundConfigKind, LogicalModeConfig, OutboundConfigKind,
-        RouteActionConfig, RouteRuleConfig, TransparentNetwork,
+        RouteActionConfig, RouteMode, RouteRuleConfig, TransparentNetwork, TunDnsMode,
     };
     use rustbox_observability::{LevelFilter, ObservabilityOutput};
     use rustbox_types::Endpoint;
@@ -407,6 +407,8 @@ outbound = "direct"
             InboundConfigKind::Tun(value)
                 if value.interface_name.as_deref() == Some("rustbox0")
                     && value.auto_route
+                    && value.route_mode == RouteMode::Auto
+                    && value.dns_mode == TunDnsMode::None
         ));
         assert!(matches!(
             &config.source.inbounds[1].kind,
@@ -468,7 +470,7 @@ outbound = "direct"
         assert_eq!(dns.servers.len(), 1);
         assert_eq!(dns.servers[0].protocol, DnsServerProtocol::Https);
         assert_eq!(dns.rules.len(), 1);
-        assert!(matches!(dns.rules[0].action, DnsRuleAction::FakeIp));
+        assert!(matches!(dns.rules[0].action(), DnsRuleAction::FakeIp));
         assert_eq!(dns.cache.max_entries, 256);
         assert_eq!(dns.hijack.len(), 1);
     }

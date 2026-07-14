@@ -4,8 +4,11 @@
 //! 契约、缓存、规则和 FakeIP；真实 UDP/TCP/DoH/DoT/DoQ I/O 由后续 adapter
 //! 通过 `DnsTransport` 接入。
 
+use garde::Validate;
 use rustbox_kernel::BoxFuture;
 use rustbox_types::{Endpoint, Host, IpAddress, IpCidr, Network};
+use serde::Deserialize;
+use serde_with::{DisplayFromStr, serde_as};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
@@ -41,7 +44,8 @@ pub struct DnsQuery {
     pub record_type: DnsRecordType,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DnsRecordType {
     A,
     Aaaa,
@@ -79,25 +83,38 @@ impl DnsError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(deny_unknown_fields)]
 pub struct DnsConfig {
+    #[serde(default)]
     pub servers: Vec<DnsServerConfig>,
+    #[serde(default)]
     pub rules: Vec<DnsRuleConfig>,
     pub final_server: Option<String>,
+    #[serde(default)]
+    #[garde(dive)]
     pub cache: DnsCacheConfig,
+    #[garde(dive)]
     pub fake_ip: Option<FakeIpConfig>,
+    #[serde(default)]
     pub hijack: Vec<DnsHijackTarget>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[serde_as]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(deny_unknown_fields)]
 pub struct DnsServerConfig {
     pub id: String,
     pub protocol: DnsServerProtocol,
+    #[serde_as(as = "DisplayFromStr")]
     pub endpoint: Endpoint,
     pub outbound: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DnsServerProtocol {
     Udp,
     Tcp,
@@ -106,17 +123,35 @@ pub enum DnsServerProtocol {
     Quic,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DnsRuleConfig {
-    pub matcher: DnsRuleMatcher,
-    pub action: DnsRuleAction,
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum DnsRuleConfig {
+    Server {
+        server: String,
+        #[serde(flatten)]
+        matcher: DnsRuleMatcher,
+    },
+    FakeIp {
+        #[serde(flatten)]
+        matcher: DnsRuleMatcher,
+    },
+    Reject {
+        #[serde(flatten)]
+        matcher: DnsRuleMatcher,
+    },
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct DnsRuleMatcher {
+    #[serde(rename = "domain")]
     pub domains: Vec<String>,
+    #[serde(rename = "domain_suffix")]
     pub domain_suffixes: Vec<String>,
+    #[serde(rename = "domain_keyword")]
     pub domain_keywords: Vec<String>,
+    #[serde(rename = "record_type")]
     pub record_types: Vec<DnsRecordType>,
     pub invert: bool,
 }
@@ -128,11 +163,33 @@ pub enum DnsRuleAction {
     Reject,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl DnsRuleConfig {
+    pub fn matcher(&self) -> &DnsRuleMatcher {
+        match self {
+            Self::Server { matcher, .. } | Self::FakeIp { matcher } | Self::Reject { matcher } => {
+                matcher
+            }
+        }
+    }
+
+    pub fn action(&self) -> DnsRuleAction {
+        match self {
+            Self::Server { server, .. } => DnsRuleAction::Server(server.clone()),
+            Self::FakeIp { .. } => DnsRuleAction::FakeIp,
+            Self::Reject { .. } => DnsRuleAction::Reject,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(default, deny_unknown_fields)]
 pub struct DnsCacheConfig {
     pub enabled: bool,
+    #[garde(range(min = 1))]
     pub max_entries: usize,
     pub min_ttl_seconds: u32,
+    #[garde(range(min = 1))]
     pub max_ttl_seconds: u32,
 }
 
@@ -147,17 +204,35 @@ impl Default for DnsCacheConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[serde_as]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[garde(allow_unvalidated)]
+#[serde(deny_unknown_fields)]
 pub struct FakeIpConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde_as(as = "DisplayFromStr")]
     pub ipv4_pool: IpCidr,
+    #[serde(default = "default_fake_ip_ttl_seconds")]
+    #[garde(range(min = 1))]
     pub ttl_seconds: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[serde_as]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DnsHijackTarget {
     pub network: Option<Network>,
+    #[serde_as(as = "DisplayFromStr")]
     pub endpoint: Endpoint,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_fake_ip_ttl_seconds() -> u32 {
+    60
 }
 
 pub struct RuleBasedResolver {
@@ -189,8 +264,8 @@ impl Resolver for RuleBasedResolver {
             let action = self
                 .rules
                 .iter()
-                .find(|rule| rule.matcher.matches(&query))
-                .map(|rule| rule.action.clone())
+                .find(|rule| rule.matcher().matches(&query))
+                .map(DnsRuleConfig::action)
                 .unwrap_or_else(|| DnsRuleAction::Server(self.final_server.clone()));
 
             match action {

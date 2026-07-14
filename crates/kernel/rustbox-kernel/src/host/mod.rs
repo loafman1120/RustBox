@@ -245,7 +245,8 @@ pub enum InterfaceRef {
     Index(u32),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TransparentRedirectMode {
     Redirect,
     Tproxy,
