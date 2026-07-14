@@ -11,7 +11,9 @@ Pod::Spec.new do |s|
   s.dependency 'FlutterMacOS'
   s.platform = :osx, '11.0'
   s.pod_target_xcconfig = {
-    'DEFINES_MODULE' => 'YES',
+    'DEFINES_MODULE' => 'YES'
+  }
+  s.user_target_xcconfig = {
     'OTHER_LDFLAGS' => '$(inherited) -all_load'
   }
 end

@@ -13,7 +13,9 @@ Pod::Spec.new do |s|
   s.platform = :ios, '13.0'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
-    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
+    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386'
+  }
+  s.user_target_xcconfig = {
     'OTHER_LDFLAGS' => '$(inherited) -all_load'
   }
 end
