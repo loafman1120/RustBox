@@ -50,6 +50,7 @@ switch ($Platform) {
         Copy-Binary (Join-Path $Root "target/$Target/release/librustbox_flutter_bridge.so") (Join-Path $Native "linux/$Arch/librustbox_flutter_bridge.so")
     }
     "macos" {
+        $env:MACOSX_DEPLOYMENT_TARGET = "11.0"
         $Targets = @("aarch64-apple-darwin", "x86_64-apple-darwin")
         Install-Targets $Targets
         foreach ($Target in $Targets) { Build-Target $Target }
@@ -67,6 +68,10 @@ switch ($Platform) {
         if ($LASTEXITCODE -ne 0) { throw "cargo-ndk Android build failed" }
     }
     "ios" {
+        # Keep C/C++ dependencies (notably aws-lc and ring) on the same minimum
+        # deployment target as the podspec. Without this, newer Xcode SDKs can
+        # emit objects targeting the SDK version while rustc links for iOS 10.
+        $env:IPHONEOS_DEPLOYMENT_TARGET = "13.0"
         $Targets = @("aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios")
         Install-Targets $Targets
         foreach ($Target in $Targets) { Build-Target $Target }

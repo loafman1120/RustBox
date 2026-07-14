@@ -319,7 +319,7 @@ jobs:
           shared-key: flutter-${{ matrix.platform }}
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb
       - name: Install pinned bridge code generator
         if: matrix.platform == 'linux'
         run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
@@ -344,8 +344,13 @@ jobs:
           dart format --output=none --set-exit-if-changed lib integration_test
           flutter analyze
       - name: Run lifecycle integration test
+        if: matrix.platform != 'linux'
         working-directory: apps/rustbox-flutter/example
         run: flutter test integration_test/simple_test.dart -d ${{ matrix.platform }}
+      - name: Run lifecycle integration test (Linux)
+        if: matrix.platform == 'linux'
+        working-directory: apps/rustbox-flutter/example
+        run: xvfb-run -a flutter test integration_test/simple_test.dart -d linux
       - name: Upload precompiled Flutter library
         uses: actions/upload-artifact@v7
         with:
