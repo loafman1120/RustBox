@@ -290,43 +290,6 @@ jobs:
         shell: pwsh
         run: ./scripts/test/grpc.ps1
 
-  flutter-bindings:
-    name: Flutter bindings and codegen
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97.0
-        with:
-          components: rustfmt
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.44.6
-          channel: stable
-          cache: true
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: flutter-bindings
-      - name: Install pinned bridge code generator
-        run: cargo install flutter_rust_bridge_codegen --version 2.13.0-beta.5 --locked
-      - name: Resolve package dependencies
-        working-directory: packages/rustbox_flutter
-        run: |
-          flutter pub get
-          cd example
-          flutter pub get
-      - name: Verify generated bindings are current
-        working-directory: packages/rustbox_flutter
-        run: |
-          flutter_rust_bridge_codegen generate
-          git diff --exit-code
-      - name: Analyze and test Dart facade
-        working-directory: packages/rustbox_flutter
-        run: |
-          dart format --output=none --set-exit-if-changed lib test example/lib example/integration_test
-          flutter analyze
-          flutter test
-
   flutter-desktop:
     name: Flutter lifecycle (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
@@ -344,6 +307,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.44.6
@@ -355,15 +320,38 @@ jobs:
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - name: Install pinned bridge code generator
+        if: matrix.platform == 'linux'
+        run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
+      - name: Verify generated bindings are current
+        if: matrix.platform == 'linux'
+        working-directory: apps/rustbox-flutter
+        run: |
+          flutter pub get
+          flutter_rust_bridge_codegen generate
+          cargo fmt --manifest-path rust/Cargo.toml --package rustbox-flutter-bridge
+          git diff --exit-code
+      - name: Build precompiled Flutter library
+        shell: pwsh
+        run: ./scripts/build/flutter-prebuilt.ps1 -Platform ${{ matrix.platform }} -Locked
       - name: Resolve example dependencies
-        working-directory: packages/rustbox_flutter/example
+        working-directory: apps/rustbox-flutter/example
         run: flutter pub get
-      - name: Build release application
-        working-directory: packages/rustbox_flutter/example
-        run: flutter build ${{ matrix.platform }} --release
+      - name: Analyze example
+        if: matrix.platform == 'linux'
+        working-directory: apps/rustbox-flutter/example
+        run: |
+          dart format --output=none --set-exit-if-changed lib integration_test
+          flutter analyze
       - name: Run lifecycle integration test
-        working-directory: packages/rustbox_flutter/example
+        working-directory: apps/rustbox-flutter/example
         run: flutter test integration_test/simple_test.dart -d ${{ matrix.platform }}
+      - name: Upload precompiled Flutter library
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustbox-flutter-native-${{ matrix.platform }}
+          path: apps/rustbox-flutter/native/${{ matrix.platform }}
+          if-no-files-found: error
 
   flutter-android:
     name: Flutter lifecycle (android)
@@ -380,19 +368,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: flutter-android
+      - name: Install Android Rust builder
+        run: cargo install cargo-ndk --locked
+      - name: Build precompiled Android libraries
+        shell: pwsh
+        run: ./scripts/build/flutter-prebuilt.ps1 -Platform android -Locked
       - name: Resolve example dependencies
-        working-directory: packages/rustbox_flutter/example
+        working-directory: apps/rustbox-flutter/example
         run: flutter pub get
-      - name: Build release APK
-        working-directory: packages/rustbox_flutter/example
-        run: flutter build apk --release
       - name: Run lifecycle test in emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
           arch: x86_64
           disable-animations: true
-          script: cd packages/rustbox_flutter/example && flutter test integration_test/simple_test.dart -d emulator-5554
+          script: cd apps/rustbox-flutter/example && flutter test integration_test/simple_test.dart -d emulator-5554
+      - name: Upload precompiled Android libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustbox-flutter-native-android
+          path: apps/rustbox-flutter/native/android
+          if-no-files-found: error
 
   flutter-ios:
     name: Flutter lifecycle (ios)
@@ -409,16 +405,70 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: flutter-ios
+      - name: Build precompiled iOS XCFramework
+        shell: pwsh
+        run: ./scripts/build/flutter-prebuilt.ps1 -Platform ios -Locked
       - name: Resolve example dependencies
-        working-directory: packages/rustbox_flutter/example
+        working-directory: apps/rustbox-flutter/example
         run: flutter pub get
-      - name: Build release application
-        working-directory: packages/rustbox_flutter/example
-        run: flutter build ios --release --no-codesign
       - name: Run lifecycle test in simulator
-        working-directory: packages/rustbox_flutter/example
+        working-directory: apps/rustbox-flutter/example
         run: |
           DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin)["devices"]; print(next(device["udid"] for devices in data.values() for device in devices if device["name"].startswith("iPhone")))')
           xcrun simctl boot "$DEVICE_ID" || true
           xcrun simctl bootstatus "$DEVICE_ID" -b
           flutter test integration_test/simple_test.dart -d "$DEVICE_ID"
+      - name: Upload precompiled iOS XCFramework
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustbox-flutter-native-ios
+          path: apps/rustbox-flutter/native/ios
+          if-no-files-found: error
+
+  flutter-package:
+    name: Flutter pub package
+    needs:
+      - flutter-desktop
+      - flutter-android
+      - flutter-ios
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.6
+          channel: stable
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: rustbox-flutter-native-linux
+          path: apps/rustbox-flutter/native/linux
+      - uses: actions/download-artifact@v8
+        with:
+          name: rustbox-flutter-native-windows
+          path: apps/rustbox-flutter/native/windows
+      - uses: actions/download-artifact@v8
+        with:
+          name: rustbox-flutter-native-macos
+          path: apps/rustbox-flutter/native/macos
+      - uses: actions/download-artifact@v8
+        with:
+          name: rustbox-flutter-native-android
+          path: apps/rustbox-flutter/native/android
+      - uses: actions/download-artifact@v8
+        with:
+          name: rustbox-flutter-native-ios
+          path: apps/rustbox-flutter/native/ios
+      - name: Validate publishable package
+        run: |
+          cp -R apps/rustbox-flutter "$RUNNER_TEMP/rustbox_flutter"
+          cd "$RUNNER_TEMP/rustbox_flutter"
+          flutter pub get
+          dart pub publish --dry-run
+      - name: Upload validated pub package
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustbox-flutter-pub-package
+          path: apps/rustbox-flutter
+          include-hidden-files: true

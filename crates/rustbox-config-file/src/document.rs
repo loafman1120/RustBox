@@ -59,16 +59,16 @@ impl ConfigLoader {
     pub fn load(&self, path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileError> {
         let path = path.as_ref();
         let document = match self.env_prefix.as_deref() {
-            Some(prefix) => loader::load_toml_with_env::<TomlConfigDocument>(path, prefix)?,
-            None => loader::load_toml::<TomlConfigDocument>(path)?,
+            Some(prefix) => loader::load_toml_with_env::<ConfigDocument>(path, prefix)?,
+            None => loader::load_toml::<ConfigDocument>(path)?,
         };
         document.into_file_config(path.parent())
     }
 
     pub fn parse(&self, input: &str) -> Result<FileConfig, ConfigFileError> {
         let document = match self.env_prefix.as_deref() {
-            Some(prefix) => loader::parse_toml_with_env::<TomlConfigDocument>(input, prefix)?,
-            None => loader::parse_toml::<TomlConfigDocument>(input)?,
+            Some(prefix) => loader::parse_toml_with_env::<ConfigDocument>(input, prefix)?,
+            None => loader::parse_toml::<ConfigDocument>(input)?,
         };
         document.into_file_config(None)
     }
@@ -104,10 +104,32 @@ pub fn parse_toml_source(input: &str) -> Result<SourceConfig, ConfigFileError> {
     ConfigLoader::new().parse_source(input)
 }
 
+/// 从磁盘读取 JSON 文件并解析为统一配置模型。
+pub fn load_json_file(path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileError> {
+    let path = path.as_ref();
+    let document = loader::load_json::<ConfigDocument>(path)?;
+    document.into_file_config(path.parent())
+}
+
+/// 从 JSON 文本解析配置；字段及语义与 TOML 入口完全一致。
+pub fn parse_json_str(input: &str) -> Result<FileConfig, ConfigFileError> {
+    loader::parse_json::<ConfigDocument>(input)?.into_file_config(None)
+}
+
+/// 从磁盘读取 JSON 文件并直接返回格式无关的运行配置。
+pub fn load_json_source(path: impl AsRef<Path>) -> Result<SourceConfig, ConfigFileError> {
+    load_json_file(path).map(FileConfig::into_source)
+}
+
+/// 从 JSON 文本直接返回格式无关的运行配置。
+pub fn parse_json_source(input: &str) -> Result<SourceConfig, ConfigFileError> {
+    parse_json_str(input).map(FileConfig::into_source)
+}
+
 #[derive(Clone, Debug, Deserialize, Validate)]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
-struct TomlConfigDocument {
+struct ConfigDocument {
     schema_version: u32,
     #[garde(dive)]
     observability: Option<TomlObservabilityConfig>,
@@ -125,7 +147,7 @@ struct TomlConfigDocument {
     routes: Vec<TomlRouteRuleConfig>,
 }
 
-impl TomlConfigDocument {
+impl ConfigDocument {
     fn into_file_config(self, base_dir: Option<&Path>) -> Result<FileConfig, ConfigFileError> {
         // Reject unknown document shapes before applying current-schema rules.
         migration::accept_schema_version(self.schema_version)?;

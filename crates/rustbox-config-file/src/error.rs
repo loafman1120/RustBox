@@ -22,4 +22,8 @@ impl ConfigFileError {
     pub(crate) fn parse(error: impl std::fmt::Display) -> Self {
         Self::new(format!("failed to parse TOML config: {error}"))
     }
+
+    pub(crate) fn parse_json(error: impl std::fmt::Display) -> Self {
+        Self::new(format!("failed to parse JSON config: {error}"))
+    }
 }

@@ -1,4 +1,4 @@
-//! TOML configuration frontend for RustBox.
+//! TOML and JSON configuration frontends for RustBox.
 
 mod document;
 mod error;
@@ -8,8 +8,9 @@ mod validation;
 
 pub use document::SUPPORTED_SCHEMA_VERSION;
 pub use document::{
-    ConfigLoader, FileConfig, FileObservabilityConfig, load_toml_file, load_toml_source,
-    parse_toml_source, parse_toml_str,
+    ConfigLoader, FileConfig, FileObservabilityConfig, load_json_file, load_json_source,
+    load_toml_file, load_toml_source, parse_json_source, parse_json_str, parse_toml_source,
+    parse_toml_str,
 };
 pub use error::ConfigFileError;
 
@@ -571,5 +572,44 @@ outbound = "direct"
         assert_eq!(source, file.source);
         assert_eq!(source.inbounds.len(), 1);
         assert_eq!(source.outbounds.len(), 1);
+    }
+
+    #[test]
+    fn parses_json_config_through_serde_entrypoint() {
+        let config = parse_json_str(
+            r#"{
+                "schema_version": 1,
+                "inbounds": [
+                    {
+                        "id": "mixed-in",
+                        "type": "mixed",
+                        "listen": "127.0.0.1:2080",
+                        "username": null,
+                        "password": null
+                    }
+                ],
+                "outbounds": [
+                    { "id": "direct", "type": "direct" }
+                ],
+                "routes": [
+                    { "type": "default", "outbound": "direct" }
+                ]
+            }"#,
+        )
+        .expect("parse JSON config");
+
+        assert!(matches!(
+            &config.source.inbounds[0].kind,
+            InboundConfigKind::Mixed { listen, .. }
+                if *listen == Endpoint::localhost_v4(2080)
+        ));
+        assert!(matches!(
+            &config.source.outbounds[0].kind,
+            OutboundConfigKind::Direct
+        ));
+        assert!(matches!(
+            &config.source.routes[0],
+            RouteRuleConfig::Default { outbound } if outbound == "direct"
+        ));
     }
 }

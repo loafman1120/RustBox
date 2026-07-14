@@ -42,6 +42,20 @@ pub(crate) fn parse_toml<T: DeserializeOwned>(input: &str) -> Result<T, ConfigFi
         .map_err(ConfigFileError::parse)
 }
 
+pub(crate) fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigFileError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        ConfigFileError::new(format!(
+            "failed to read config file `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    parse_json(&text)
+}
+
+pub(crate) fn parse_json<T: DeserializeOwned>(input: &str) -> Result<T, ConfigFileError> {
+    serde_json::from_str(input).map_err(ConfigFileError::parse_json)
+}
+
 pub(crate) fn parse_toml_with_env<T: DeserializeOwned>(
     input: &str,
     env_prefix: &str,

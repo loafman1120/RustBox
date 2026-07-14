@@ -1,0 +1,20 @@
+[package]
+name = "rustbox-flutter-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.12.0"
+rustbox = { path = "../../../crates/rustbox" }
+rustbox-config-file = { path = "../../../crates/rustbox-config-file" }
+rustbox-control = { path = "../../../crates/control/rustbox-control" }
+rustbox-observability = { path = "../../../crates/rustbox-observability" }
+tokio = { version = "1", features = ["sync"] }
+
+[lints.rust]
+unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

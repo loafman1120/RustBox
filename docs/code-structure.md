@@ -9,7 +9,7 @@ crate or trait.
 The intended direction is:
 
 ```text
-apps/rustbox-cli + packages/rustbox_flutter/rust
+apps/rustbox-cli + apps/rustbox-flutter/rust
     -> rustbox composition root / async RustBox lifecycle
         -> control + module adapters + platform facade
             -> kernel + host capability ports
@@ -29,17 +29,16 @@ The top-level directories have distinct ownership rules:
 
 | Location | Owns | Must not own |
 |---|---|---|
-| `apps/` | Product executables and process concerns | Reusable engine behavior |
-| `packages/` | Language/package-manager surfaces and their native bridges | A second engine lifecycle |
+| `apps/` | Product executables, Flutter entry, and process concerns | Reusable engine behavior |
 | `crates/foundation/` | Runtime-neutral types and shared I/O contracts; Tokio stream traits are allowed in `rustbox-io` | Concrete sockets, OS handles, configuration formats |
 | `crates/kernel/` | Data-plane primitives, routing, registries, host capability ports | CLI or Flutter concerns |
 | `crates/control/` | Semantic configuration and control-plane APIs | Platform implementations |
 | `crates/modules/` | Protocols, inbounds, outbounds, inspection, DNS, transport, stack | Application composition |
 | `crates/platform/` | Target-specific implementations of kernel host capabilities | Routing policy |
 | `crates/rustbox*` | Composition/lifecycle, file configuration, and observability | Product-specific UI behavior |
-| `scripts/build/`, `scripts/test/` | Repository build and smoke/E2E entry points | Flutter package build logic |
+| `scripts/build/`, `scripts/test/` | Repository build and smoke/E2E entry points | Flutter app build logic |
 
-`packages/rustbox_flutter/rust` is both part of the Flutter package and a Cargo
+`apps/rustbox-flutter/rust` is both part of the Flutter app and a Cargo
 workspace member. Generated Flutter/bridge files stay with that package rather
 than being promoted into reusable Rust crates.
 
@@ -85,7 +84,7 @@ in `rustbox-kernel::host`; they are separated by files rather than thin crates.
 The repository no longer contains a supported C ABI or a hosted synchronous
 runtime facade. `apps/rustbox-ffi`, `rustbox-host-api`, `HostedRustBox`, and the
 mobile/FFI scripts were removed. The supported non-CLI product surface is now
-`packages/rustbox_flutter`, whose async bridge reuses the shared `RustBox`
+`apps/rustbox-flutter`, whose async bridge reuses the shared `RustBox`
 lifecycle and keeps Flutter build/test concerns inside the package.
 
 The completed bounded splits are:

@@ -1,0 +1,15 @@
+/.dart_tool/
+/build/
+/rust/
+/flutter_rust_bridge.yaml
+/pubspec.lock
+/test_driver/
+/example/.dart_tool/
+/example/build/
+/example/android/
+/example/ios/
+/example/linux/
+/example/macos/
+/example/windows/
+/example/integration_test/
+/example/pubspec.lock

@@ -50,16 +50,17 @@ Preview it locally with a static server rooted at `website/`; see
 cargo build --workspace
 ```
 
-## Flutter package
+## Flutter app
 
-`packages/rustbox_flutter` is the supported Dart/Flutter embedding surface. It
+`apps/rustbox-flutter` sits beside `apps/rustbox-cli` as the supported
+Dart/Flutter product entry. It
 uses `flutter_rust_bridge` 2.13.0-beta.5 and Flutter Native Assets to compile
 and bundle `rustbox-flutter-bridge` for Android, iOS, Windows, macOS, and Linux.
 Web and OHOS are not supported because RustBox depends on native Tokio, socket,
 TUN, and platform-control capabilities.
 
 ```powershell
-cd packages/rustbox_flutter
+cd apps/rustbox-flutter
 flutter pub get
 flutter_rust_bridge_codegen generate
 cd example
@@ -173,9 +174,9 @@ transparent inbound and is intentionally not stacked on a layer-3 TUN.
 cargo test --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cd packages/rustbox_flutter
+cd apps/rustbox-flutter/example
 flutter analyze
-flutter test
+flutter test integration_test/simple_test.dart -d windows
 $env:RUSTBOX_SBOX_OUTBOUND = "anytls"
 ./scripts/test/outbound.ps1
 ```

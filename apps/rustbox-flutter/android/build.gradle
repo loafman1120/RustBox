@@ -1,0 +1,34 @@
+group = "io.github.loafman1120.rustbox_flutter"
+version = "1.0"
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:8.9.1"
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "io.github.loafman1120.rustbox_flutter"
+    compileSdk = 36
+
+    defaultConfig {
+        minSdk = 23
+    }
+
+    sourceSets {
+        main.jniLibs.srcDirs = ["../native/android"]
+    }
+}

@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "apps/rustbox-cli",
-    "packages/rustbox_flutter/rust",
+    "apps/rustbox-flutter/rust",
     "crates/rustbox-config-file",
     "crates/rustbox",
     "crates/control/rustbox-config",
