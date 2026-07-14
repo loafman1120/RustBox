@@ -22,6 +22,11 @@ function Build-Target([string]$Target) {
     if ($LASTEXITCODE -ne 0) { throw "Cargo build failed for $Target" }
 }
 
+function Install-Targets([string[]]$Targets) {
+    & rustup target add @Targets
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install Rust targets: $Targets" }
+}
+
 function Copy-Binary([string]$Source, [string]$Destination) {
     $Destination = [System.IO.Path]::GetFullPath($Destination)
     New-Item -ItemType Directory -Force (Split-Path $Destination -Parent) | Out-Null
@@ -33,17 +38,21 @@ switch ($Platform) {
     "windows" {
         $Target = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
         $Arch = if ($Target.StartsWith("aarch64")) { "arm64" } else { "x64" }
+        Install-Targets @($Target)
         Build-Target $Target
         Copy-Binary (Join-Path $Root "target/$Target/release/rustbox_flutter_bridge.dll") (Join-Path $Native "windows/$Arch/rustbox_flutter_bridge.dll")
     }
     "linux" {
         $Target = if ((uname -m) -eq "aarch64") { "aarch64-unknown-linux-gnu" } else { "x86_64-unknown-linux-gnu" }
         $Arch = if ($Target.StartsWith("aarch64")) { "arm64" } else { "x64" }
+        Install-Targets @($Target)
         Build-Target $Target
         Copy-Binary (Join-Path $Root "target/$Target/release/librustbox_flutter_bridge.so") (Join-Path $Native "linux/$Arch/librustbox_flutter_bridge.so")
     }
     "macos" {
-        foreach ($Target in @("aarch64-apple-darwin", "x86_64-apple-darwin")) { Build-Target $Target }
+        $Targets = @("aarch64-apple-darwin", "x86_64-apple-darwin")
+        Install-Targets $Targets
+        foreach ($Target in $Targets) { Build-Target $Target }
         $Output = Join-Path $Native "macos/librustbox_flutter_bridge.a"
         New-Item -ItemType Directory -Force (Split-Path $Output -Parent) | Out-Null
         & lipo -create `
@@ -53,11 +62,14 @@ switch ($Platform) {
         if ($LASTEXITCODE -ne 0) { throw "lipo failed for macOS" }
     }
     "android" {
+        Install-Targets @("armv7-linux-androideabi", "aarch64-linux-android", "x86_64-linux-android")
         & cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 -o (Join-Path $Native "android") @CargoArgs
         if ($LASTEXITCODE -ne 0) { throw "cargo-ndk Android build failed" }
     }
     "ios" {
-        foreach ($Target in @("aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios")) { Build-Target $Target }
+        $Targets = @("aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios")
+        Install-Targets $Targets
+        foreach ($Target in $Targets) { Build-Target $Target }
         $Work = Join-Path $Root "target/flutter-ios-xcframework"
         New-Item -ItemType Directory -Force $Work | Out-Null
         $Simulator = Join-Path $Work "librustbox_flutter_bridge-simulator.a"

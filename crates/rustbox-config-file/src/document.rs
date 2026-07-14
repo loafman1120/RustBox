@@ -161,7 +161,7 @@ impl ConfigDocument {
                 config.normalize_derived_modes();
             }
         }
-        let outbounds = self.outbounds.into_iter().map(Into::into).collect();
+        let outbounds = self.outbounds;
         let routes = self
             .routes
             .into_iter()
