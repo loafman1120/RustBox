@@ -10,5 +10,8 @@ PRODUCT_NAME = rustbox_flutter_example
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.example.rustboxFlutter
 
+// Keep the example aligned with the plugin podspec and precompiled static library.
+MACOSX_DEPLOYMENT_TARGET = 11.0
+
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.

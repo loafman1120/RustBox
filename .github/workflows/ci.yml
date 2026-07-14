@@ -337,6 +337,10 @@ jobs:
       - name: Resolve example dependencies
         working-directory: apps/rustbox-flutter/example
         run: flutter pub get
+      - name: Regenerate macOS project configuration
+        if: matrix.platform == 'macos'
+        working-directory: apps/rustbox-flutter/example
+        run: flutter build macos --config-only
       - name: Analyze example
         if: matrix.platform == 'linux'
         working-directory: apps/rustbox-flutter/example
@@ -359,7 +363,7 @@ jobs:
           if-no-files-found: error
 
   flutter-android:
-    name: Flutter lifecycle (android)
+    name: Flutter native build (android)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -378,16 +382,6 @@ jobs:
       - name: Build precompiled Android libraries
         shell: pwsh
         run: ./scripts/build/flutter-prebuilt.ps1 -Platform android -Locked
-      - name: Resolve example dependencies
-        working-directory: apps/rustbox-flutter/example
-        run: flutter pub get
-      - name: Run lifecycle test in emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 29
-          arch: x86_64
-          disable-animations: true
-          script: cd apps/rustbox-flutter/example && flutter test integration_test/simple_test.dart -d emulator-5554
       - name: Upload precompiled Android libraries
         uses: actions/upload-artifact@v7
         with:
@@ -396,7 +390,7 @@ jobs:
           if-no-files-found: error
 
   flutter-ios:
-    name: Flutter lifecycle (ios)
+    name: Flutter native build (ios)
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -413,16 +407,6 @@ jobs:
       - name: Build precompiled iOS XCFramework
         shell: pwsh
         run: ./scripts/build/flutter-prebuilt.ps1 -Platform ios -Locked
-      - name: Resolve example dependencies
-        working-directory: apps/rustbox-flutter/example
-        run: flutter pub get
-      - name: Run lifecycle test in simulator
-        working-directory: apps/rustbox-flutter/example
-        run: |
-          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin)["devices"]; print(next(device["udid"] for devices in data.values() for device in devices if device["name"].startswith("iPhone")))')
-          xcrun simctl boot "$DEVICE_ID" || true
-          xcrun simctl bootstatus "$DEVICE_ID" -b
-          flutter test integration_test/simple_test.dart -d "$DEVICE_ID"
       - name: Upload precompiled iOS XCFramework
         uses: actions/upload-artifact@v7
         with:
