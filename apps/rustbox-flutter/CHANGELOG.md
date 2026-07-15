@@ -1,3 +1,10 @@
+## 0.1.1
+
+- Removed unsupported macOS plugin packaging.
+- Reduced the iOS XCFramework to the device-only arm64 slice to keep the
+  package within pub.dev's archive size limit.
+- Fixed iOS CocoaPods packaging for the vendored XCFramework.
+
 ## 0.1.0
 
 - Initial public release of the RustBox Flutter FFI bindings.
