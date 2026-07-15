@@ -72,22 +72,13 @@ switch ($Platform) {
         # deployment target as the podspec. Without this, newer Xcode SDKs can
         # emit objects targeting the SDK version while rustc links for iOS 10.
         $env:IPHONEOS_DEPLOYMENT_TARGET = "13.0"
-        $Targets = @("aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios")
+        $Targets = @("aarch64-apple-ios")
         Install-Targets $Targets
         foreach ($Target in $Targets) { Build-Target $Target }
-        $Work = Join-Path $Root "target/flutter-ios-xcframework"
-        New-Item -ItemType Directory -Force $Work | Out-Null
-        $Simulator = Join-Path $Work "librustbox_flutter_bridge-simulator.a"
-        & lipo -create `
-            (Join-Path $Root "target/aarch64-apple-ios-sim/release/librustbox_flutter_bridge.a") `
-            (Join-Path $Root "target/x86_64-apple-ios/release/librustbox_flutter_bridge.a") `
-            -output $Simulator
-        if ($LASTEXITCODE -ne 0) { throw "lipo failed for iOS simulator" }
         $Output = Join-Path $Native "ios/RustboxFlutterBridge.xcframework"
         if (Test-Path $Output) { Remove-Item -Recurse -Force -LiteralPath $Output }
         & xcodebuild -create-xcframework `
             -library (Join-Path $Root "target/aarch64-apple-ios/release/librustbox_flutter_bridge.a") `
-            -library $Simulator `
             -output $Output
         if ($LASTEXITCODE -ne 0) { throw "xcodebuild failed for iOS XCFramework" }
     }

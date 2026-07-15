@@ -21,11 +21,11 @@ using RustBox do not need Rust, Cargo, or a C toolchain to build.
 - Android
 - iOS
 - Windows
-- macOS
 - Linux
 
-Web and OHOS are not supported. Consumers need Flutter 3.44 or newer and Dart
-3.12 or newer.
+macOS support is temporarily disabled in 0.1.0 while its precompiled bridge
+packaging is stabilized. Web and OHOS are not supported. Consumers need
+Flutter 3.44 or newer and Dart 3.12 or newer.
 
 ## Installation
 

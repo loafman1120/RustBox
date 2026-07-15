@@ -302,8 +302,6 @@ jobs:
             os: ubuntu-latest
           - platform: windows
             os: windows-latest
-          - platform: macos
-            os: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -337,10 +335,6 @@ jobs:
       - name: Resolve example dependencies
         working-directory: apps/rustbox-flutter/example
         run: flutter pub get
-      - name: Regenerate macOS project configuration
-        if: matrix.platform == 'macos'
-        working-directory: apps/rustbox-flutter/example
-        run: flutter build macos --config-only
       - name: Analyze example
         if: matrix.platform == 'linux'
         working-directory: apps/rustbox-flutter/example
@@ -437,10 +431,6 @@ jobs:
         with:
           name: rustbox-flutter-native-windows
           path: apps/rustbox-flutter/native/windows
-      - uses: actions/download-artifact@v8
-        with:
-          name: rustbox-flutter-native-macos
-          path: apps/rustbox-flutter/native/macos
       - uses: actions/download-artifact@v8
         with:
           name: rustbox-flutter-native-android

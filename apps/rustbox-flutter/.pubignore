@@ -1,6 +1,7 @@
 /.dart_tool/
 /build/
 /rust/
+/macos/
 /flutter_rust_bridge.yaml
 /pubspec.lock
 /test_driver/
