@@ -7,7 +7,8 @@
     type, then verifies RustBox can route outbound traffic through it.
 
     CI matrix parameter (set via env):
-      RUSTBOX_SBOX_OUTBOUND = socks5 | http | shadowsocks | anytls | vmess | vless | trojan
+      RUSTBOX_SBOX_OUTBOUND = socks5 | http | shadowsocks | anytls | vmess | vless | trojan |
+                               hysteria2 | tuic | naive | shadowtls | wireguard
 #>
 [CmdletBinding()]
 param()
@@ -30,7 +31,18 @@ $AnyTlsPassword = "test-anytls-password"
 $VmUuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
 $VlUuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
 $TrojanPassword = "test-trojan-password"
-$SupportsUdp = $OutboundType -ne "http"
+$Hysteria2Password = "test-hysteria2-password"
+$TuicUuid = "2dd61d93-75d8-4da4-ac0e-6aece7eac365"
+$TuicPassword = "test-tuic-password"
+$NaiveUsername = "rustbox"
+$NaivePassword = "test-naive-password"
+$ShadowTlsPassword = "test-shadowtls-password"
+$ShadowTlsCoverPort = 21081
+$WireGuardClientPrivateKey = $null
+$WireGuardClientPublicKey = $null
+$WireGuardServerPrivateKey = $null
+$WireGuardServerPublicKey = $null
+$SupportsUdp = $OutboundType -notin @("http", "naive", "shadowtls")
 $HttpTargetProcess = $null
 $SboxProcess = $null
 $RustboxProcess = $null
@@ -154,6 +166,35 @@ function New-TlsCert {
     }
 }
 
+function New-WireGuardKeyPair {
+    param([string]$SingBoxBinary)
+
+    $lines = @(& $SingBoxBinary generate wg-keypair 2>&1 | ForEach-Object { $_.ToString() })
+    if ($LASTEXITCODE -ne 0) {
+        throw "sing-box WireGuard key generation failed: $($lines -join ' ')"
+    }
+    $privateLine = $lines | Where-Object { $_ -match "(?i)private" } | Select-Object -First 1
+    $publicLine = $lines | Where-Object { $_ -match "(?i)public" } | Select-Object -First 1
+    $keyPattern = "[A-Za-z0-9+/]{43}="
+    $privateKey = [regex]::Match([string]$privateLine, $keyPattern).Value
+    $publicKey = [regex]::Match([string]$publicLine, $keyPattern).Value
+    if (-not $privateKey -or -not $publicKey) {
+        throw "unexpected sing-box WireGuard keypair output: $($lines -join ' ')"
+    }
+    return @{ PrivateKey = $privateKey; PublicKey = $publicKey }
+}
+
+function Assert-IndependentSingBoxPeer {
+    param([string]$SingBoxBinary)
+
+    $lines = @(& $SingBoxBinary version 2>&1 | ForEach-Object { $_.ToString() })
+    $identity = $lines -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $identity -notmatch "(?im)^sing-box version $([regex]::Escape($SboxVersion))$") {
+        throw "E2E peer must be independent sing-box $SboxVersion, got: $($lines -join ' ')"
+    }
+    Write-CiLog "verified independent peer identity: sing-box $SboxVersion"
+}
+
 function Get-SingBoxConfig {
     param([string]$LogsDir)
     $logsEscaped = $LogsDir.Replace('\', '/')
@@ -200,6 +241,42 @@ function Get-SingBoxConfig {
             $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
             return @"
 {"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"trojan","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"password":"$TrojanPassword"}],"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
+        "hysteria2" {
+            $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
+            $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"hysteria2","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"up_mbps":100,"down_mbps":100,"users":[{"name":"rustbox","password":"$Hysteria2Password"}],"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
+        "tuic" {
+            $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
+            $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"tuic","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"name":"rustbox","uuid":"$TuicUuid","password":"$TuicPassword"}],"congestion_control":"cubic","tls":{"enabled":true,"alpn":["h3"],"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
+        "naive" {
+            $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
+            $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"naive","tag":"sbox-in","network":"tcp","listen":"127.0.0.1","listen_port":$SboxInboundPort,"users":[{"username":"$NaiveUsername","password":"$NaivePassword"}],"tls":{"enabled":true,"alpn":["h2"],"certificate_path":"$certPath","key_path":"$keyPath"}}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
+        "shadowtls" {
+            $certPath = (Join-Path $WorkDir "tls/cert.pem").Replace('\', '/')
+            $keyPath  = (Join-Path $WorkDir "tls/key.pem").Replace('\', '/')
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"inbounds":[{"type":"http","tag":"cover","listen":"127.0.0.1","listen_port":$ShadowTlsCoverPort,"tls":{"enabled":true,"certificate_path":"$certPath","key_path":"$keyPath"}},{"type":"socks","tag":"shadow-inner"},{"type":"shadowtls","tag":"sbox-in","listen":"127.0.0.1","listen_port":$SboxInboundPort,"detour":"shadow-inner","version":3,"users":[{"name":"rustbox","password":"$ShadowTlsPassword"}],"handshake":{"server":"127.0.0.1","server_port":$ShadowTlsCoverPort},"strict_mode":true}],"outbounds":[{"type":"direct","tag":"direct"}]}
+"@
+        }
+        "wireguard" {
+            if (-not $WireGuardClientPublicKey -or -not $WireGuardServerPrivateKey) {
+                throw "WireGuard keys were not initialized"
+            }
+            return @"
+{"log":{"level":"info","output":"$logsEscaped/sing-box.log"},"endpoints":[{"type":"wireguard","tag":"sbox-in","address":["10.77.0.1/32"],"private_key":"$WireGuardServerPrivateKey","listen_port":$SboxInboundPort,"peers":[{"public_key":"$WireGuardClientPublicKey","allowed_ips":["10.77.0.2/32"]}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}
 "@
         }
         default { throw "unsupported outbound type: $OutboundType" }
@@ -340,6 +417,117 @@ type = "default"
 outbound = "sbox"
 "@
         }
+        "hysteria2" {
+            return $common + @"
+
+[[outbounds]]
+id = "sbox"
+type = "hysteria2"
+server = "127.0.0.1:$SboxInboundPort"
+password = "$Hysteria2Password"
+server_name = "localhost"
+insecure = true
+up_mbps = 100
+down_mbps = 100
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
+        "tuic" {
+            return $common + @"
+
+[[outbounds]]
+id = "sbox"
+type = "tuic"
+server = "127.0.0.1:$SboxInboundPort"
+uuid = "$TuicUuid"
+password = "$TuicPassword"
+heartbeat = "5s"
+
+[outbounds.tls]
+enabled = true
+server_name = "localhost"
+insecure = true
+alpn = ["h3"]
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
+        "naive" {
+            return $common + @"
+
+[[outbounds]]
+id = "sbox"
+type = "naive"
+server = "127.0.0.1:$SboxInboundPort"
+username = "$NaiveUsername"
+password = "$NaivePassword"
+
+[outbounds.tls]
+enabled = true
+server_name = "localhost"
+insecure = true
+alpn = ["h2"]
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
+        "shadowtls" {
+            return $common + @"
+
+[[outbounds]]
+id = "shadow"
+type = "shadowtls"
+server = "127.0.0.1:$SboxInboundPort"
+version = 3
+password = "$ShadowTlsPassword"
+
+[outbounds.tls]
+enabled = true
+server_name = "localhost"
+insecure = true
+
+[[outbounds]]
+id = "sbox"
+type = "socks5"
+server = "127.0.0.1:$SboxInboundPort"
+dial = { detour = "shadow" }
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
+        "wireguard" {
+            if (-not $WireGuardClientPrivateKey -or -not $WireGuardServerPublicKey) {
+                throw "WireGuard keys were not initialized"
+            }
+            return $common + @"
+
+[[outbounds]]
+id = "sbox"
+type = "wireguard"
+addresses = ["10.77.0.2/32"]
+private_key = "$WireGuardClientPrivateKey"
+mtu = 1408
+
+[[outbounds.peers]]
+server = "127.0.0.1:$SboxInboundPort"
+public_key = "$WireGuardServerPublicKey"
+allowed_ips = ["0.0.0.0/0"]
+persistent_keepalive = "5s"
+
+[[routes]]
+type = "default"
+outbound = "sbox"
+"@
+        }
         default { throw "unsupported outbound type: $OutboundType" }
     }
 }
@@ -359,6 +547,16 @@ function Wait-ForTcp {
         }
     }
     throw "$Label did not start on ${HostName}:$Port within ${TimeoutSeconds}s"
+}
+
+function Wait-ForDatagramServer {
+    param([System.Diagnostics.Process]$Process, [string]$Label)
+
+    Start-Sleep -Seconds 1
+    if ($Process.HasExited) {
+        throw "$Label exited before accepting traffic (exit code $($Process.ExitCode))"
+    }
+    Write-CiLog "$Label is running; readiness will be proven by the external protocol handshake"
 }
 
 function Start-HttpTarget {
@@ -493,6 +691,17 @@ try {
 
     $Curl = Get-Curl
     $SboxBin = Get-SingBoxBinary
+    Assert-IndependentSingBoxPeer -SingBoxBinary $SboxBin
+
+    if ($OutboundType -eq "wireguard") {
+        Write-CiLog "generating independent WireGuard peer keypairs with sing-box"
+        $clientKeys = New-WireGuardKeyPair -SingBoxBinary $SboxBin
+        $serverKeys = New-WireGuardKeyPair -SingBoxBinary $SboxBin
+        $WireGuardClientPrivateKey = $clientKeys.PrivateKey
+        $WireGuardClientPublicKey = $clientKeys.PublicKey
+        $WireGuardServerPrivateKey = $serverKeys.PrivateKey
+        $WireGuardServerPublicKey = $serverKeys.PublicKey
+    }
 
     if ($env:RUSTBOX_E2E_UDP) {
         $expectedUdp = $env:RUSTBOX_E2E_UDP -eq "1"
@@ -506,7 +715,7 @@ try {
     $LogsDir = Join-Path $WorkDir "logs"
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
 
-    if ($OutboundType -in @("anytls", "vmess", "vless", "trojan")) {
+    if ($OutboundType -in @("anytls", "vmess", "vless", "trojan", "hysteria2", "tuic", "naive", "shadowtls")) {
         $tlsDir = Join-Path $WorkDir "tls"
         New-Item -ItemType Directory -Path $tlsDir -Force | Out-Null
         Write-CiLog "generating TLS certificate"
@@ -523,13 +732,17 @@ try {
     $SboxConfigPath = Join-Path $WorkDir "sing-box.json"
     Set-Content -Path $SboxConfigPath -Value $sboxConfig -Encoding utf8
 
-    Write-CiLog "starting sing-box $OutboundType inbound on :$SboxInboundPort"
+    Write-CiLog "starting independent sing-box $SboxVersion peer for $OutboundType on :$SboxInboundPort"
     $SboxProcess = Start-Process -FilePath $SboxBin `
         -ArgumentList @("run", "-c", $SboxConfigPath) `
         -PassThru -NoNewWindow `
         -RedirectStandardOutput (Join-Path $LogsDir "sing-box-stdout.log") `
         -RedirectStandardError (Join-Path $LogsDir "sing-box-stderr.log")
-    Wait-ForTcp "127.0.0.1" $SboxInboundPort "sing-box"
+    if ($OutboundType -in @("hysteria2", "tuic", "wireguard")) {
+        Wait-ForDatagramServer -Process $SboxProcess -Label "sing-box"
+    } else {
+        Wait-ForTcp "127.0.0.1" $SboxInboundPort "sing-box"
+    }
 
     # ---- Start RustBox ----
     $eventsPath = (Join-Path $LogsDir "rustbox-events.log").Replace("\", "/")
@@ -546,9 +759,9 @@ try {
     Wait-ForTcp "127.0.0.1" $RustboxHttpPort "rustbox"
 
     # ---- Curl ----
-    # AnyTLS gets three sequential requests so the test exercises stream-ID
-    # progression and session reuse, not only the initial sid=1 stream.
-    $requestCount = if ($OutboundType -eq "anytls") { 3 } else { 1 }
+    # Session-oriented protocols get three sequential requests so the test
+    # exercises reuse/multiplexing rather than only the initial stream.
+    $requestCount = if ($OutboundType -in @("anytls", "hysteria2", "tuic", "naive")) { 3 } else { 1 }
     for ($request = 1; $request -le $requestCount; $request++) {
         Write-CiLog "curling ${request}/${requestCount}: curl -> rustbox -> $OutboundType -> sing-box -> target"
         $bodyFile = Join-Path $LogsDir "curl-body-$request.log"

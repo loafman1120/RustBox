@@ -194,6 +194,11 @@ jobs:
           - vmess
           - vless
           - trojan
+          - hysteria2
+          - tuic
+          - naive
+          - shadowtls
+          - wireguard
     steps:
       - uses: actions/checkout@v7
       - name: Download binary
@@ -216,7 +221,7 @@ jobs:
         env:
           SING_BOX_CACHE_DIR: ${{ runner.temp }}/rustbox-ci-sing-box
           RUSTBOX_SBOX_OUTBOUND: ${{ matrix.outbound }}
-          RUSTBOX_E2E_UDP: ${{ matrix.outbound == 'http' && '0' || '1' }}
+          RUSTBOX_E2E_UDP: ${{ contains(fromJSON('["http", "naive", "shadowtls"]'), matrix.outbound) && '0' || '1' }}
           RUSTBOX_CI_DUMP_LOGS: ${{ runner.debug == '1' && '1' || '0' }}
         run: ./scripts/test/outbound.ps1
 
