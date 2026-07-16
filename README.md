@@ -2,6 +2,41 @@
 
 Modular proxy engine in Rust, built on Tokio.
 
+## Architecture
+
+The repository is organized around one composition root and one async runtime:
+
+```text
+apps (CLI / Flutter)
+    -> rustbox lifecycle and composition
+        -> control + protocol modules + platform adapters
+            -> kernel host ports
+                -> foundation types and Tokio I/O contracts
+```
+
+Tokio is the only production executor. Accept and session tasks are owned by
+generation-scoped `TaskScope`s (`CancellationToken` + `TaskTracker`), so reload
+can stop accepting new flows while existing sessions drain for a bounded time.
+The project does not expose a synchronous runtime facade or create a second
+runtime for Flutter.
+
+Dynamic allocation is kept at heterogeneous runtime boundaries: `Service`,
+`Outbound`, byte/datagram I/O, observability sinks, and operating-system
+capability providers. Routing and protocol inspection use concrete types where
+runtime substitution is unnecessary. The workspace forbids handwritten
+`unsafe` Rust; the Flutter bridge's generated native export is the only FFI
+boundary.
+
+Known cleanup work is deliberately narrower than a redesign: choose one
+workspace-wide rustls crypto provider, remove or adopt the currently unused
+`rustbox-transport` prototype, replace the SOCKS5 UDP association's hand-managed
+waker, bring the VMess framing task under structured task ownership, and split
+the largest SOCKS5/config/control modules without adding pass-through crates.
+UDP session limits and idle eviction are not yet implemented. See
+[architecture](docs/architecture.md) and
+[code structure](docs/code-structure.md) for the stable boundaries and current
+roadmap.
+
 ## Website design
 
 `website/` is a dependency-free, static project showcase. It is designed as an
@@ -129,9 +164,30 @@ cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 http-proxy
 cargo run -p rustbox-app -- --control-grpc 0.0.0.0:19090 --control-token secret http-proxy
 ```
 
+The API can inspect outbound groups and switch a `selector` without reloading:
+
+```powershell
+grpcurl -plaintext -import-path crates/control/rustbox-control-api/proto `
+  -proto started_service.proto 127.0.0.1:19090 `
+  daemon.StartedService/SubscribeGroups
+
+grpcurl -plaintext -import-path crates/control/rustbox-control-api/proto `
+  -proto started_service.proto `
+  -d '{"groupTag":"select","outboundTag":"ss-out"}' `
+  127.0.0.1:19090 daemon.StartedService/SelectOutbound
+```
+
+Add `-H 'authorization: Bearer secret'` when a control token is configured.
+The outbound-group API uses sing-box's `daemon.StartedService` wire contract;
+`SubscribeGroups` stays open and publishes the initial state and later changes.
+Only `selector` groups are manually selectable; `urltest` groups are reported
+but remain read-only until active latency probing is implemented. See the
+[sing-box behavior investigation](docs/sing-box-outbound-selection.md).
+
 ## Config
 
-See `examples/rustbox.toml`. Inbound types: `http-connect`, `socks5`, `mixed`.
+See `examples/rustbox.toml`. Inbound types: `http-connect`, `socks5`, `mixed`,
+`tun`, `transparent`, `anytls`.
 
 The configuration frontend uses Figment and Serde for typed TOML loading,
 Garde for field-local validation, and Miette-compatible diagnostics. Existing
@@ -140,11 +196,18 @@ need environment overrides can use `ConfigLoader::with_env_prefix("RUSTBOX_")`;
 nested keys are separated with `__` (for example,
 `RUSTBOX_OBSERVABILITY__LEVEL=debug`). Cross-reference and protocol checks are
 performed later by `rustbox-config`, after the document has been normalized.
-Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `anytls`.
+Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `vmess`,
+`vless`, `trojan`, `anytls`, `selector`, `urltest`.
 
 The `anytls` outbound uses the pinned, protocol-compatible `anytls 0.2.3`
 client and is continuously tested against a sing-box AnyTLS server. See the
 [architecture](docs/architecture.md#anytls).
+
+The DNS subsystem supports rule-based UDP, TCP, DoT, DoH, and DoQ upstreams,
+one bounded cache, FakeIP allocation, and TTL-based reverse domain recovery for
+later routing. Upstream transports currently dial directly; DNS hijack targets
+can be applied to TUN configuration, but a local port-53 responder is not yet
+implemented. See [DNS transports](docs/dns-transports.md).
 
 ## Verify
 

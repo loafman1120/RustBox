@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package daemon;
+option go_package = "github.com/sagernet/sing-box/daemon";
+
+import "google/protobuf/empty.proto";
+
+// The outbound-group surface is copied from sing-box daemon/started_service.proto.
+service StartedService {
+  rpc SubscribeGroups(google.protobuf.Empty) returns(stream Groups) {}
+  rpc SelectOutbound(SelectOutboundRequest) returns (google.protobuf.Empty) {}
+}
+
+message Groups {
+  repeated Group group = 1;
+}
+
+message Group {
+  string tag = 1;
+  string type = 2;
+  bool selectable = 3;
+  string selected = 4;
+  bool isExpand = 5;
+  repeated GroupItem items = 6;
+}
+
+message GroupItem {
+  string tag = 1;
+  string type = 2;
+  int64 urlTestTime = 3;
+  int32 urlTestDelay = 4;
+}
+
+message SelectOutboundRequest {
+  string groupTag = 1;
+  string outboundTag = 2;
+}

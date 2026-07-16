@@ -1,5 +1,11 @@
-use crate::{ComposeError, routing::route_table};
+use crate::{
+    ComposeError,
+    routing::{RuntimeRouter, route_table},
+};
 use rustbox_config::{CompiledConfig, CompiledOutboundKind, ConfigError};
+use rustbox_control::OutboundGroupRegistry;
+use rustbox_dns_core::ReverseDns;
+use rustbox_inspect::{ProtocolSniffer, SniffConfig};
 use rustbox_kernel::Engine;
 use rustbox_kernel::{ObservabilitySink, TokioNetworkProvider};
 use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
@@ -16,9 +22,16 @@ pub(crate) fn compose_engine(
     compiled: &CompiledConfig,
     host: &Arc<TokioNetworkProvider>,
     observability: &Arc<dyn ObservabilitySink>,
-) -> Result<Arc<Engine>, ComposeError> {
-    let router = route_table(compiled);
-    let mut builder = Engine::builder(Box::new(router)).observability(observability.clone());
+    reverse_dns: Option<Arc<ReverseDns>>,
+) -> Result<(Arc<Engine<ProtocolSniffer>>, Arc<OutboundGroupRegistry>), ComposeError> {
+    let groups = Arc::new(OutboundGroupRegistry::from_compiled(compiled));
+    let router = RuntimeRouter::new(route_table(compiled), groups.clone());
+    let sniffer = reverse_dns.map_or_else(ProtocolSniffer::default, |reverse| {
+        ProtocolSniffer::with_reverse_dns(SniffConfig::default(), reverse)
+    });
+    let mut builder = Engine::builder(Box::new(router))
+        .observability(observability.clone())
+        .with_enricher(sniffer);
 
     for outbound in &compiled.outbounds {
         match &outbound.kind {
@@ -192,5 +205,5 @@ pub(crate) fn compose_engine(
     }
 
     let engine = Arc::new(builder.build().map_err(ComposeError::Engine)?);
-    Ok(engine)
+    Ok((engine, groups))
 }

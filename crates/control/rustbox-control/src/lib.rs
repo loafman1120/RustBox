@@ -2,6 +2,10 @@
 //!
 //! 控制面通过命令、快照和 reload plan 观察或调整引擎，不直接持有内核可变引用。
 
+mod outbound_groups;
+
+pub use outbound_groups::*;
+
 use rustbox_config::CompiledConfig;
 use rustbox_route::RouteTable;
 use rustbox_types::OutboundId;

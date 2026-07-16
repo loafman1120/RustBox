@@ -19,7 +19,8 @@ mod tests {
     use super::*;
     use rustbox_config::{
         DnsRuleAction, DnsServerProtocol, InboundConfigKind, LogicalModeConfig, OutboundConfigKind,
-        RouteActionConfig, RouteMode, RouteRuleConfig, TransparentNetwork, TunDnsMode,
+        RouteActionConfig, RouteMatcherConfig, RouteMode, RouteRuleConfig, TransparentNetwork,
+        TunDnsMode,
     };
     use rustbox_observability::{LevelFilter, ObservabilityOutput};
     use rustbox_types::Endpoint;
@@ -330,6 +331,7 @@ rules = [
 type = "rule"
 inbound = ["http"]
 network = ["tcp"]
+protocol = ["tls", "quic"]
 domain_suffix = ["example.test"]
 ip_cidr = ["10.0.0.0/8"]
 port = [443]
@@ -355,8 +357,10 @@ rules = [
             &config.source.routes[0],
             RouteRuleConfig::Rule {
                 action: RouteActionConfig::Outbound(outbound),
+                matcher: RouteMatcherConfig::Conditions(conditions),
                 ..
             } if outbound == "block"
+                && conditions.protocol == vec![rustbox_types::ProtocolHint::Tls, rustbox_types::ProtocolHint::Quic]
         ));
         assert!(matches!(
             &config.source.routes[1],

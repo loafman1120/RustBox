@@ -125,11 +125,19 @@ inbound  ─►  Flow { meta, payload }  ─►  Engine.submit
 
 `Flow` 的载荷形态只分两种：`Stream`（TCP）与 `Datagram`（UDP），由 `FlowPayload` 显式二分以避免把 UDP 伪装成 TCP。`Engine` 既是 `FlowSink` 又持有 `outbounds: HashMap<OutboundId, Box<dyn Outbound>>`；路由返回 `Forward(id) | Reject(reason) | Hijack(service)` 三种决策。
 
-UDP 路径目前**没有独立会话表**：`Engine` 收到 `FlowPayload::Datagram` 后直接调用 `outbound.open_datagram(ctx, target)`，再交给 `relay_datagram(inbound, outbound)` 双向转发。中心化的 session registry、容量上限、空闲超时与淘汰策略属于未来工作（见下文 TODO #1、#5）。
+UDP 路径目前**没有独立会话表**：`Engine` 收到 `FlowPayload::Datagram` 后直接调用 `outbound.open_datagram(ctx, target)`，再交给 `relay_datagram(inbound, outbound)` 双向转发。SOCKS5 UDP ASSOCIATE 的初始目标为 unspecified，内核会先读取并重放首包，以真实包目标更新 `FlowMeta.destination` 后再执行 inspection、路由和 outbound 握手。中心化的 session registry、容量上限、空闲超时与淘汰策略属于未来工作（见下文 TODO #1、#5）。
 
-`rustbox-inspect` 当前只提供两个静态 enricher：`StaticDomainEnricher`、`StaticProtocolHintEnricher`，用于固定策略与测试。bounded prefix 重放、TLS SNI / HTTP Host 嗅探、process / DNS enricher 同样落在 TODO #3。
+`rustbox-inspect` 在每个 flow 路由前执行有界嗅探：TCP 最多读取 16 KiB，UDP 最多读取 4 个、合计 16 KiB 的数据报，统一受 300 ms deadline 约束；已读数据通过 `ReplayStream` / 数据报队列原样重放。TLS ClientHello SNI 由 `rustls::server::Acceptor` 解析，HTTP/1 Host 由 `httparse` 解析，DNS wire message 由 `hickory-proto` 解析，QUIC v1 Initial 的解密、CRYPTO 重组与 SNI 提取由 `clienthello` 负责。静态 enricher 仅保留给固定策略与测试。
 
-`router` 返回逻辑 outbound ID；编译层把 `selector` / `urltest` 折叠为 `default`（或首个 child）的静态 `RouteDecision`，**不在运行时切换**。循环检测、URLTest 健康检查、child 选择记录属于 TODO #4。
+DNS 查询被识别后，反向 relay 会观察同一 transaction ID 的 A / AAAA 响应，并把 `IP → 查询域名` 按 DNS TTL 写入每代运行图内的 4096 项有界表；主动 resolver 的回答也写入同一张表。后续以该 IP 为目标的 flow 在路由前恢复 `FlowMeta.domain`，但不改写原始目标 IP。反向表下沉在 `rustbox-dns-core`，由 DNS subsystem 与 inspection 共享。Engine 通过 `Engine<ProtocolSniffer>` 持有单个具体异步 stage，enrichment 不再使用 `BoxFuture`、trait object 或动态列表。当前 QUIC 解析仅覆盖 v1，不覆盖 QUIC v2；ECH、系统 DNS 缓存或绕过 RustBox 的 DNS 请求也无法提供可恢复域名。
+
+`rustbox-dns-core` 已拆分为 `model / transport / resolver / cache / fake_ip / reverse / subsystem`。`HickoryTransport` 使用 Tokio connection provider，把 UDP、TCP、DoT、DoH、DoQ 映射到 Hickory 的 `Udp / Tcp / Tls / Https / Quic`，不在项目内手写五套 wire、TLS、HTTP/2 或 QUIC 实现。运行时构图会从编译配置实例化 rules → transport、FakeIP、cache 和 reverse recording 链，嵌入方可通过 `RustBox::resolve_dns` 使用。Hickory 自带缓存被关闭，由 RustBox cache 统一 TTL 策略。
+
+加密 DNS 当前要求 endpoint 使用域名，以便同时提供 TLS server name；上游 endpoint 的 bootstrap 使用系统解析。transport 目前只允许 direct（显式指定 direct 可用），非 direct outbound 在 composition 阶段报错，不能静默绕过代理。`dns.hijack` 目标已经参与 TUN 平台配置，但把捕获到的 TCP/UDP 53 flow 终结到本地 DNS responder 仍是下一阶段，不能与“上游 transport 已接入”混为一谈。
+
+路由条件可通过 `protocol = ["http", "tls", "quic", "dns", "socks5"]` 消费 `FlowMeta.protocol_hint`；它与 inbound、network、domain、port 等其它字段保持 AND 语义。域名条件优先读取嗅探或 DNS 恢复出的 `FlowMeta.domain`，同时保留原始目标 IP 供 CIDR 条件匹配。
+
+`router` 返回逻辑 outbound ID；普通 outbound 直接进入数据面，组 ID 则由 `OutboundGroupRegistry` 在每个新 flow 路由时解析成当前 child。`selector` 可通过控制 gRPC 查询和切换，切换后新连接立即生效，既有连接保持原 outbound；`urltest` 当前只暴露只读组状态并使用首个 child。组引用组在配置校验阶段被拒绝，因此运行时不存在递归选择环。URLTest 健康检查与选择持久化仍属于 TODO #4。
 
 ## 平台边界
 
@@ -141,7 +149,7 @@ TUN 路径为 `PacketDevice → packet-to-flow stack → dispatcher`；透明代
 
 kernel / modules 产生结构化事件，协议与应用诊断统一使用 `tracing`；应用入口安装 `tracing-subscriber`，并通过 `RUSTBOX_LOG` 配置过滤。sink 继续负责业务事件的 console、file、recording、平台日志或远程导出。慢 sink 在自身内部缓冲，不能向 relay 施加背压。
 
-`ObservabilityStore` 提供有界事件、指标和连接快照；`rustbox-control-api` 暴露基于 tonic 的 gRPC，命令集包括 `Reload` / `Stop` / `ReplaceRouteTable` / `EnableOutbound` / `DisableOutbound`，并支持 `Snapshot` / `QueryEvents` / `QueryMetrics` / `QueryConnections` 等只读接口。非 loopback 控制端点必须启用 token，凭证不得进入事件。
+`ObservabilityStore` 提供有界事件、指标和连接快照；`rustbox-control-api` 暴露基于 tonic 的 gRPC。RustBox 自有服务提供 `Stop` 以及引擎、事件、指标和连接快照查询；出站组控制直接采用 sing-box 的 `daemon.StartedService/SubscribeGroups` 与 `SelectOutbound` wire contract。内部控制模型还保留 reload/route/outbound 命令类型供组合层演进。非 loopback 控制端点必须启用 token，凭证不得进入事件。
 
 控制平面目前**不持久化每条活跃连接的句柄**：会话元数据通过事件流与可查询快照暴露，原子 byte / packet / drop 计数由 `Engine` 在 `TrafficRecorded` 事件中发出，主动取消一条具体 session 的能力属于 TODO #5。
 
@@ -149,24 +157,24 @@ kernel / modules 产生结构化事件，协议与应用诊断统一使用 `trac
 
 inbound：`http-connect` / `socks5` / `mixed` / `tun` / `transparent` / `anytls`。
 
-outbound：`direct` / `block`（编译为 `Reject` 决策）/ `socks5` / `http` / `shadowsocks` / `vmess`（AEAD only，`alter_id` 必须为 0，仅 `tcp` transport） / `vless`（plain，禁用 Vision `flow`） / `trojan`（必须 TLS） / `anytls` ；`selector` / `urltest` 解析并编译，运行时按 `default`（或首个 child）静态选择。
+outbound：`direct` / `block`（编译为 `Reject` 决策）/ `socks5` / `http` / `shadowsocks` / `vmess`（AEAD only，`alter_id` 必须为 0，仅 `tcp` transport，支持原生 UDP） / `vless`（plain，禁用 Vision `flow`，支持原生 UDP length framing） / `trojan`（必须 TLS，支持 UDP ASSOCIATE） / `anytls`；`selector` 支持运行时查询与切换，`urltest` 当前按首个 child 静态选择并以只读组暴露。
 
 横切：SourceConfig 四步 pipeline、CLI / Flutter 共享 `RustBox` 生命周期、gRPC
-控制 API、结构化观测、Linux / Windows / macOS TUN、Linux transparent redirect。
+控制 API、结构化观测、TLS SNI / HTTP Host / QUIC v1 / DNS 嗅探与 TTL 域名恢复、Linux / Windows / macOS TUN、Linux transparent redirect。
 配置型 `block` 决策也在 runtime graph 中生效。
 
 ## 近期工作
 
 1. session limits：为 TCP/UDP flow 增加统一并发容量、空闲超时与淘汰策略。
-2. UDP：按真实目标路由、限制并发、记录元数据。
-3. inspection + DNS：bounded payload 重放、SNI / Host 提取、独立 resolver；接入 `ProcessLookup`。
-4. runtime outbound graph：selector 切换、URLTest 健康检查、child 选择记录、循环检测。
+2. UDP：限制并发、增加空闲超时并记录更完整的会话元数据。
+3. inspection + DNS：增加 QUIC v2、ECH 可观测诊断、嗅探配置/route action；实现 DNS hijack responder、非 direct socket injection 与 `ProcessLookup`。
+4. runtime outbound graph：URLTest 健康检查、选择持久化、切换事件与可选的既有连接中断。
 5. session control：活跃连接句柄、取消命令、UDP 指标。
 6. 性能基线：测量吞吐、延迟、RSS 与分配后再优化。
 
 ## AnyTLS
 
-AnyTLS 客户端固定使用协议兼容的 `anytls 0.2.3`（MIT），保留可注入 `NetworkProvider` 的拨号边界，并以 sing-box 1.13.14 做真实端到端验证。当前覆盖 TLS / 密码认证、标准帧、递增 stream ID、session 池、TCP 代理及 UDP-over-TCP v2。CI 中 AnyTLS 走连续三次请求的 E2E，其它协议（vmess / vless / trojan / shadowsocks / http / socks5）各跑一次；任何升级都必须继续通过模块测试、E2E 与资源泄漏检查。
+AnyTLS 客户端固定使用协议兼容的 `anytls 0.2.3`（MIT），保留可注入 `NetworkProvider` 的拨号边界，并以 sing-box 1.13.14 做真实端到端验证。当前覆盖 TLS / 密码认证、标准帧、递增 stream ID、session 池、TCP 代理及 UDP-over-TCP v2。CI 中 AnyTLS 走连续三次 TCP 请求；SOCKS5、Shadowsocks、AnyTLS、VMess、VLESS 与 Trojan 同时验证 TCP 和经 SOCKS5 UDP ASSOCIATE 发起的真实 UDP echo 往返，只有 stream-only HTTP 明确跳过 UDP；任何升级都必须继续通过模块测试、E2E 与资源泄漏检查。
 
 ## 不变量
 

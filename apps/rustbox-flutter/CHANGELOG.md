@@ -1,3 +1,9 @@
+## 0.1.2
+
+- Documented the complete public Dart API, including lifecycle operations,
+  snapshots, engine states, and stable exception categories.
+- Updated package documentation to reference the current release.
+
 ## 0.1.1
 
 - Removed unsupported macOS plugin packaging.

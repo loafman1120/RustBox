@@ -1,6 +1,9 @@
 use super::{compose_engine, compose_inbounds};
 use crate::{ComposeError, runtime::ComposedRuntime};
-use rustbox_config::{CompiledConfig, ConfigCompiler, SourceConfig};
+use rustbox_config::{
+    CompiledConfig, CompiledOutboundKind, ConfigCompiler, ConfigError, SourceConfig,
+};
+use rustbox_dns_core::{DnsConfig, DnsServerConfig, DnsSubsystem};
 use rustbox_kernel::FlowSink;
 use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink, TokioNetworkProvider};
 #[cfg(test)]
@@ -44,11 +47,51 @@ impl RuntimeGraphBuilder {
     }
 
     fn compose(self, compiled: CompiledConfig) -> Result<ComposedRuntime, ComposeError> {
-        let engine = compose_engine(&compiled, &self.host, &self.observability)?;
+        let dns = compose_dns(&compiled)?;
+        let reverse_dns = dns.as_ref().map(DnsSubsystem::reverse_dns);
+        let (engine, outbound_groups) =
+            compose_engine(&compiled, &self.host, &self.observability, reverse_dns)?;
         let sink: Arc<dyn FlowSink> = engine.clone();
         let services = compose_inbounds(compiled.inbounds, &self.host, &self.observability, &sink)?;
-        Ok(ComposedRuntime::new(engine, services))
+        Ok(ComposedRuntime::new(engine, services, outbound_groups, dns))
     }
+}
+
+fn compose_dns(compiled: &CompiledConfig) -> Result<Option<DnsSubsystem>, ComposeError> {
+    let Some(dns) = &compiled.dns else {
+        return Ok(None);
+    };
+    let mut servers = Vec::with_capacity(dns.servers.len());
+    for server in &dns.servers {
+        if let Some(outbound_id) = server.outbound {
+            let direct = compiled.outbounds.iter().any(|outbound| {
+                outbound.id == outbound_id && matches!(outbound.kind, CompiledOutboundKind::Direct)
+            });
+            if !direct {
+                return Err(ComposeError::Config(ConfigError::new(format!(
+                    "DNS server `{}` uses a non-direct outbound; transport socket injection is not available yet",
+                    server.id
+                ))));
+            }
+        }
+        servers.push(DnsServerConfig {
+            id: server.id.clone(),
+            protocol: server.protocol,
+            endpoint: server.endpoint.clone(),
+            outbound: None,
+        });
+    }
+    let config = DnsConfig {
+        servers,
+        rules: dns.rules.clone(),
+        final_server: Some(dns.final_server.clone()),
+        cache: dns.cache.clone(),
+        fake_ip: dns.fake_ip.clone(),
+        hijack: dns.hijack.clone(),
+    };
+    DnsSubsystem::from_config(config)
+        .map(Some)
+        .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))
 }
 
 impl Default for RuntimeGraphBuilder {

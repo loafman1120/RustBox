@@ -68,7 +68,7 @@ switch ($Platform) {
         if ($LASTEXITCODE -ne 0) { throw "cargo-ndk Android build failed" }
     }
     "ios" {
-        # Keep C/C++ dependencies (notably aws-lc and ring) on the same minimum
+        # Keep C/C++ dependencies (notably aws-lc) on the same minimum
         # deployment target as the podspec. Without this, newer Xcode SDKs can
         # emit objects targeting the SDK version while rustc links for iOS 10.
         $env:IPHONEOS_DEPLOYMENT_TARGET = "13.0"

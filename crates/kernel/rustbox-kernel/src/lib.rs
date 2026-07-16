@@ -12,7 +12,7 @@ use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind};
 use rustbox_route::Router;
 use rustbox_types::{Endpoint, FlowId, FlowMeta, Network, OutboundId, RejectReason, RouteDecision};
 use std::collections::HashMap;
-use std::future::poll_fn;
+use std::future::{Future, poll_fn};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
@@ -74,54 +74,47 @@ pub struct OutboundContext<'a> {
     pub flow: &'a FlowMeta,
 }
 
-/// 元数据增强阶段在路由前运行，用于补充域名、协议提示、进程信息等。
+/// Flow 增强阶段在路由前运行，可观察并原样重放载荷前缀，同时补充元数据。
 pub trait MetadataEnricher: Send + Sync {
     fn name(&self) -> &'static str;
 
-    fn enrich(&self, meta: FlowMeta) -> BoxFuture<'_, Result<FlowMeta, InspectError>>;
+    fn enrich(&self, flow: Flow) -> impl Future<Output = Result<Flow, InspectError>> + Send;
 }
 
-/// 按注册顺序执行的元数据增强流水线。
-#[derive(Clone, Default)]
-pub struct EnrichmentPipeline {
-    enrichers: Vec<Arc<dyn MetadataEnricher>>,
-}
+/// No-op stage used when a runtime does not install inspection.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopEnricher;
 
-impl EnrichmentPipeline {
-    pub fn new() -> Self {
-        Self::default()
+impl MetadataEnricher for NoopEnricher {
+    fn name(&self) -> &'static str {
+        "noop"
     }
 
-    pub fn push(&mut self, enricher: Arc<dyn MetadataEnricher>) {
-        self.enrichers.push(enricher);
-    }
-
-    pub async fn enrich(&self, mut meta: FlowMeta) -> Result<FlowMeta, InspectError> {
-        for enricher in &self.enrichers {
-            meta = enricher.enrich(meta).await?;
-        }
-        Ok(meta)
+    async fn enrich(&self, flow: Flow) -> Result<Flow, InspectError> {
+        Ok(flow)
     }
 }
 
 /// RustBox 的可移植执行核心，持有路由器、增强器、出站集合和观测端口。
-pub struct Engine {
+pub struct Engine<E = NoopEnricher> {
     router: Box<dyn Router>,
-    enrichment: EnrichmentPipeline,
+    enrichment: E,
     outbounds: HashMap<OutboundId, Box<dyn Outbound>>,
     observability: Arc<dyn ObservabilitySink>,
 }
 
-impl Engine {
-    pub fn builder(router: Box<dyn Router>) -> EngineBuilder {
+impl Engine<NoopEnricher> {
+    pub fn builder(router: Box<dyn Router>) -> EngineBuilder<NoopEnricher> {
         EngineBuilder {
             router,
-            enrichment: EnrichmentPipeline::new(),
+            enrichment: NoopEnricher,
             outbounds: HashMap::new(),
             observability: Arc::new(NoopObservabilitySink),
         }
     }
+}
 
+impl<E: MetadataEnricher> Engine<E> {
     pub fn route(&self, meta: &FlowMeta) -> RouteDecision {
         self.router.route(meta)
     }
@@ -189,11 +182,13 @@ impl Engine {
         )
         .await;
 
-        let meta = self
+        let flow = resolve_datagram_destination(flow).await?;
+        let flow = self
             .enrichment
-            .enrich(flow.meta)
+            .enrich(flow)
             .await
             .map_err(FlowError::Inspect)?;
+        let meta = flow.meta;
         let decision = self.router.route(&meta);
         self.emit(
             EventLevel::Debug,
@@ -263,29 +258,109 @@ impl Engine {
     }
 }
 
-impl FlowSink for Engine {
+/// SOCKS5 UDP ASSOCIATE starts with an unspecified destination; the actual
+/// destination is carried by its first packet. Resolve it before inspection,
+/// routing, and outbound creation, then replay that packet into the relay.
+async fn resolve_datagram_destination(mut flow: Flow) -> Result<Flow, FlowError> {
+    if !endpoint_is_unspecified(&flow.meta.destination) {
+        return Ok(flow);
+    }
+    let FlowPayload::Datagram(mut socket) = flow.payload else {
+        return Ok(flow);
+    };
+    let mut payload = vec![0_u8; 65_535];
+    let (length, target) = poll_fn(|cx| Pin::new(&mut *socket).poll_recv_from(cx, &mut payload))
+        .await
+        .map_err(|error| FlowError::Relay(RelayError::new(error.message)))?;
+    payload.truncate(length);
+    flow.meta.destination = target.clone();
+    flow.payload = FlowPayload::Datagram(Box::new(ReplayDatagram {
+        inner: socket,
+        first: Some((payload, target)),
+    }));
+    Ok(flow)
+}
+
+fn endpoint_is_unspecified(endpoint: &Endpoint) -> bool {
+    if endpoint.port != 0 {
+        return false;
+    }
+    match &endpoint.host {
+        rustbox_types::Host::Ip(rustbox_types::IpAddress::V4(octets)) => {
+            octets.iter().all(|byte| *byte == 0)
+        }
+        rustbox_types::Host::Ip(rustbox_types::IpAddress::V6(octets)) => {
+            octets.iter().all(|byte| *byte == 0)
+        }
+        rustbox_types::Host::Domain(_) => false,
+    }
+}
+
+struct ReplayDatagram {
+    inner: Box<dyn DatagramSocket>,
+    first: Option<(Vec<u8>, Endpoint)>,
+}
+
+impl DatagramSocket for ReplayDatagram {
+    fn local_endpoint(&self) -> Option<Endpoint> {
+        self.inner.local_endpoint()
+    }
+
+    fn poll_recv_from(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut [u8],
+    ) -> Poll<Result<(usize, Endpoint), rustbox_io::IoError>> {
+        if let Some((payload, source)) = self.first.take() {
+            if payload.len() > output.len() {
+                return Poll::Ready(Err(rustbox_io::IoError::new(
+                    IoErrorKind::InvalidInput,
+                    "replayed UDP payload exceeds receive buffer",
+                )));
+            }
+            output[..payload.len()].copy_from_slice(&payload);
+            return Poll::Ready(Ok((payload.len(), source)));
+        }
+        Pin::new(&mut *self.inner).poll_recv_from(cx, output)
+    }
+
+    fn poll_send_to(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        payload: &[u8],
+        target: &Endpoint,
+    ) -> Poll<Result<usize, rustbox_io::IoError>> {
+        Pin::new(&mut *self.inner).poll_send_to(cx, payload, target)
+    }
+}
+
+impl<E: MetadataEnricher> FlowSink for Engine<E> {
     fn submit(&self, flow: Flow) -> BoxFuture<'_, Result<FlowOutcome, FlowError>> {
         Box::pin(self.execute_flow(flow))
     }
 }
 
 /// 构造期专用 builder，用显式依赖注入替代全局上下文。
-pub struct EngineBuilder {
+pub struct EngineBuilder<E = NoopEnricher> {
     router: Box<dyn Router>,
-    enrichment: EnrichmentPipeline,
+    enrichment: E,
     outbounds: HashMap<OutboundId, Box<dyn Outbound>>,
     observability: Arc<dyn ObservabilitySink>,
 }
 
-impl EngineBuilder {
+impl<E> EngineBuilder<E> {
     pub fn observability(mut self, observability: Arc<dyn ObservabilitySink>) -> Self {
         self.observability = observability;
         self
     }
 
-    pub fn register_enricher(mut self, enricher: Arc<dyn MetadataEnricher>) -> Self {
-        self.enrichment.push(enricher);
-        self
+    pub fn with_enricher<N: MetadataEnricher>(self, enrichment: N) -> EngineBuilder<N> {
+        EngineBuilder {
+            router: self.router,
+            enrichment,
+            outbounds: self.outbounds,
+            observability: self.observability,
+        }
     }
 
     pub fn register_outbound(mut self, outbound: Box<dyn Outbound>) -> Result<Self, EngineError> {
@@ -297,7 +372,7 @@ impl EngineBuilder {
         Ok(self)
     }
 
-    pub fn build(self) -> Result<Engine, EngineError> {
+    pub fn build(self) -> Result<Engine<E>, EngineError> {
         Ok(Engine {
             router: self.router,
             enrichment: self.enrichment,
@@ -576,6 +651,35 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn resolves_and_replays_unspecified_udp_destination() {
+        let outbound_id = OutboundId::new(NonZeroU64::new(7).expect("non-zero id"));
+        let target = Endpoint::localhost_v4(53);
+        let mut meta = flow_meta(outbound_id);
+        meta.network = Network::Udp;
+        meta.destination = Endpoint::new(Host::Ip(rustbox_types::IpAddress::V4([0; 4])), 0);
+        let flow = resolve_datagram_destination(Flow {
+            meta,
+            payload: FlowPayload::Datagram(Box::new(OneDatagram {
+                packet: Some((b"dns".to_vec(), target.clone())),
+            })),
+        })
+        .await
+        .expect("resolve destination");
+
+        assert_eq!(flow.meta.destination, target);
+        let FlowPayload::Datagram(mut socket) = flow.payload else {
+            panic!("expected datagram payload");
+        };
+        let mut output = [0_u8; 8];
+        let (length, replayed_target) =
+            poll_fn(|cx| Pin::new(&mut *socket).poll_recv_from(cx, &mut output))
+                .await
+                .expect("read replayed datagram");
+        assert_eq!(replayed_target, target);
+        assert_eq!(&output[..length], b"dns");
+    }
+
     fn flow_meta(outbound_id: OutboundId) -> FlowMeta {
         FlowMeta {
             id: FlowId::new(NonZeroU64::new(1).expect("non-zero id")),
@@ -590,6 +694,33 @@ mod tests {
 
     struct FakeOutbound {
         id: OutboundId,
+    }
+
+    struct OneDatagram {
+        packet: Option<(Vec<u8>, Endpoint)>,
+    }
+
+    impl DatagramSocket for OneDatagram {
+        fn poll_recv_from(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            output: &mut [u8],
+        ) -> Poll<Result<(usize, Endpoint), rustbox_io::IoError>> {
+            let Some((packet, target)) = self.packet.take() else {
+                return Poll::Pending;
+            };
+            output[..packet.len()].copy_from_slice(&packet);
+            Poll::Ready(Ok((packet.len(), target)))
+        }
+
+        fn poll_send_to(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+            _target: &Endpoint,
+        ) -> Poll<Result<usize, rustbox_io::IoError>> {
+            Poll::Pending
+        }
     }
 
     impl Outbound for FakeOutbound {

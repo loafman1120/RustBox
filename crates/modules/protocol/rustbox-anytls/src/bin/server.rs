@@ -174,7 +174,11 @@ fn create_tls_config(sni: Option<&str>, cert_path: Option<&Path>, key_path: Opti
         let cert_chain: Vec<rustls::pki_types::CertificateDer<'static>> = certs.into_iter().collect();
         let key = key_der;
 
-        let config = ServerConfig::builder().with_no_client_auth().with_single_cert(cert_chain, key)?;
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, key)?;
 
         return Ok(Arc::new(config));
     }

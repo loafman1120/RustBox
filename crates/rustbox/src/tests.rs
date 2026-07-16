@@ -1,12 +1,16 @@
 use super::*;
 use rustbox_config::{
-    ConfigError, InboundConfig, InboundConfigKind, OutboundConfig, OutboundConfigKind,
-    RouteRuleConfig, SourceConfig,
+    ConfigError, DnsCacheConfig, DnsConfig, DnsRuleConfig, DnsRuleMatcher, DnsServerConfig,
+    DnsServerProtocol, FakeIpConfig, InboundConfig, InboundConfigKind, OutboundConfig,
+    OutboundConfigKind, RouteRuleConfig, SourceConfig,
 };
 use rustbox_control::EngineState;
 use rustbox_control_api::ControlApiConfig;
+use rustbox_control_api::daemon::{
+    SelectOutboundRequest, started_service_client::StartedServiceClient,
+};
 use rustbox_observability::ObservabilityStore;
-use rustbox_types::Endpoint;
+use rustbox_types::{Endpoint, Host, IpAddress, IpCidr};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -35,6 +39,45 @@ fn composes_default_http_proxy_runtime_graph() {
 
     assert_eq!(runtime.outbound_count(), 1);
     assert_eq!(runtime.service_count(), 1);
+}
+
+#[tokio::test]
+async fn composes_dns_rules_cache_fake_ip_and_resolver_api() {
+    let mut source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
+    source.dns = Some(DnsConfig {
+        servers: vec![DnsServerConfig {
+            id: "local".to_string(),
+            protocol: DnsServerProtocol::Udp,
+            endpoint: Endpoint::localhost_v4(53),
+            outbound: Some("direct".to_string()),
+        }],
+        rules: vec![DnsRuleConfig::FakeIp {
+            matcher: DnsRuleMatcher {
+                domain_suffixes: vec!["example.test".to_string()],
+                ..DnsRuleMatcher::default()
+            },
+        }],
+        final_server: Some("local".to_string()),
+        cache: DnsCacheConfig::default(),
+        fake_ip: Some(FakeIpConfig {
+            enabled: true,
+            ipv4_pool: IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 24).expect("pool"),
+            ttl_seconds: 60,
+        }),
+        hijack: Vec::new(),
+    });
+    let runtime = RustBox::new(source).expect("compose DNS");
+    let response = runtime
+        .resolve_dns(DnsQuery {
+            name: DnsName::new("www.example.test").expect("name"),
+            record_type: DnsRecordType::A,
+        })
+        .await
+        .expect("resolve");
+    assert!(matches!(
+        response.answers[0].host,
+        Host::Ip(IpAddress::V4(_))
+    ));
 }
 
 #[test]
@@ -116,6 +159,73 @@ async fn rolls_back_runtime_when_control_grpc_cannot_bind() {
         ComposeError::Control(message) if message.contains("failed to bind")
     ));
     assert_eq!(runtime.snapshot().state, EngineState::Failed);
+}
+
+#[tokio::test]
+async fn control_grpc_lists_and_switches_selector_outbound() {
+    let source = SourceConfig {
+        inbounds: vec![inbound_http("http")],
+        outbounds: vec![
+            outbound_direct("direct-a"),
+            outbound_direct("direct-b"),
+            OutboundConfig {
+                id: "select".to_string(),
+                kind: OutboundConfigKind::Selector {
+                    outbounds: vec!["direct-a".to_string(), "direct-b".to_string()],
+                    default: Some("direct-a".to_string()),
+                },
+            },
+        ],
+        dns: None,
+        route_rule_sets: Vec::new(),
+        routes: vec![RouteRuleConfig::Default {
+            outbound: "select".to_string(),
+        }],
+    };
+    let options = RustBoxOptions::default().with_control_grpc(
+        ControlApiConfig {
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            ..ControlApiConfig::default()
+        },
+        Arc::new(ObservabilityStore::default()),
+    );
+    let mut runtime = RustBox::with_options(source, options).expect("compose selector runtime");
+    runtime.start().await.expect("start selector runtime");
+    let address = runtime.control_grpc_addr().expect("control address");
+    let mut client = StartedServiceClient::connect(format!("http://{address}"))
+        .await
+        .expect("connect control client");
+
+    let mut groups = client
+        .subscribe_groups(())
+        .await
+        .expect("subscribe outbound groups")
+        .into_inner();
+    let initial = groups
+        .message()
+        .await
+        .expect("read initial outbound groups")
+        .expect("initial outbound groups");
+    assert_eq!(initial.group.len(), 1);
+    assert_eq!(initial.group[0].selected, "direct-a");
+
+    client
+        .select_outbound(SelectOutboundRequest {
+            group_tag: "select".to_string(),
+            outbound_tag: "direct-b".to_string(),
+        })
+        .await
+        .expect("switch selector");
+    let updated = groups
+        .message()
+        .await
+        .expect("read updated outbound groups")
+        .expect("updated outbound groups");
+    assert_eq!(updated.group[0].selected, "direct-b");
+    drop(groups);
+    drop(client);
+
+    runtime.stop().await.expect("stop selector runtime");
 }
 
 #[tokio::test]
@@ -231,7 +341,7 @@ fn composes_mixed_inbound_runtime_graph() {
 }
 
 #[test]
-fn composes_selector_as_static_child_route() {
+fn composes_selector_runtime_route() {
     let source = SourceConfig {
         inbounds: vec![inbound_http("http")],
         outbounds: vec![

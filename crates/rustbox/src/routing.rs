@@ -2,10 +2,30 @@ use rustbox_config::{
     CompiledConfig, CompiledRouteConditions, CompiledRouteMatcher, CompiledRouteRule,
     LogicalModeConfig,
 };
+use rustbox_control::OutboundGroupRegistry;
 use rustbox_route::{
-    LogicalMode, RouteConditions, RouteMatcher, RouteRule, RouteRuleSet, RouteTable,
+    LogicalMode, RouteConditions, RouteMatcher, RouteRule, RouteRuleSet, RouteTable, Router,
 };
+use rustbox_types::FlowMeta;
 use rustbox_types::{RejectReason, RouteDecision};
+use std::sync::Arc;
+
+pub(crate) struct RuntimeRouter {
+    table: RouteTable,
+    groups: Arc<OutboundGroupRegistry>,
+}
+
+impl RuntimeRouter {
+    pub(crate) fn new(table: RouteTable, groups: Arc<OutboundGroupRegistry>) -> Self {
+        Self { table, groups }
+    }
+}
+
+impl Router for RuntimeRouter {
+    fn route(&self, flow: &FlowMeta) -> RouteDecision {
+        self.groups.resolve(self.table.route(flow))
+    }
+}
 
 pub(crate) fn route_table(compiled: &CompiledConfig) -> RouteTable {
     let mut table = RouteTable::new();
@@ -55,6 +75,7 @@ fn route_conditions(conditions: &CompiledRouteConditions) -> RouteConditions {
     RouteConditions {
         inbounds: conditions.inbounds.clone(),
         networks: conditions.networks.clone(),
+        protocols: conditions.protocols.clone(),
         domains: conditions.domains.clone(),
         domain_suffixes: conditions.domain_suffixes.clone(),
         domain_keywords: conditions.domain_keywords.clone(),

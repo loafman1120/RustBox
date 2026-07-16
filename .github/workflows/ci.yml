@@ -238,9 +238,6 @@ jobs:
           - trojan
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
       - name: Download binary
         uses: actions/download-artifact@v8
         with:
@@ -261,7 +258,18 @@ jobs:
         env:
           SING_BOX_CACHE_DIR: ${{ runner.temp }}/rustbox-ci-sing-box
           RUSTBOX_SBOX_OUTBOUND: ${{ matrix.outbound }}
+          RUSTBOX_E2E_UDP: ${{ matrix.outbound == 'http' && '0' || '1' }}
+          RUSTBOX_CI_DUMP_LOGS: ${{ runner.debug == '1' && '1' || '0' }}
         run: ./scripts/test/outbound.ps1
+
+      - name: Upload outbound e2e failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-out-${{ matrix.outbound }}-${{ matrix.os }}-logs
+          path: target/ci-singbox-smoke/logs
+          if-no-files-found: warn
+          retention-days: 7
 
   # ── E2E gRPC: external grpcurl against control API ───────────
   e2e-grpc:

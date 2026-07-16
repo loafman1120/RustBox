@@ -30,6 +30,11 @@ $AnyTlsPassword = "test-anytls-password"
 $VmUuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
 $VlUuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
 $TrojanPassword = "test-trojan-password"
+$SupportsUdp = $OutboundType -ne "http"
+$HttpTargetProcess = $null
+$SboxProcess = $null
+$RustboxProcess = $null
+$HadFailure = $false
 
 function Write-CiLog {
     param([string]$Message)
@@ -101,16 +106,6 @@ function Get-Curl {
         if ($cmd) { return $cmd.Source }
     }
     throw "curl not found"
-}
-
-function Get-Python {
-    foreach ($c in @("python", "python3")) {
-        $cmd = Get-Command $c -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $cmd) { continue }
-        & $cmd.Source --version *> $null
-        if ($LASTEXITCODE -eq 0) { return $cmd.Source }
-    }
-    throw "python not found"
 }
 
 function New-TlsCert {
@@ -222,8 +217,8 @@ output = "console-and-file"
 file = "$EventsPath"
 
 [[inbounds]]
-id = "http"
-type = "http-connect"
+id = "mixed"
+type = "mixed"
 listen = "127.0.0.1:$RustboxHttpPort"
 
 "@
@@ -366,6 +361,130 @@ function Wait-ForTcp {
     throw "$Label did not start on ${HostName}:$Port within ${TimeoutSeconds}s"
 }
 
+function Start-HttpTarget {
+    param([int]$Port, [string]$Body, [string]$LogsDir)
+
+    $params = @{
+        FilePath = (Get-Process -Id $PID).Path
+        ArgumentList = @(
+            "-NoLogo", "-NoProfile", "-File", (Join-Path $PSScriptRoot "http_target.ps1"),
+            "-Port", $Port, "-Body", $Body
+        )
+        PassThru = $true
+        RedirectStandardOutput = Join-Path $LogsDir "http-target.log"
+        RedirectStandardError = Join-Path $LogsDir "http-target.err.log"
+    }
+    if ($IsWindows) { $params.WindowStyle = "Hidden" }
+    return Start-Process @params
+}
+
+function Read-Exact {
+    param([System.IO.Stream]$Stream, [int]$Length)
+
+    $result = [byte[]]::new($Length)
+    $offset = 0
+    while ($offset -lt $Length) {
+        $read = $Stream.Read($result, $offset, $Length - $offset)
+        if ($read -eq 0) { throw "SOCKS5 control stream closed" }
+        $offset += $read
+    }
+    return $result
+}
+
+function Read-SocksEndpoint {
+    param([System.IO.Stream]$Stream, [byte]$AddressType)
+
+    switch ($AddressType) {
+        1 { $address = [System.Net.IPAddress]::new((Read-Exact $Stream 4)) }
+        4 { $address = [System.Net.IPAddress]::new((Read-Exact $Stream 16)) }
+        3 {
+            $nameLength = (Read-Exact $Stream 1)[0]
+            $name = [System.Text.Encoding]::ASCII.GetString((Read-Exact $Stream $nameLength))
+            $address = [System.Net.Dns]::GetHostAddresses($name)[0]
+        }
+        default { throw "unsupported SOCKS5 address type $AddressType" }
+    }
+    $portBytes = Read-Exact $Stream 2
+    $port = ([int]$portBytes[0] -shl 8) -bor $portBytes[1]
+    return [System.Net.IPEndPoint]::new($address, $port)
+}
+
+function Invoke-Socks5UdpProbe {
+    param([string]$ProxyHost, [int]$ProxyPort)
+
+    $control = [System.Net.Sockets.TcpClient]::new()
+    $echo = $null
+    $client = $null
+    try {
+        $control.Connect($ProxyHost, $ProxyPort)
+        $control.ReceiveTimeout = 10000
+        $control.SendTimeout = 10000
+        $stream = $control.GetStream()
+        $stream.Write([byte[]](5, 1, 0))
+        $negotiation = Read-Exact $stream 2
+        if ($negotiation[0] -ne 5 -or $negotiation[1] -ne 0) {
+            throw "SOCKS5 proxy rejected no-auth negotiation"
+        }
+
+        $stream.Write([byte[]](5, 3, 0, 1, 0, 0, 0, 0, 0, 0))
+        $reply = Read-Exact $stream 4
+        if ($reply[0] -ne 5 -or $reply[1] -ne 0 -or $reply[2] -ne 0) {
+            throw "SOCKS5 UDP associate failed with reply $($reply[1])"
+        }
+        $relay = Read-SocksEndpoint $stream $reply[3]
+        if ($relay.Address.Equals([System.Net.IPAddress]::Any) -or
+            $relay.Address.Equals([System.Net.IPAddress]::IPv6Any)) {
+            $relay = [System.Net.IPEndPoint]::new(
+                [System.Net.Dns]::GetHostAddresses($ProxyHost)[0],
+                $relay.Port
+            )
+        }
+
+        $echo = [System.Net.Sockets.UdpClient]::new(
+            [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, 0)
+        )
+        $client = [System.Net.Sockets.UdpClient]::new(
+            [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, 0)
+        )
+        $echo.Client.ReceiveTimeout = 10000
+        $client.Client.ReceiveTimeout = 10000
+        $echoEndpoint = [System.Net.IPEndPoint]$echo.Client.LocalEndPoint
+        $payload = [System.Text.Encoding]::ASCII.GetBytes("ping")
+        $request = [byte[]]::new(10 + $payload.Length)
+        $request[3] = 1
+        [System.Net.IPAddress]::Loopback.GetAddressBytes().CopyTo($request, 4)
+        $request[8] = [byte]($echoEndpoint.Port -shr 8)
+        $request[9] = [byte]($echoEndpoint.Port -band 0xff)
+        $payload.CopyTo($request, 10)
+        $null = $client.Send($request, $request.Length, $relay)
+
+        $echoPeer = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+        $received = $echo.Receive([ref]$echoPeer)
+        $echoResponse = [System.Text.Encoding]::ASCII.GetBytes(
+            "pong:$([System.Text.Encoding]::ASCII.GetString($received))"
+        )
+        $null = $echo.Send($echoResponse, $echoResponse.Length, $echoPeer)
+
+        $relayPeer = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+        $response = $client.Receive([ref]$relayPeer)
+        if ($response.Length -lt 10 -or $response[0] -ne 0 -or $response[1] -ne 0 -or
+            $response[2] -ne 0 -or $response[3] -ne 1) {
+            throw "invalid SOCKS5 UDP response header"
+        }
+        $sourceAddress = [System.Net.IPAddress]::new($response[4..7])
+        $sourcePort = ([int]$response[8] -shl 8) -bor $response[9]
+        $responseBody = [System.Text.Encoding]::ASCII.GetString($response[10..($response.Length - 1)])
+        if (-not $sourceAddress.Equals([System.Net.IPAddress]::Loopback) -or
+            $sourcePort -ne $echoEndpoint.Port -or $responseBody -ne "pong:ping") {
+            throw "unexpected SOCKS5 UDP response: source=${sourceAddress}:$sourcePort body=$responseBody"
+        }
+    } finally {
+        if ($client) { $client.Dispose() }
+        if ($echo) { $echo.Dispose() }
+        $control.Dispose()
+    }
+}
+
 # ---- Main ----
 try {
     if (-not (Test-Path $BinPath)) {
@@ -373,14 +492,19 @@ try {
     }
 
     $Curl = Get-Curl
-    $Python = Get-Python
     $SboxBin = Get-SingBoxBinary
+
+    if ($env:RUSTBOX_E2E_UDP) {
+        $expectedUdp = $env:RUSTBOX_E2E_UDP -eq "1"
+        if ($expectedUdp -ne $SupportsUdp) {
+            throw "CI UDP expectation does not match ${OutboundType}: expected=$expectedUdp supported=$SupportsUdp"
+        }
+    }
 
     # Prepare work dir
     Remove-Item -Path $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
     $LogsDir = Join-Path $WorkDir "logs"
-    $WwwDir = Join-Path $WorkDir "www"
-    New-Item -ItemType Directory -Path $LogsDir, $WwwDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
 
     if ($OutboundType -in @("anytls", "vmess", "vless", "trojan")) {
         $tlsDir = Join-Path $WorkDir "tls"
@@ -389,15 +513,9 @@ try {
         New-TlsCert -CertPath (Join-Path $tlsDir "cert.pem") -KeyPath (Join-Path $tlsDir "key.pem")
     }
 
-    Set-Content -Path (Join-Path $WwwDir "marker.txt") -Value $Marker -Encoding ascii
-
     # ---- Start HTTP target ----
     Write-CiLog "starting HTTP target on :$HttpTargetPort"
-    $null = Start-Process -FilePath $Python `
-        -ArgumentList @("-m", "http.server", "$HttpTargetPort", "--bind", "127.0.0.1", "--directory", $WwwDir) `
-        -PassThru -NoNewWindow `
-        -RedirectStandardOutput (Join-Path $LogsDir "http-target.log") `
-        -RedirectStandardError (Join-Path $LogsDir "http-target.err.log")
+    $HttpTargetProcess = Start-HttpTarget -Port $HttpTargetPort -Body $Marker -LogsDir $LogsDir
     Wait-ForTcp "127.0.0.1" $HttpTargetPort "HTTP target"
 
     # ---- Start sing-box ----
@@ -406,7 +524,7 @@ try {
     Set-Content -Path $SboxConfigPath -Value $sboxConfig -Encoding utf8
 
     Write-CiLog "starting sing-box $OutboundType inbound on :$SboxInboundPort"
-    $null = Start-Process -FilePath $SboxBin `
+    $SboxProcess = Start-Process -FilePath $SboxBin `
         -ArgumentList @("run", "-c", $SboxConfigPath) `
         -PassThru -NoNewWindow `
         -RedirectStandardOutput (Join-Path $LogsDir "sing-box-stdout.log") `
@@ -420,7 +538,7 @@ try {
     Set-Content -Path $RustboxConfigPath -Value $rustboxConfig -Encoding utf8
 
     Write-CiLog "starting rustbox -> sing-box $OutboundType"
-    $null = Start-Process -FilePath $BinPath `
+    $RustboxProcess = Start-Process -FilePath $BinPath `
         -ArgumentList @("run", "--config", $RustboxConfigPath) `
         -PassThru -NoNewWindow `
         -RedirectStandardOutput (Join-Path $LogsDir "rustbox-stdout.log") `
@@ -451,16 +569,27 @@ try {
         }
     }
 
-    Write-CiLog "PASSED: $requestCount request(s), rustbox -> sing-box $OutboundType"
+    if ($SupportsUdp) {
+        Write-CiLog "probing UDP: SOCKS5 UDP -> rustbox -> $OutboundType -> sing-box -> echo"
+        Invoke-Socks5UdpProbe -ProxyHost "127.0.0.1" -ProxyPort $RustboxHttpPort
+        Write-CiLog "UDP probe passed"
+    } else {
+        Write-CiLog "UDP probe not applicable: $OutboundType outbound is stream-only"
+    }
+
+    Write-CiLog "PASSED: $requestCount TCP request(s), rustbox -> sing-box $OutboundType"
 } catch {
+    $HadFailure = $true
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 } finally {
-    Get-Process -Name "sing-box" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Get-Process -Name "rustbox-app" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Get-Process -Name "python" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    foreach ($process in @($HttpTargetProcess, $SboxProcess, $RustboxProcess)) {
+        if ($process -and -not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
 
-    if ($env:RUSTBOX_CI_DUMP_LOGS -eq "1") {
+    if ($HadFailure -or $env:RUSTBOX_CI_DUMP_LOGS -eq "1") {
         $logDir = Join-Path $WorkDir "logs"
         if (Test-Path $logDir) {
             Get-ChildItem -Path $logDir | ForEach-Object {

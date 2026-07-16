@@ -22,6 +22,8 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio_rustls::TlsConnector;
 use uuid::Uuid;
 
+mod datagram;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VlessTlsConfig {
     pub enabled: bool,
@@ -71,7 +73,11 @@ impl VlessOutbound {
         })
     }
 
-    async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
+    async fn connect_with_command(
+        &self,
+        target: &Endpoint,
+        command: u8,
+    ) -> Result<Box<dyn ByteStream>, OutboundError> {
         let stream = self
             .network
             .connect_tcp(TcpConnect {
@@ -91,7 +97,7 @@ impl VlessOutbound {
             }
             None => stream,
         };
-        let header = encode_request(&self.uuid, target)?;
+        let header = encode_request(&self.uuid, command, target)?;
         stream
             .write_all(&header)
             .await
@@ -101,6 +107,10 @@ impl VlessOutbound {
             .await
             .map_err(|error| OutboundError::new(format!("flush VLESS request: {error}")))?;
         Ok(Box::new(VlessStream::new(stream)))
+    }
+
+    async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
+        self.connect_with_command(target, 0x01).await
     }
 }
 
@@ -120,22 +130,25 @@ impl Outbound for VlessOutbound {
     fn open_datagram(
         &self,
         _ctx: OutboundContext<'_>,
-        _target: Endpoint,
+        target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, OutboundError>> {
-        Box::pin(async {
-            Err(OutboundError::new(
-                "VLESS UDP-over-TCP is not wired into RustBox yet",
-            ))
+        Box::pin(async move {
+            let stream = self.connect_with_command(&target, 0x02).await?;
+            Ok(Box::new(datagram::VlessDatagram::new(stream, target)) as Box<dyn DatagramSocket>)
         })
     }
 }
 
-fn encode_request(uuid: &[u8; 16], target: &Endpoint) -> Result<Vec<u8>, OutboundError> {
+fn encode_request(
+    uuid: &[u8; 16],
+    command: u8,
+    target: &Endpoint,
+) -> Result<Vec<u8>, OutboundError> {
     let mut output = Vec::with_capacity(64);
     output.push(0x00);
     output.extend_from_slice(uuid);
     output.push(0x00);
-    output.push(0x01);
+    output.push(command);
     output.extend_from_slice(&target.port.to_be_bytes());
     match &target.host {
         Host::Ip(IpAddress::V4(octets)) => {
@@ -343,7 +356,7 @@ mod tests {
             .unwrap()
             .as_bytes();
         let header =
-            encode_request(&uuid, &Endpoint::new(Host::domain("example.com"), 80)).unwrap();
+            encode_request(&uuid, 0x01, &Endpoint::new(Host::domain("example.com"), 80)).unwrap();
         assert_eq!(header[0], 0);
         assert_eq!(&header[1..17], &uuid);
         assert_eq!(&header[17..22], &[0, 1, 0, 80, 2]);

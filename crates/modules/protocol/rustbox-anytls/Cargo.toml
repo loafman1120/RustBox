@@ -29,7 +29,7 @@ tracing-subscriber = "0.3"
 md5 = "0.8.1"
 parking_lot = "0.12.5"
 rand = "0.10.2"
-rcgen = { version = "0.14.8", optional = true }
+rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs", "pem"], optional = true }
 rustls = { version = "0.23.41", optional = true }
 socks5-impl = { version = "0.8.7", features = ["server"], optional = true }
 tokio = { version = "1.52.3", features = ["io-util", "macros", "rt", "sync", "time"], optional = true }

@@ -635,8 +635,9 @@ impl CompiledOutbound {
             | CompiledOutboundKind::Trojan { .. }
             | CompiledOutboundKind::AnyTls { .. } => RouteDecision::Forward(self.id),
             CompiledOutboundKind::Block => RouteDecision::Reject(RejectReason::Policy),
-            CompiledOutboundKind::Selector { selected, .. }
-            | CompiledOutboundKind::UrlTest { selected, .. } => selected.clone(),
+            CompiledOutboundKind::Selector { .. } | CompiledOutboundKind::UrlTest { .. } => {
+                RouteDecision::Forward(self.id)
+            }
         }
     }
 }
@@ -1034,6 +1035,7 @@ fn compile_route_matcher(
                 CompiledRouteConditions {
                     inbounds,
                     networks: conditions.network.clone(),
+                    protocols: conditions.protocol.clone(),
                     domains: conditions.domain.clone(),
                     domain_suffixes: conditions.domain_suffix.clone(),
                     domain_keywords: conditions.domain_keyword.clone(),

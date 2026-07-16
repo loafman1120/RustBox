@@ -3,7 +3,10 @@
 //! This crate sits above the portable core. It translates gRPC requests into
 //! value snapshots and coarse control commands without exposing kernel internals.
 
-use rustbox_control::{ControlState, EngineCommand, EngineSnapshot, EngineState};
+use rustbox_control::{
+    ControlState, EngineCommand, EngineSnapshot, EngineState, OutboundGroupRegistry,
+    OutboundGroupSnapshot, SelectOutboundError,
+};
 use rustbox_kernel::{Event, EventKind, EventLevel};
 use rustbox_observability::{
     ConnectionState, ConnectionStats, MetricsSnapshot, ObservabilityQuery, ObservabilitySnapshot,
@@ -14,16 +17,21 @@ use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio::time::{self, Duration};
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::metadata::MetadataMap;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 pub mod rustbox_control_v1 {
     tonic::include_proto!("rustbox.control.v1");
+}
+
+pub mod daemon {
+    tonic::include_proto!("daemon");
 }
 
 use rustbox_control_v1 as pb;
@@ -162,6 +170,7 @@ pub struct ControlApiState {
     observability: Arc<ObservabilityStore>,
     control: Arc<Mutex<ControlState>>,
     command_tx: Option<mpsc::Sender<EngineCommand>>,
+    outbound_groups: Arc<RwLock<Arc<OutboundGroupRegistry>>>,
 }
 
 impl ControlApiState {
@@ -170,12 +179,31 @@ impl ControlApiState {
             observability,
             control,
             command_tx: None,
+            outbound_groups: Arc::new(RwLock::new(Arc::new(OutboundGroupRegistry::default()))),
         }
     }
 
     pub fn with_command_sender(mut self, command_tx: mpsc::Sender<EngineCommand>) -> Self {
         self.command_tx = Some(command_tx);
         self
+    }
+
+    pub fn with_outbound_groups(self, groups: Arc<OutboundGroupRegistry>) -> Self {
+        self.replace_outbound_groups(groups);
+        self
+    }
+
+    pub fn replace_outbound_groups(&self, groups: Arc<OutboundGroupRegistry>) {
+        if let Ok(mut current) = self.outbound_groups.write() {
+            *current = groups;
+        }
+    }
+
+    fn outbound_groups(&self) -> Result<Arc<OutboundGroupRegistry>, Status> {
+        self.outbound_groups
+            .read()
+            .map(|groups| groups.clone())
+            .map_err(|_| Status::internal("outbound group state lock is poisoned"))
     }
 
     pub fn observability(&self) -> Arc<ObservabilityStore> {
@@ -235,9 +263,13 @@ pub async fn serve_grpc_with_listener(
         config.auth.clone(),
         config.max_events_per_query,
     );
+    let sing_box = SingBoxStartedService::new(state, config.auth);
     Server::builder()
         .add_service(pb::rust_box_control_server::RustBoxControlServer::new(
             native,
+        ))
+        .add_service(daemon::started_service_server::StartedServiceServer::new(
+            sing_box,
         ))
         .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
         .await
@@ -368,6 +400,92 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
     }
 }
 
+#[derive(Clone)]
+pub struct SingBoxStartedService {
+    state: ControlApiState,
+    auth: AuthPolicy,
+}
+
+impl SingBoxStartedService {
+    pub fn new(state: ControlApiState, auth: AuthPolicy) -> Self {
+        Self { state, auth }
+    }
+}
+
+#[tonic::async_trait]
+impl daemon::started_service_server::StartedService for SingBoxStartedService {
+    type SubscribeGroupsStream = ReceiverStream<Result<daemon::Groups, Status>>;
+
+    async fn subscribe_groups(
+        &self,
+        request: Request<()>,
+    ) -> Result<Response<Self::SubscribeGroupsStream>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Observe)?;
+        let state = self.state.clone();
+        let (tx, rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            let mut previous = None;
+            let mut interval = time::interval(Duration::from_millis(250));
+            loop {
+                interval.tick().await;
+                let terminating = match state.control.lock() {
+                    Ok(control) => matches!(
+                        control.snapshot().state,
+                        EngineState::Stopping | EngineState::Stopped | EngineState::Failed
+                    ),
+                    Err(_) => {
+                        let _ =
+                            tx.try_send(Err(Status::internal("control state lock is poisoned")));
+                        break;
+                    }
+                };
+                if terminating {
+                    break;
+                }
+                let snapshots = match state.outbound_groups() {
+                    Ok(groups) => groups.list(),
+                    Err(status) => {
+                        let _ = tx.send(Err(status)).await;
+                        break;
+                    }
+                };
+                if previous.as_ref() == Some(&snapshots) {
+                    continue;
+                }
+                previous = Some(snapshots.clone());
+                if tx
+                    .send(Ok(outbound_groups_to_daemon(snapshots)))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn select_outbound(
+        &self,
+        request: Request<daemon::SelectOutboundRequest>,
+    ) -> Result<Response<()>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Control)?;
+        let request = request.into_inner();
+        if request.group_tag.is_empty() || request.outbound_tag.is_empty() {
+            return Err(Status::invalid_argument(
+                "groupTag and outboundTag must not be empty",
+            ));
+        }
+        self.state
+            .outbound_groups()?
+            .select(&request.group_tag, &request.outbound_tag)
+            .map_err(select_outbound_status)?;
+        Ok(Response::new(()))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Permission {
     Observe,
@@ -438,6 +556,41 @@ fn parse_level(value: &str) -> Result<EventLevel, Status> {
 
 fn none_if_empty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
+}
+
+fn outbound_groups_to_daemon(groups: Vec<OutboundGroupSnapshot>) -> daemon::Groups {
+    daemon::Groups {
+        group: groups
+            .into_iter()
+            .map(|group| daemon::Group {
+                tag: group.tag,
+                r#type: group.kind.as_str().to_string(),
+                selectable: group.selectable,
+                selected: group.selected,
+                is_expand: false,
+                items: group
+                    .items
+                    .into_iter()
+                    .map(|item| daemon::GroupItem {
+                        tag: item.tag,
+                        r#type: item.kind,
+                        url_test_time: 0,
+                        url_test_delay: 0,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn select_outbound_status(error: SelectOutboundError) -> Status {
+    match error {
+        SelectOutboundError::GroupNotFound(_) | SelectOutboundError::OutboundNotFound { .. } => {
+            Status::not_found(error.to_string())
+        }
+        SelectOutboundError::NotSelectable(_) => Status::invalid_argument(error.to_string()),
+        SelectOutboundError::StateUnavailable => Status::internal(error.to_string()),
+    }
 }
 
 fn metrics_to_proto(metrics: MetricsSnapshot) -> pb::MetricsSnapshot {
@@ -620,10 +773,12 @@ fn format_level(level: EventLevel) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daemon::started_service_server::StartedService;
     use pb::rust_box_control_server::RustBoxControl;
     use rustbox_kernel::{Event, ObservabilitySink};
     use rustbox_types::FlowId;
     use std::num::NonZeroU64;
+    use tokio_stream::StreamExt;
     use tonic::Code;
 
     #[test]
@@ -705,6 +860,65 @@ mod tests {
             command_rx.recv().await.expect("command"),
             EngineCommand::Stop
         );
+    }
+
+    #[tokio::test]
+    async fn outbound_group_rpcs_expose_errors_with_sing_box_semantics() {
+        let service = SingBoxStartedService::new(sample_state(None), AuthPolicy::disabled());
+
+        let mut groups = service
+            .subscribe_groups(Request::new(()))
+            .await
+            .expect("subscribe groups")
+            .into_inner();
+        assert!(
+            groups
+                .next()
+                .await
+                .expect("initial groups")
+                .expect("groups")
+                .group
+                .is_empty()
+        );
+
+        let error = service
+            .select_outbound(Request::new(daemon::SelectOutboundRequest {
+                group_tag: "missing".into(),
+                outbound_tag: "direct".into(),
+            }))
+            .await
+            .expect_err("reject missing selector");
+        assert_eq!(error.code(), Code::NotFound);
+
+        let error = service
+            .select_outbound(Request::new(daemon::SelectOutboundRequest {
+                group_tag: String::new(),
+                outbound_tag: "direct".into(),
+            }))
+            .await
+            .expect_err("reject empty selector tag");
+        assert_eq!(error.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn selecting_outbound_requires_control_permission() {
+        let service = SingBoxStartedService::new(
+            sample_state(None),
+            AuthPolicy::observe_only_token("observe"),
+        );
+        let mut request = Request::new(daemon::SelectOutboundRequest {
+            group_tag: "select".into(),
+            outbound_tag: "direct".into(),
+        });
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer observe".parse().expect("metadata"));
+
+        let error = service
+            .select_outbound(request)
+            .await
+            .expect_err("observe token must not select outbound");
+        assert_eq!(error.code(), Code::PermissionDenied);
     }
 
     #[tokio::test]

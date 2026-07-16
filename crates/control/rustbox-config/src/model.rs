@@ -387,6 +387,7 @@ pub enum RouteMatcherConfig {
 pub struct RouteMatchConfig {
     pub inbound: Vec<String>,
     pub network: Vec<Network>,
+    pub protocol: Vec<ProtocolHint>,
     pub domain: Vec<String>,
     pub domain_suffix: Vec<String>,
     pub domain_keyword: Vec<String>,
@@ -551,6 +552,7 @@ pub enum CompiledRouteMatcher {
 pub struct CompiledRouteConditions {
     pub inbounds: Vec<InboundId>,
     pub networks: Vec<Network>,
+    pub protocols: Vec<ProtocolHint>,
     pub domains: Vec<String>,
     pub domain_suffixes: Vec<String>,
     pub domain_keywords: Vec<String>,

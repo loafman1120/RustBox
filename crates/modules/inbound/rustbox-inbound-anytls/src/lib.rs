@@ -465,7 +465,12 @@ fn server_tls_config(
         .ok_or_else(|| AnyTlsInboundConfigError {
             message: "AnyTLS private key is missing".into(),
         })?;
-    let mut tls = ServerConfig::builder()
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut tls = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|error| AnyTlsInboundConfigError {
+            message: format!("select AnyTLS server TLS protocol versions: {error}"),
+        })?
         .with_no_client_auth()
         .with_single_cert(certificates, key)
         .map_err(|error| AnyTlsInboundConfigError {

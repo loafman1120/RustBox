@@ -288,6 +288,7 @@ pub enum TransportProtocol {
 pub enum ProtocolHint {
     Http,
     Tls,
+    Quic,
     Dns,
     Socks5,
     Other(&'static str),

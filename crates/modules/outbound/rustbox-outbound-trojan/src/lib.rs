@@ -19,7 +19,10 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio_rustls::TlsConnector;
 
+mod datagram;
+
 const CMD_CONNECT: u8 = 0x01;
+const CMD_UDP_ASSOCIATE: u8 = 0x03;
 const ATYP_IPV4: u8 = 0x01;
 const ATYP_DOMAIN: u8 = 0x03;
 const ATYP_IPV6: u8 = 0x04;
@@ -74,6 +77,14 @@ impl TrojanOutbound {
     }
 
     async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
+        self.connect_with_command(target, CMD_CONNECT).await
+    }
+
+    async fn connect_with_command(
+        &self,
+        target: &Endpoint,
+        command: u8,
+    ) -> Result<Box<dyn ByteStream>, OutboundError> {
         let stream = self
             .network
             .connect_tcp(TcpConnect {
@@ -86,7 +97,7 @@ impl TrojanOutbound {
             .connect(self.server_name.clone(), stream)
             .await
             .map_err(|error| OutboundError::new(format!("trojan TLS handshake failed: {error}")))?;
-        let header = build_header(&self.password_hash, CMD_CONNECT, target)?;
+        let header = build_header(&self.password_hash, command, target)?;
         stream
             .write_all(&header)
             .await
@@ -115,12 +126,13 @@ impl Outbound for TrojanOutbound {
     fn open_datagram(
         &self,
         _ctx: OutboundContext<'_>,
-        _target: Endpoint,
+        target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, OutboundError>> {
-        Box::pin(async {
-            Err(OutboundError::new(
-                "trojan UDP-over-TCP is not wired into RustBox yet",
-            ))
+        Box::pin(async move {
+            let stream = self
+                .connect_with_command(&target, CMD_UDP_ASSOCIATE)
+                .await?;
+            Ok(Box::new(datagram::TrojanDatagram::new(stream)) as Box<dyn DatagramSocket>)
         })
     }
 }
@@ -139,7 +151,10 @@ fn build_header(
     Ok(header)
 }
 
-fn encode_endpoint(output: &mut Vec<u8>, endpoint: &Endpoint) -> Result<(), OutboundError> {
+pub(crate) fn encode_endpoint(
+    output: &mut Vec<u8>,
+    endpoint: &Endpoint,
+) -> Result<(), OutboundError> {
     match &endpoint.host {
         Host::Ip(IpAddress::V4(octets)) => {
             output.push(ATYP_IPV4);

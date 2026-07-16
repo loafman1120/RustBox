@@ -6,11 +6,11 @@ license.workspace = true
 
 [dependencies]
 garde = { version = "0.23", features = ["derive"] }
-rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+hickory-resolver = { version = "0.25.2", default-features = false, features = ["tokio", "tls-aws-lc-rs", "https-aws-lc-rs", "quic-aws-lc-rs", "webpki-roots"] }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time"] }

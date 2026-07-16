@@ -5,8 +5,8 @@
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use regex::Regex;
 use rustbox_types::{
-    FlowMeta, Host, InboundId, IpAddress, IpCidr, Network, OutboundId, PortRange, RejectReason,
-    RouteDecision,
+    FlowMeta, Host, InboundId, IpAddress, IpCidr, Network, OutboundId, PortRange, ProtocolHint,
+    RejectReason, RouteDecision,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -102,6 +102,7 @@ impl RouteMatcher {
 pub struct RouteConditions {
     pub inbounds: Vec<InboundId>,
     pub networks: Vec<Network>,
+    pub protocols: Vec<ProtocolHint>,
     pub domains: Vec<String>,
     pub domain_suffixes: Vec<String>,
     pub domain_keywords: Vec<String>,
@@ -129,6 +130,13 @@ impl RouteConditions {
             return false;
         }
         if !self.networks.is_empty() && !self.networks.contains(&flow.network) {
+            return false;
+        }
+        if !self.protocols.is_empty()
+            && !flow
+                .protocol_hint
+                .is_some_and(|protocol| self.protocols.contains(&protocol))
+        {
             return false;
         }
         if !self.ports.is_empty()
@@ -421,6 +429,27 @@ mod tests {
             table.route(&flow_with_domain("cdn.ads.example.test")),
             RouteDecision::Forward(proxy)
         );
+    }
+
+    #[test]
+    fn matches_sniffed_protocol() {
+        let proxy = outbound_id(1);
+        let direct = outbound_id(2);
+        let mut table = RouteTable::new().with_default(RouteDecision::Forward(direct));
+        table.push_rule(RouteRule::new(
+            RouteMatcher::Conditions(Box::new(RouteConditions {
+                protocols: vec![ProtocolHint::Quic],
+                ..RouteConditions::default()
+            })),
+            RouteDecision::Forward(proxy),
+        ));
+        let mut flow = flow_with_ip([203, 0, 113, 1], 443);
+        flow.network = Network::Udp;
+        flow.protocol_hint = Some(ProtocolHint::Quic);
+
+        assert_eq!(table.route(&flow), RouteDecision::Forward(proxy));
+        flow.protocol_hint = Some(ProtocolHint::Dns);
+        assert_eq!(table.route(&flow), RouteDecision::Forward(direct));
     }
 
     fn flow_with_domain(domain: &str) -> FlowMeta {

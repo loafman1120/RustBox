@@ -16,6 +16,7 @@ pub(crate) use compose::RuntimeGraphBuilder;
 pub(crate) use app::ControlGrpcOptions;
 pub use app::{RustBox, RustBoxError, RustBoxOptions};
 pub use error::ComposeError;
+pub use rustbox_dns_core::{DnsAnswer, DnsName, DnsQuery, DnsRecordType, DnsResponse};
 
 #[cfg(test)]
 mod tests;

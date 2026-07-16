@@ -11,7 +11,8 @@ pub use rustbox_dns_core::{
 };
 pub use rustbox_kernel::{RouteMode, TransparentRedirectMode, TunDnsMode};
 use rustbox_types::{
-    Endpoint, InboundId, IpCidr, Network, OutboundId, PortRange, RejectReason, RouteDecision,
+    Endpoint, InboundId, IpCidr, Network, OutboundId, PortRange, ProtocolHint, RejectReason,
+    RouteDecision,
 };
 use std::collections::{HashMap, HashSet};
 

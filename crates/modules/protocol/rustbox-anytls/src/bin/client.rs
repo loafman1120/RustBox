@@ -196,6 +196,8 @@ async fn dail_out_callback(
 }
 
 fn create_tls_config(root_cert: Option<&Path>) -> Result<Arc<ClientConfig>, BoxError> {
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+
     // If a root certificate file is provided, load it and use it for verification.
     if let Some(path) = root_cert {
         let file = File::open(path)?;
@@ -208,13 +210,17 @@ fn create_tls_config(root_cert: Option<&Path>) -> Result<Arc<ClientConfig>, BoxE
             root_store.add(cert)?;
         }
 
-        let config = ClientConfig::builder().with_root_certificates(root_store).with_no_client_auth();
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
 
         return Ok(Arc::new(config));
     }
 
     // No root cert provided: fall back to dangerous accept-any behavior (legacy)
-    let mut config = ClientConfig::builder()
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
         .with_root_certificates(rustls::RootCertStore::empty())
         .with_no_client_auth();
 

@@ -6,6 +6,7 @@
 
 mod body;
 mod conn;
+mod datagram;
 mod header;
 mod kdf;
 
@@ -117,7 +118,11 @@ impl VmessOutbound {
         })
     }
 
-    async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
+    async fn connect_protocol(
+        &self,
+        target: &Endpoint,
+        is_udp: bool,
+    ) -> Result<VmessProtocolStream, OutboundError> {
         let stream = self
             .network
             .connect_tcp(TcpConnect {
@@ -140,7 +145,7 @@ impl VmessOutbound {
             &self.command_key,
             self.security,
             &Metadata::from_endpoint(target),
-            false,
+            is_udp,
         )
         .map_err(OutboundError::new)?;
         stream
@@ -159,13 +164,30 @@ impl VmessOutbound {
             &sealed.req_iv,
             sealed.resp_v,
         );
-        Ok(Box::new(conn::spawn_vmess_relay(
+        Ok(VmessProtocolStream {
             stream,
             read_cipher,
             write_cipher,
-            sealed.resp_v,
+            resp_v: sealed.resp_v,
+        })
+    }
+
+    async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
+        let protocol = self.connect_protocol(target, false).await?;
+        Ok(Box::new(conn::spawn_vmess_relay(
+            protocol.stream,
+            protocol.read_cipher,
+            protocol.write_cipher,
+            protocol.resp_v,
         )))
     }
+}
+
+struct VmessProtocolStream {
+    stream: Box<dyn ByteStream>,
+    read_cipher: body::BodyCipher,
+    write_cipher: body::BodyCipher,
+    resp_v: u8,
 }
 
 impl Outbound for VmessOutbound {
@@ -182,9 +204,18 @@ impl Outbound for VmessOutbound {
     fn open_datagram(
         &self,
         _ctx: OutboundContext<'_>,
-        _target: Endpoint,
+        target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, OutboundError>> {
-        Box::pin(async { Err(OutboundError::new("VMess UDP is not implemented")) })
+        Box::pin(async move {
+            let protocol = self.connect_protocol(&target, true).await?;
+            Ok(Box::new(datagram::VmessDatagram::new(
+                protocol.stream,
+                protocol.read_cipher,
+                protocol.write_cipher,
+                protocol.resp_v,
+                target,
+            )) as Box<dyn DatagramSocket>)
+        })
     }
 }
 

@@ -184,17 +184,35 @@ impl BodyCipher {
         writer: &mut W,
         plaintext: &[u8],
     ) -> std::io::Result<()> {
-        if matches!(self.write, RecordCipher::None) {
-            writer.write_all(plaintext).await?;
-            return writer.flush().await;
-        }
-
-        let nonce = self.write_nonce();
-        let ct = self.write.seal(&nonce, plaintext)?;
-        let len = ct.len() as u16;
-        writer.write_all(&len.to_be_bytes()).await?;
-        writer.write_all(&ct).await?;
+        let record = self.seal_record(plaintext)?;
+        writer.write_all(&record).await?;
         writer.flush().await
+    }
+
+    /// Encode exactly one standard-format body record, including its length.
+    pub fn seal_record(&mut self, plaintext: &[u8]) -> std::io::Result<Vec<u8>> {
+        if plaintext.len() > MAX_PLAINTEXT {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "VMess body record exceeds maximum plaintext size",
+            ));
+        }
+        let payload = if matches!(self.write, RecordCipher::None) {
+            plaintext.to_vec()
+        } else {
+            let nonce = self.write_nonce();
+            self.write.seal(&nonce, plaintext)?
+        };
+        let len = u16::try_from(payload.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "VMess body record exceeds maximum wire size",
+            )
+        })?;
+        let mut record = Vec::with_capacity(payload.len() + 2);
+        record.extend_from_slice(&len.to_be_bytes());
+        record.extend_from_slice(&payload);
+        Ok(record)
     }
 
     /// Read and decrypt one body record.
@@ -202,16 +220,6 @@ impl BodyCipher {
         &mut self,
         reader: &mut R,
     ) -> std::io::Result<Vec<u8>> {
-        if matches!(self.read, RecordCipher::None) {
-            let mut buf = vec![0u8; 4096];
-            let n = reader.read(&mut buf).await?;
-            if n == 0 {
-                return Err(std::io::ErrorKind::UnexpectedEof.into());
-            }
-            buf.truncate(n);
-            return Ok(buf);
-        }
-
         let mut len_buf = [0u8; 2];
         reader.read_exact(&mut len_buf).await?;
         let ct_len = u16::from_be_bytes(len_buf) as usize;
@@ -220,8 +228,16 @@ impl BodyCipher {
         }
         let mut ct = vec![0u8; ct_len];
         reader.read_exact(&mut ct).await?;
+        self.open_record(&ct)
+    }
+
+    /// Decode one standard-format body record payload without its length.
+    pub fn open_record(&mut self, payload: &[u8]) -> std::io::Result<Vec<u8>> {
+        if matches!(self.read, RecordCipher::None) {
+            return Ok(payload.to_vec());
+        }
         let nonce = self.read_nonce();
-        self.read.open(&nonce, &ct)
+        self.read.open(&nonce, payload)
     }
 
     pub fn max_plaintext() -> usize {
@@ -233,33 +249,42 @@ impl BodyCipher {
         reader: &mut R,
         expected: u8,
     ) -> std::io::Result<()> {
-        let length_key = kdf16(&self.response_key, &[b"AEAD Resp Header Len Key"]);
-        let length_iv = kdf12(&self.response_iv, &[b"AEAD Resp Header Len IV"]);
         let mut encrypted_length = [0_u8; 18];
         reader.read_exact(&mut encrypted_length).await?;
+        let length = self.response_header_length(&encrypted_length)?;
+        let mut encrypted = vec![0_u8; length + 16];
+        reader.read_exact(&mut encrypted).await?;
+        self.validate_response_header(&encrypted, expected)
+    }
+
+    pub fn response_header_length(&self, encrypted: &[u8]) -> std::io::Result<usize> {
+        let length_key = kdf16(&self.response_key, &[b"AEAD Resp Header Len Key"]);
+        let length_iv = kdf12(&self.response_iv, &[b"AEAD Resp Header Len IV"]);
         let length_cipher = Aes128Gcm::new_from_slice(&length_key).unwrap();
         let length = length_cipher
-            .decrypt(Nonce::from_slice(&length_iv), encrypted_length.as_ref())
+            .decrypt(Nonce::from_slice(&length_iv), encrypted)
             .map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "invalid VMess response header length",
                 )
             })?;
-        let length = usize::from(u16::from_be_bytes(length.try_into().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid VMess response header length",
-            )
-        })?));
+        Ok(usize::from(u16::from_be_bytes(length.try_into().map_err(
+            |_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid VMess response header length",
+                )
+            },
+        )?)))
+    }
 
+    pub fn validate_response_header(&self, encrypted: &[u8], expected: u8) -> std::io::Result<()> {
         let payload_key = kdf16(&self.response_key, &[b"AEAD Resp Header Key"]);
         let payload_iv = kdf12(&self.response_iv, &[b"AEAD Resp Header IV"]);
-        let mut encrypted = vec![0_u8; length + 16];
-        reader.read_exact(&mut encrypted).await?;
         let payload_cipher = Aes128Gcm::new_from_slice(&payload_key).unwrap();
         let header = payload_cipher
-            .decrypt(Nonce::from_slice(&payload_iv), encrypted.as_ref())
+            .decrypt(Nonce::from_slice(&payload_iv), encrypted)
             .map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -273,6 +298,29 @@ impl BodyCipher {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seal_response_header_for_test(&self, response: u8) -> Vec<u8> {
+        let header = [response, 0, 0, 0];
+        let length_key = kdf16(&self.response_key, &[b"AEAD Resp Header Len Key"]);
+        let length_iv = kdf12(&self.response_iv, &[b"AEAD Resp Header Len IV"]);
+        let payload_key = kdf16(&self.response_key, &[b"AEAD Resp Header Key"]);
+        let payload_iv = kdf12(&self.response_iv, &[b"AEAD Resp Header IV"]);
+        let length_cipher = Aes128Gcm::new_from_slice(&length_key).unwrap();
+        let payload_cipher = Aes128Gcm::new_from_slice(&payload_key).unwrap();
+        let mut wire = length_cipher
+            .encrypt(
+                Nonce::from_slice(&length_iv),
+                (header.len() as u16).to_be_bytes().as_ref(),
+            )
+            .unwrap();
+        wire.extend_from_slice(
+            &payload_cipher
+                .encrypt(Nonce::from_slice(&payload_iv), header.as_ref())
+                .unwrap(),
+        );
+        wire
     }
 }
 
@@ -350,14 +398,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn none_is_passthrough() {
+    async fn none_keeps_standard_record_framing() {
         let (req_key, req_iv) = test_keys();
         let mut cipher = BodyCipher::new(Security::None, &req_key, &req_iv, 0x42);
         let plaintext = b"raw bytes no framing";
 
         let mut wire = Vec::new();
         cipher.write_record(&mut wire, plaintext).await.unwrap();
-        assert_eq!(wire, plaintext, "security:none must not add framing");
+        assert_eq!(&wire[..2], &(plaintext.len() as u16).to_be_bytes());
+        assert_eq!(&wire[2..], plaintext);
+
+        let mut reader = BodyCipher::new(Security::None, &req_key, &req_iv, 0x42);
+        let decoded = reader
+            .read_record(&mut std::io::Cursor::new(wire))
+            .await
+            .unwrap();
+        assert_eq!(decoded, plaintext);
     }
 
     #[tokio::test]

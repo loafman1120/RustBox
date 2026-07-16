@@ -5,8 +5,20 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+clienthello = "0.2.2"
+hickory-proto = { version = "0.25.2", default-features = false, features = ["std"] }
+httparse = "1.10.1"
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-dns-core = { path = "../../dns/rustbox-dns-core" }
+rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
+rustls = { version = "0.23.41", default-features = false, features = ["std", "tls12"] }
+tokio = { version = "1", features = ["io-util", "time"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rustbox-test-host = { path = "../../../kernel/rustbox-test-host" }
+rustls = { version = "0.23.41", features = ["aws_lc_rs"] }
+tokio = { version = "1", features = ["macros", "rt"] }

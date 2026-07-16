@@ -4,6 +4,7 @@ use crate::{
 use rustbox_config::SourceConfig;
 use rustbox_control::{EngineCommand, EngineSnapshot, EngineState};
 use rustbox_control_api::ControlApiConfig;
+use rustbox_dns_core::{DnsQuery, DnsResponse};
 use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink};
 use rustbox_observability::ObservabilityStore;
 use rustbox_types::Endpoint;
@@ -101,9 +102,9 @@ impl RustBox {
             inbound_count: runtime.service_count(),
             outbound_count: runtime.outbound_count(),
         };
-        let control_grpc = options
-            .control_grpc
-            .map(|options| ControlGrpcService::new(options, snapshot.clone()));
+        let control_grpc = options.control_grpc.map(|options| {
+            ControlGrpcService::new(options, snapshot.clone(), runtime.outbound_groups())
+        });
         Ok(Self {
             source,
             observability,
@@ -126,6 +127,11 @@ impl RustBox {
 
     pub fn snapshot(&self) -> &EngineSnapshot {
         &self.snapshot
+    }
+
+    /// Resolve through the configured DNS rule/cache/FakeIP/transport graph.
+    pub async fn resolve_dns(&self, query: DnsQuery) -> Result<DnsResponse, RustBoxError> {
+        self.runtime.resolve_dns(query).await
     }
 
     pub fn control_grpc_addr(&self) -> Option<SocketAddr> {
@@ -152,6 +158,9 @@ impl RustBox {
         ) {
             let runtime = RuntimeGraphBuilder::with_observability(self.observability.clone())
                 .compose_source(self.source.clone())?;
+            if let Some(control) = &self.control_grpc {
+                control.replace_outbound_groups(runtime.outbound_groups());
+            }
             self.runtime = RuntimeSupervisor::new(runtime);
             self.snapshot.inbound_count = self.runtime.service_count();
             self.snapshot.outbound_count = self.runtime.outbound_count();
@@ -215,6 +224,9 @@ impl RustBox {
             self.snapshot.state = EngineState::Prepared;
         }
         self.source = source;
+        if let Some(control) = &self.control_grpc {
+            control.replace_outbound_groups(self.runtime.outbound_groups());
+        }
         self.snapshot.generation = next_generation;
         self.snapshot.inbound_count = self.runtime.service_count();
         self.snapshot.outbound_count = self.runtime.outbound_count();

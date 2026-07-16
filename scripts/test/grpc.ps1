@@ -126,6 +126,11 @@ try {
         return $out
     }
 
+    function Invoke-SingBoxGrpc {
+        $out = & $GrpcUrl -plaintext -import-path $ProtoDir -proto started_service.proto @args 2>&1 | Out-String
+        return $out
+    }
+
     $ConfigPath = Join-Path $WorkDir "ci.toml"
     Set-Content -Path $ConfigPath -Encoding utf8 -Value @"
 schema_version = 1
@@ -139,12 +144,22 @@ type = "http-connect"
 listen = "127.0.0.1:10808"
 
 [[outbounds]]
-id = "direct"
+id = "direct-a"
 type = "direct"
+
+[[outbounds]]
+id = "direct-b"
+type = "direct"
+
+[[outbounds]]
+id = "select"
+type = "selector"
+outbounds = ["direct-a", "direct-b"]
+default = "direct-a"
 
 [[routes]]
 type = "default"
-outbound = "direct"
+outbound = "select"
 "@
 
     Write-CiLog "starting rustbox-app with gRPC control API"
@@ -177,7 +192,14 @@ outbound = "direct"
     if ($LASTEXITCODE -ne 0) { throw "FAIL: GetMetrics failed" }
     if ($out -notmatch 'servicesStarted') { throw "FAIL: GetMetrics missing fields" }
 
-    # 4) Stop → ENGINE_STATE_STOPPING
+    # 4) sing-box-compatible selector RPC succeeds
+    Write-CiLog "test: daemon.StartedService/SelectOutbound"
+    $out = Invoke-SingBoxGrpc -H "authorization: Bearer $Token" `
+        -d '{"groupTag":"select","outboundTag":"direct-b"}' `
+        $addr daemon.StartedService/SelectOutbound
+    if ($LASTEXITCODE -ne 0) { throw "FAIL: SelectOutbound failed" }
+
+    # 5) Stop → ENGINE_STATE_STOPPING
     Write-CiLog "test: Stop"
     $out = Invoke-Grpc -H "authorization: Bearer $Token" $addr ${svc}/Stop
     if ($LASTEXITCODE -ne 0) { throw "FAIL: Stop failed" }

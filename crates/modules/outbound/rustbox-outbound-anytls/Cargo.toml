@@ -17,7 +17,7 @@ webpki-roots = "1"
 
 [dev-dependencies]
 anytls = { package = "rustbox-anytls", path = "../../protocol/rustbox-anytls", default-features = false, features = ["client", "server"] }
-rcgen = "0.14.8"
+rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs", "pem"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [lints]

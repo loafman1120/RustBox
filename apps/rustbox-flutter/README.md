@@ -23,7 +23,7 @@ using RustBox do not need Rust, Cargo, or a C toolchain to build.
 - Windows
 - Linux
 
-macOS support is temporarily disabled in 0.1.0 while its precompiled bridge
+macOS support is temporarily disabled while its precompiled bridge
 packaging is stabilized. Web and OHOS are not supported. Consumers need
 Flutter 3.44 or newer and Dart 3.12 or newer.
 
@@ -31,7 +31,7 @@ Flutter 3.44 or newer and Dart 3.12 or newer.
 
 ```yaml
 dependencies:
-  rustbox_flutter: ^0.1.0
+  rustbox_flutter: ^0.1.2
 ```
 
 ## Usage

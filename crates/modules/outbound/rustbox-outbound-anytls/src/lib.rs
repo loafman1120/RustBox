@@ -695,15 +695,14 @@ fn close_stream_in_background(stream: Arc<Stream>) {
 fn encode_uot_datagram(target: &Endpoint, payload: &[u8]) -> io::Result<Vec<u8>> {
     let payload_length = u16::try_from(payload.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "UOT packet is too large"))?;
-    let mut frame = encode_target(target)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err.message))?;
+    let mut frame = encode_uot_target(target)?;
     frame.extend_from_slice(&payload_length.to_be_bytes());
     frame.extend_from_slice(payload);
     Ok(frame)
 }
 
 async fn read_uot_datagram(stream: &Stream) -> io::Result<(Vec<u8>, Endpoint)> {
-    let source = read_socks_target(stream).await?;
+    let source = read_uot_target(stream).await?;
     let mut payload_length = [0_u8; 2];
     read_stream_bytes(stream, &mut payload_length).await?;
     let mut payload = vec![0_u8; usize::from(u16::from_be_bytes(payload_length))];
@@ -711,6 +710,67 @@ async fn read_uot_datagram(stream: &Stream) -> io::Result<(Vec<u8>, Endpoint)> {
     Ok((payload, source))
 }
 
+fn encode_uot_target(target: &Endpoint) -> io::Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    match &target.host {
+        Host::Ip(IpAddress::V4(octets)) => {
+            encoded.push(0x00);
+            encoded.extend_from_slice(octets);
+        }
+        Host::Ip(IpAddress::V6(octets)) => {
+            encoded.push(0x01);
+            encoded.extend_from_slice(octets);
+        }
+        Host::Domain(domain) => {
+            let length = u8::try_from(domain.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "UOT domain exceeds 255 bytes")
+            })?;
+            encoded.push(0x02);
+            encoded.push(length);
+            encoded.extend_from_slice(domain.as_bytes());
+        }
+    }
+    encoded.extend_from_slice(&target.port.to_be_bytes());
+    Ok(encoded)
+}
+
+async fn read_uot_target(stream: &Stream) -> io::Result<Endpoint> {
+    let mut kind = [0_u8; 1];
+    read_stream_bytes(stream, &mut kind).await?;
+    let host = match kind[0] {
+        0x00 => {
+            let mut octets = [0_u8; 4];
+            read_stream_bytes(stream, &mut octets).await?;
+            Host::Ip(IpAddress::V4(octets))
+        }
+        0x01 => {
+            let mut octets = [0_u8; 16];
+            read_stream_bytes(stream, &mut octets).await?;
+            Host::Ip(IpAddress::V6(octets))
+        }
+        0x02 => {
+            let mut length = [0_u8; 1];
+            read_stream_bytes(stream, &mut length).await?;
+            let mut domain = vec![0_u8; usize::from(length[0])];
+            read_stream_bytes(stream, &mut domain).await?;
+            Host::domain(
+                String::from_utf8(domain)
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
+            )
+        }
+        value => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported UOT address type {value}"),
+            ));
+        }
+    };
+    let mut port = [0_u8; 2];
+    read_stream_bytes(stream, &mut port).await?;
+    Ok(Endpoint::new(host, u16::from_be_bytes(port)))
+}
+
+#[cfg(test)]
 async fn read_socks_target(stream: &Stream) -> io::Result<Endpoint> {
     let mut kind = [0_u8; 1];
     read_stream_bytes(stream, &mut kind).await?;

@@ -10,7 +10,7 @@ use rustbox_config::{
     DnsConfig, InboundConfig, LogicalModeConfig, OutboundConfig, RouteActionConfig,
     RouteMatchConfig, RouteMatcherConfig, RouteRuleConfig, RouteRuleSetConfig, SourceConfig,
 };
-use rustbox_types::{IpCidr, Network, PortRange, RejectReason};
+use rustbox_types::{IpCidr, Network, PortRange, ProtocolHint, RejectReason};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
 use std::fs;
@@ -293,6 +293,8 @@ struct TomlRouteMatchFields {
     #[serde(default)]
     network: Vec<TomlNetwork>,
     #[serde(default)]
+    protocol: Vec<TomlProtocol>,
+    #[serde(default)]
     domain: Vec<String>,
     #[serde(default)]
     domain_suffix: Vec<String>,
@@ -327,6 +329,7 @@ impl From<TomlRouteMatchFields> for RouteMatchConfig {
         Self {
             inbound: value.inbound,
             network: value.network.into_iter().map(Into::into).collect(),
+            protocol: value.protocol.into_iter().map(Into::into).collect(),
             domain: value.domain,
             domain_suffix: value.domain_suffix,
             domain_keyword: value.domain_keyword,
@@ -356,6 +359,28 @@ impl From<TomlRouteMatchFields> for RouteMatchConfig {
 enum TomlNetwork {
     Tcp,
     Udp,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlProtocol {
+    Http,
+    Tls,
+    Quic,
+    Dns,
+    Socks5,
+}
+
+impl From<TomlProtocol> for ProtocolHint {
+    fn from(value: TomlProtocol) -> Self {
+        match value {
+            TomlProtocol::Http => Self::Http,
+            TomlProtocol::Tls => Self::Tls,
+            TomlProtocol::Quic => Self::Quic,
+            TomlProtocol::Dns => Self::Dns,
+            TomlProtocol::Socks5 => Self::Socks5,
+        }
+    }
 }
 
 impl From<TomlNetwork> for Network {

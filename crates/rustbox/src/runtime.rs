@@ -1,4 +1,7 @@
 use crate::ComposeError;
+use rustbox_control::OutboundGroupRegistry;
+use rustbox_dns_core::{DnsQuery, DnsResponse, DnsSubsystem};
+use rustbox_inspect::ProtocolSniffer;
 use rustbox_kernel::{Engine, Service, ServiceContext, ServiceError, TaskScope};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,17 +13,26 @@ const SESSION_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// 一代数据面及其 Tokio 任务域。
 pub(crate) struct ComposedRuntime {
     generation: u64,
-    engine: Arc<Engine>,
+    engine: Arc<Engine<ProtocolSniffer>>,
+    outbound_groups: Arc<OutboundGroupRegistry>,
+    dns: Option<DnsSubsystem>,
     services: Vec<Box<dyn Service>>,
     accept_tasks: TaskScope,
     session_tasks: TaskScope,
 }
 
 impl ComposedRuntime {
-    pub(crate) fn new(engine: Arc<Engine>, services: Vec<Box<dyn Service>>) -> Self {
+    pub(crate) fn new(
+        engine: Arc<Engine<ProtocolSniffer>>,
+        services: Vec<Box<dyn Service>>,
+        outbound_groups: Arc<OutboundGroupRegistry>,
+        dns: Option<DnsSubsystem>,
+    ) -> Self {
         Self {
             generation: 0,
             engine,
+            outbound_groups,
+            dns,
             services,
             accept_tasks: TaskScope::new(),
             session_tasks: TaskScope::new(),
@@ -35,8 +47,21 @@ impl ComposedRuntime {
         self.engine.outbound_count()
     }
 
+    pub(crate) fn outbound_groups(&self) -> Arc<OutboundGroupRegistry> {
+        self.outbound_groups.clone()
+    }
+
     pub(crate) fn service_count(&self) -> usize {
         self.services.len()
+    }
+
+    pub(crate) async fn resolve_dns(&self, query: DnsQuery) -> Result<DnsResponse, ComposeError> {
+        self.dns
+            .as_ref()
+            .ok_or_else(|| ComposeError::State("DNS subsystem is not configured".to_string()))?
+            .resolve(query)
+            .await
+            .map_err(|error| ComposeError::State(error.message))
     }
 
     pub(crate) async fn start(&mut self) -> Result<(), ComposeError> {
@@ -120,6 +145,21 @@ impl RuntimeSupervisor {
         self.active
             .as_ref()
             .map_or(0, ComposedRuntime::outbound_count)
+    }
+
+    pub(crate) fn outbound_groups(&self) -> Arc<OutboundGroupRegistry> {
+        self.active
+            .as_ref()
+            .map(ComposedRuntime::outbound_groups)
+            .unwrap_or_default()
+    }
+
+    pub(crate) async fn resolve_dns(&self, query: DnsQuery) -> Result<DnsResponse, ComposeError> {
+        self.active
+            .as_ref()
+            .ok_or_else(|| ComposeError::State("runtime is not prepared".to_string()))?
+            .resolve_dns(query)
+            .await
     }
 
     pub(crate) async fn start(&mut self, generation: u64) -> Result<(), ComposeError> {

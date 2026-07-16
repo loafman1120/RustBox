@@ -5,10 +5,13 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'rust/api/engine.dart' as native;
 import 'rust/frb_generated.dart';
 
-/// Initializes the Rust bridge once for the current process.
+/// Entry point for initializing the RustBox native runtime.
 abstract final class RustBox {
   static Future<void>? _initialization;
 
+  /// Loads the bundled native library and initializes the bridge.
+  ///
+  /// Calling this method more than once returns the same initialization future.
   static Future<void> initialize() => _initialization ??= RustLib.init(
     externalLibrary: Platform.isIOS || Platform.isMacOS
         ? ExternalLibrary.process(iKnowHowToUseIt: true)
@@ -16,34 +19,63 @@ abstract final class RustBox {
   );
 }
 
+/// Stable categories for failures reported by the RustBox runtime.
 enum RustBoxExceptionKind {
+  /// The supplied TOML configuration is invalid.
   invalidConfig,
+
+  /// The requested operation is not valid in the engine's current state.
   invalidState,
+
+  /// A required native resource or service is unavailable.
   unavailable,
+
+  /// The native proxy runtime failed while performing an operation.
   runtime,
+
+  /// The bridge encountered an unexpected failure.
   internal,
 }
 
+/// An error raised by a RustBox engine or by the native bridge.
 final class RustBoxException implements Exception {
+  /// Creates an exception with a stable [kind] and human-readable [message].
   const RustBoxException(this.kind, this.message);
 
+  /// The machine-readable failure category.
   final RustBoxExceptionKind kind;
+
+  /// A human-readable description of the failure.
   final String message;
 
   @override
   String toString() => 'RustBoxException(${kind.name}): $message';
 }
 
+/// Lifecycle states reported by [RustBoxEngine.snapshot].
 enum RustBoxEngineState {
+  /// The native engine has been allocated but not prepared.
   created,
+
+  /// Configuration is valid and the engine is ready to start.
   prepared,
+
+  /// Inbound services are running.
   running,
+
+  /// The engine is shutting down its services.
   stopping,
+
+  /// All engine services have stopped.
   stopped,
+
+  /// The engine entered a terminal failure state.
   failed,
 }
 
+/// A point-in-time view of a RustBox engine's lifecycle and topology.
 final class RustBoxEngineSnapshot {
+  /// Creates an immutable engine snapshot.
   const RustBoxEngineSnapshot({
     required this.state,
     required this.generation,
@@ -51,9 +83,16 @@ final class RustBoxEngineSnapshot {
     required this.outboundCount,
   });
 
+  /// The lifecycle state observed when the snapshot was taken.
   final RustBoxEngineState state;
+
+  /// The configuration generation, incremented after each successful reload.
   final int generation;
+
+  /// The number of configured inbound services.
   final int inboundCount;
+
+  /// The number of configured outbound adapters.
   final int outboundCount;
 }
 
@@ -65,6 +104,9 @@ final class RustBoxEngine {
   Future<void>? _closeFuture;
   bool _closing = false;
 
+  /// Creates and prepares an engine from a RustBox TOML configuration.
+  ///
+  /// The returned engine is not running until [start] is called.
   static Future<RustBoxEngine> create({required String configToml}) async {
     await RustBox.initialize();
     final engine = await _translate(
@@ -73,21 +115,25 @@ final class RustBoxEngine {
     return RustBoxEngine._(engine);
   }
 
+  /// Starts all configured inbound services.
   Future<void> start() {
     _ensureOpen();
     return _translate(_native.start);
   }
 
+  /// Atomically replaces the active configuration with [configToml].
   Future<void> reload(String configToml) {
     _ensureOpen();
     return _translate(() => _native.reload(configToml: configToml));
   }
 
+  /// Returns the engine's current lifecycle and configuration snapshot.
   Future<RustBoxEngineSnapshot> snapshot() {
     _ensureOpen();
     return _translate(_native.snapshot).then(_snapshotFromNative);
   }
 
+  /// Stops all running services while retaining the native engine handle.
   Future<void> stop() {
     _ensureOpen();
     return _translate(_native.stop);

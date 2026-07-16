@@ -1,57 +1,240 @@
-//! 元数据增强模块。
+//! Bounded, replay-safe protocol sniffing before routing.
 //!
-//! inspect 模块在路由前补充 FlowMeta，保持“观察/补充”和“路由决策”分离。
+//! Parsing, replay and DNS response observation are isolated modules; protocol parsing
+//! is delegated to rustls, httparse, clienthello and Hickory.
 
-use rustbox_kernel::BoxFuture;
-use rustbox_kernel::{InspectError, MetadataEnricher};
-use rustbox_types::{FlowMeta, Host, ProtocolHint};
+mod config;
+mod observe;
+mod protocol;
 
-/// 测试和固定策略使用的域名增强器。
+pub use config::SniffConfig;
+pub use rustbox_dns_core::ReverseDns;
+
+use clienthello::Extractor as QuicClientHello;
+use core::pin::Pin;
+use observe::{ObservedDatagram, ObservedStream};
+use protocol::{SniffResult, sniff_tcp, sniff_udp};
+use rustbox_io::{ByteStream, DatagramSocket, IoError};
+use rustbox_kernel::{Flow, FlowPayload, InspectError, MetadataEnricher};
+use rustbox_types::{Endpoint, Host, ProtocolHint};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::io::AsyncReadExt;
+use tokio::time::{Instant, timeout_at};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticDomainEnricher {
     domain: Host,
 }
-
 impl StaticDomainEnricher {
     pub fn new(domain: Host) -> Self {
         Self { domain }
     }
 }
-
 impl MetadataEnricher for StaticDomainEnricher {
     fn name(&self) -> &'static str {
         "static-domain"
     }
-
-    fn enrich(&self, mut meta: FlowMeta) -> BoxFuture<'_, Result<FlowMeta, InspectError>> {
-        Box::pin(async move {
-            meta.domain = Some(self.domain.clone());
-            Ok(meta)
-        })
+    async fn enrich(&self, mut flow: Flow) -> Result<Flow, InspectError> {
+        flow.meta.domain = Some(self.domain.clone());
+        Ok(flow)
     }
 }
 
-/// 测试和固定策略使用的协议提示增强器。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticProtocolHintEnricher {
     hint: ProtocolHint,
 }
-
 impl StaticProtocolHintEnricher {
     pub fn new(hint: ProtocolHint) -> Self {
         Self { hint }
     }
 }
-
 impl MetadataEnricher for StaticProtocolHintEnricher {
     fn name(&self) -> &'static str {
         "static-protocol-hint"
     }
+    async fn enrich(&self, mut flow: Flow) -> Result<Flow, InspectError> {
+        flow.meta.protocol_hint = Some(self.hint);
+        Ok(flow)
+    }
+}
 
-    fn enrich(&self, mut meta: FlowMeta) -> BoxFuture<'_, Result<FlowMeta, InspectError>> {
-        Box::pin(async move {
-            meta.protocol_hint = Some(self.hint);
-            Ok(meta)
-        })
+#[derive(Clone)]
+pub struct ProtocolSniffer {
+    config: SniffConfig,
+    reverse_dns: Arc<ReverseDns>,
+}
+impl ProtocolSniffer {
+    pub fn new(config: SniffConfig) -> Self {
+        Self::with_reverse_dns(config, Arc::new(ReverseDns::new(4096)))
+    }
+    pub fn with_reverse_dns(config: SniffConfig, reverse_dns: Arc<ReverseDns>) -> Self {
+        Self {
+            config,
+            reverse_dns,
+        }
+    }
+    pub fn reverse_dns(&self) -> Arc<ReverseDns> {
+        self.reverse_dns.clone()
+    }
+}
+impl Default for ProtocolSniffer {
+    fn default() -> Self {
+        Self::new(SniffConfig::default())
+    }
+}
+
+impl MetadataEnricher for ProtocolSniffer {
+    fn name(&self) -> &'static str {
+        "protocol-sniffer"
+    }
+    async fn enrich(&self, mut flow: Flow) -> Result<Flow, InspectError> {
+        if flow.meta.domain.is_none()
+            && let Host::Ip(ip) = &flow.meta.destination.host
+            && let Some(domain) = self.reverse_dns.lookup(*ip)
+        {
+            flow.meta.domain = Some(Host::domain(domain));
+        }
+        match flow.payload {
+            FlowPayload::Stream(stream) => {
+                let (stream, prefix, result) = sniff_stream(stream, self.config).await;
+                apply_result(&mut flow.meta.domain, &mut flow.meta.protocol_hint, &result);
+                flow.payload = FlowPayload::Stream(Box::new(ObservedStream::new(
+                    stream,
+                    prefix,
+                    result.dns_query,
+                    self.reverse_dns.clone(),
+                )));
+            }
+            FlowPayload::Datagram(socket) => {
+                let (socket, replay, result) = sniff_datagrams(socket, self.config).await;
+                apply_result(&mut flow.meta.domain, &mut flow.meta.protocol_hint, &result);
+                flow.payload = FlowPayload::Datagram(Box::new(ObservedDatagram {
+                    inner: socket,
+                    replay,
+                    query: result.dns_query,
+                    reverse: self.reverse_dns.clone(),
+                }));
+            }
+        }
+        Ok(flow)
+    }
+}
+
+fn apply_result(
+    domain: &mut Option<Host>,
+    protocol_hint: &mut Option<ProtocolHint>,
+    result: &SniffResult,
+) {
+    if domain.is_none()
+        && let Some(value) = &result.domain
+    {
+        *domain = Some(Host::domain(value.clone()));
+    }
+    if protocol_hint.is_none() {
+        *protocol_hint = result.protocol;
+    }
+}
+
+async fn sniff_stream(
+    mut stream: Box<dyn ByteStream>,
+    config: SniffConfig,
+) -> (Box<dyn ByteStream>, Vec<u8>, SniffResult) {
+    let deadline = Instant::now() + config.timeout;
+    let mut prefix = Vec::with_capacity(config.max_bytes.min(4096));
+    while prefix.len() < config.max_bytes {
+        let old = prefix.len();
+        prefix.resize((old + 2048).min(config.max_bytes), 0);
+        match timeout_at(deadline, stream.read(&mut prefix[old..])).await {
+            Err(_) | Ok(Ok(0)) | Ok(Err(_)) => {
+                prefix.truncate(old);
+                break;
+            }
+            Ok(Ok(read)) => prefix.truncate(old + read),
+        }
+        let found = sniff_tcp(&prefix);
+        if found.protocol.is_some() {
+            return (stream, prefix, found);
+        }
+    }
+    let found = sniff_tcp(&prefix);
+    (stream, prefix, found)
+}
+
+async fn sniff_datagrams(
+    mut socket: Box<dyn DatagramSocket>,
+    config: SniffConfig,
+) -> (
+    Box<dyn DatagramSocket>,
+    VecDeque<(Vec<u8>, Endpoint)>,
+    SniffResult,
+) {
+    let deadline = Instant::now() + config.timeout;
+    let mut replay = VecDeque::new();
+    let mut total = 0;
+    let mut quic = QuicClientHello::new();
+    for _ in 0..config.max_datagrams {
+        let mut packet = vec![0; (config.max_bytes - total).min(65_535)];
+        if packet.is_empty() {
+            break;
+        }
+        let Ok(Ok((len, endpoint))) =
+            timeout_at(deadline, recv_datagram(&mut *socket, &mut packet)).await
+        else {
+            break;
+        };
+        packet.truncate(len);
+        total += len;
+        let found = sniff_udp(&packet, &mut quic);
+        replay.push_back((packet, endpoint));
+        if found.protocol.is_some() {
+            return (socket, replay, found);
+        }
+    }
+    (socket, replay, SniffResult::default())
+}
+
+async fn recv_datagram(
+    socket: &mut dyn DatagramSocket,
+    buf: &mut [u8],
+) -> Result<(usize, Endpoint), IoError> {
+    std::future::poll_fn(|cx| Pin::new(&mut *socket).poll_recv_from(cx, buf)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::num::NonZeroU64;
+    use rustbox_test_host::MemoryStream;
+    use rustbox_types::{FlowId, FlowMeta, InboundId, IpAddress, Network};
+
+    #[tokio::test]
+    async fn replays_stream_prefix_after_http_sniff() {
+        let request = b"GET / HTTP/1.1\r\nHost: replay.example\r\n\r\n".to_vec();
+        let flow = Flow {
+            meta: FlowMeta {
+                id: FlowId::new(NonZeroU64::new(1).unwrap()),
+                network: Network::Tcp,
+                source: Endpoint::localhost_v4(12345),
+                destination: Endpoint::new(Host::Ip(IpAddress::V4([203, 0, 113, 1])), 80),
+                inbound: InboundId::new(NonZeroU64::new(1).unwrap()),
+                domain: None,
+                protocol_hint: None,
+            },
+            payload: FlowPayload::Stream(Box::new(MemoryStream::with_read_data(request.clone()))),
+        };
+        let mut flow = ProtocolSniffer::default()
+            .enrich(flow)
+            .await
+            .expect("sniff");
+        assert_eq!(flow.meta.domain, Some(Host::domain("replay.example")));
+        assert_eq!(flow.meta.protocol_hint, Some(ProtocolHint::Http));
+        let FlowPayload::Stream(stream) = &mut flow.payload else {
+            panic!("stream")
+        };
+        let mut replay = Vec::new();
+        stream.read_to_end(&mut replay).await.expect("replay");
+        assert_eq!(replay, request);
     }
 }

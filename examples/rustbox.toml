@@ -59,9 +59,9 @@ server = "ss.example.test:8388"
 method = "aes-128-gcm"
 password = "test-password"
 
-# Group outbounds are parsed and compiled today. The current runtime uses the
-# configured default/first child as a static choice; active switching and
-# latency probing are future control-plane work.
+# Selector outbounds can be inspected and switched through the control gRPC
+# API. URLTest is exposed read-only and currently keeps its first child;
+# scheduled latency probing remains future work.
 # [[outbounds]]
 # id = "select"
 # type = "selector"
@@ -76,9 +76,10 @@ password = "test-password"
 # interval_seconds = 300
 # tolerance_ms = 50
 
-# vmess requires AEAD (alter_id = 0) and tcp transport.
-# vless is plain only; the `flow` field is rejected by the compiler.
-# trojan requires TLS; transport must be tcp.
+# vmess requires AEAD (alter_id = 0) and tcp transport; native UDP is supported.
+# vless is plain only; native length-framed UDP is supported, while the `flow`
+# field is rejected by the compiler.
+# trojan requires TLS and tcp transport; UDP ASSOCIATE is supported.
 # anytls uses the pinned protocol-compatible anytls 0.2.3 client; CI covers
 # TCP via sing-box and UDP via the in-tree anytls server round-trip.
 # [[outbounds]]
