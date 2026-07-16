@@ -1,3 +1,13 @@
+## 0.1.3
+
+- Updated the bundled Rust runtime with Hysteria2, TUIC, WireGuard, ShadowTLS,
+  Naive, multiplexed transports, DNS hijacking, remote rule sets, and UoT fixes.
+- Added host capability injection boundaries for physical network providers,
+  packet devices, route control, process lookup, and network metadata so mobile
+  platform adapters can provide VPN-owned resources.
+- Fixed a packet-stack race that could retry a canceled socket command after
+  the socket had already closed.
+
 ## 0.1.2
 
 - Documented the complete public Dart API, including lifecycle operations,

@@ -31,7 +31,7 @@ Flutter 3.44 or newer and Dart 3.12 or newer.
 
 ```yaml
 dependencies:
-  rustbox_flutter: ^0.1.2
+  rustbox_flutter: ^0.1.3
 ```
 
 ## Usage
