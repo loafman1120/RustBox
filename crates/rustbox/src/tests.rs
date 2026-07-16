@@ -28,6 +28,7 @@ fn inbound_http(id: &str) -> InboundConfig {
 fn outbound_direct(id: &str) -> OutboundConfig {
     OutboundConfig {
         id: id.to_string(),
+        dial: Default::default(),
         kind: OutboundConfigKind::Direct,
     }
 }
@@ -170,6 +171,7 @@ async fn control_grpc_lists_and_switches_selector_outbound() {
             outbound_direct("direct-b"),
             OutboundConfig {
                 id: "select".to_string(),
+                dial: Default::default(),
                 kind: OutboundConfigKind::Selector {
                     outbounds: vec!["direct-a".to_string(), "direct-b".to_string()],
                     default: Some("direct-a".to_string()),
@@ -271,10 +273,12 @@ fn composes_first_batch_proxy_outbounds() {
             outbound_direct("direct"),
             OutboundConfig {
                 id: "block".to_string(),
+                dial: Default::default(),
                 kind: OutboundConfigKind::Block,
             },
             OutboundConfig {
                 id: "socks".to_string(),
+                dial: Default::default(),
                 kind: OutboundConfigKind::Socks5 {
                     server: Endpoint::localhost_v4(1080),
                     username: None,
@@ -283,6 +287,7 @@ fn composes_first_batch_proxy_outbounds() {
             },
             OutboundConfig {
                 id: "http-out".to_string(),
+                dial: Default::default(),
                 kind: OutboundConfigKind::Http {
                     server: Endpoint::localhost_v4(8080),
                     username: None,
@@ -291,6 +296,7 @@ fn composes_first_batch_proxy_outbounds() {
             },
             OutboundConfig {
                 id: "ss".to_string(),
+                dial: Default::default(),
                 kind: OutboundConfigKind::Shadowsocks {
                     server: Endpoint::localhost_v4(8388),
                     method: "aes-128-gcm".to_string(),
@@ -348,6 +354,7 @@ fn composes_selector_runtime_route() {
             outbound_direct("direct"),
             OutboundConfig {
                 id: "select".to_string(),
+                dial: Default::default(),
                 kind: OutboundConfigKind::Selector {
                     outbounds: vec!["direct".to_string()],
                     default: Some("direct".to_string()),
@@ -379,7 +386,7 @@ fn implemented_protocol_outbounds() -> Vec<(&'static str, OutboundConfigKind)> {
                 security: Some("auto".to_string()),
                 alter_id: Some(0),
                 tls: None,
-                transport: Some("tcp".to_string()),
+                transport: Some(rustbox_config::V2RayTransportConfig::Tcp),
             },
         ),
         (
@@ -389,7 +396,7 @@ fn implemented_protocol_outbounds() -> Vec<(&'static str, OutboundConfigKind)> {
                 uuid: "00000000-0000-0000-0000-000000000002".to_string(),
                 flow: None,
                 tls: None,
-                transport: Some("tcp".to_string()),
+                transport: Some(rustbox_config::V2RayTransportConfig::Tcp),
             },
         ),
         (
@@ -398,7 +405,7 @@ fn implemented_protocol_outbounds() -> Vec<(&'static str, OutboundConfigKind)> {
                 server: Endpoint::localhost_v4(443),
                 password: "secret".to_string(),
                 tls: None,
-                transport: Some("tcp".to_string()),
+                transport: Some(rustbox_config::V2RayTransportConfig::Tcp),
             },
         ),
     ]
@@ -411,6 +418,7 @@ fn composes_vmess_vless_and_trojan_runtime_graphs() {
             inbounds: vec![inbound_http("http")],
             outbounds: vec![OutboundConfig {
                 id: protocol.to_string(),
+                dial: Default::default(),
                 kind,
             }],
             dns: None,
@@ -434,6 +442,7 @@ fn composes_anytls_outbound_runtime_graph() {
         inbounds: vec![inbound_http("http")],
         outbounds: vec![OutboundConfig {
             id: "anytls".to_string(),
+            dial: Default::default(),
             kind: OutboundConfigKind::AnyTls {
                 server: Endpoint::localhost_v4(443),
                 password: "secret".to_string(),

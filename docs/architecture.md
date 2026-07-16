@@ -133,7 +133,9 @@ DNS 查询被识别后，反向 relay 会观察同一 transaction ID 的 A / AAA
 
 `rustbox-dns-core` 已拆分为 `model / transport / resolver / cache / fake_ip / reverse / subsystem`。`HickoryTransport` 使用 Tokio connection provider，把 UDP、TCP、DoT、DoH、DoQ 映射到 Hickory 的 `Udp / Tcp / Tls / Https / Quic`，不在项目内手写五套 wire、TLS、HTTP/2 或 QUIC 实现。运行时构图会从编译配置实例化 rules → transport、FakeIP、cache 和 reverse recording 链，嵌入方可通过 `RustBox::resolve_dns` 使用。Hickory 自带缓存被关闭，由 RustBox cache 统一 TTL 策略。
 
-加密 DNS 当前要求 endpoint 使用域名，以便同时提供 TLS server name；上游 endpoint 的 bootstrap 使用系统解析。transport 目前只允许 direct（显式指定 direct 可用），非 direct outbound 在 composition 阶段报错，不能静默绕过代理。`dns.hijack` 目标已经参与 TUN 平台配置，但把捕获到的 TCP/UDP 53 flow 终结到本地 DNS responder 仍是下一阶段，不能与“上游 transport 已接入”混为一谈。
+加密 DNS 当前要求 endpoint 使用域名，以便同时提供 TLS server name；上游 endpoint 的 bootstrap 使用系统解析。outbound 的 `dial.domain_resolver` 可复用指定 Hickory transport 做 A/AAAA 解析。DNS transport 自身目前仍只允许 direct（显式指定 direct 可用），非 direct outbound 在 composition 阶段报错，不能静默绕过代理。`hijack-dns` 路由动作会把捕获到的 TCP/UDP DNS flow 终结到进程内 responder，并复用同一个规则、缓存、FakeIP 与反向映射链。
+
+每个 concrete outbound 都编译出独立的 dial policy。无 `detour` 时由 `TokioNetworkProvider` 使用 Tokio readiness/timeout 与 `socket2` 应用源地址、接口、Linux/Android routing mark 和 TCP keepalive；有 `detour` 时构图器按依赖拓扑把协议服务器连接交给上游 outbound。配置阶段拒绝未知 detour、组/block detour 和环。共享所有权只保留在运行图节点边界，Engine 直接保存 `Arc<dyn Outbound>`，协议内部不再复制 dial fields。当前 detour 已覆盖 TCP 及基于 TCP 承载的 UDP；需要裸 UDP socket 的代理协议仍需 destination-aware datagram dial，不能回退为系统直连。
 
 路由条件可通过 `protocol = ["http", "tls", "quic", "dns", "socks5"]` 消费 `FlowMeta.protocol_hint`；它与 inbound、network、domain、port 等其它字段保持 AND 语义。域名条件优先读取嗅探或 DNS 恢复出的 `FlowMeta.domain`，同时保留原始目标 IP 供 CIDR 条件匹配。
 
@@ -157,7 +159,7 @@ kernel / modules 产生结构化事件，协议与应用诊断统一使用 `trac
 
 inbound：`http-connect` / `socks5` / `mixed` / `tun` / `transparent` / `anytls`。
 
-outbound：`direct` / `block`（编译为 `Reject` 决策）/ `socks5` / `http` / `shadowsocks` / `vmess`（AEAD only，`alter_id` 必须为 0，仅 `tcp` transport，支持原生 UDP） / `vless`（plain，禁用 Vision `flow`，支持原生 UDP length framing） / `trojan`（必须 TLS，支持 UDP ASSOCIATE） / `anytls`；`selector` 支持运行时查询与切换，`urltest` 当前按首个 child 静态选择并以只读组暴露。
+outbound：`direct` / `block` / `socks5` / `http` / `shadowsocks` / `vmess` / `vless`（含 Vision） / `trojan` / `anytls` / `hysteria2` / `tuic` / `naive` / `shadow-tls` / `wireguard`；WireGuard 也可用顶层 `endpoint` 语义声明。VMess/VLESS/Trojan 共享 TCP、WebSocket、HTTP/2、gRPC、HTTPUpgrade transport 以及 Reality/ECH/mTLS/SPKI pinning TLS 配置。Mux.Cool 是支持 TCP 与 XUDP 的多载波有界 actor 池；UDP New frame 带稳定 Global ID，Keep frame 保留逐包目标/来源地址。`selector` 支持运行时查询与切换，`urltest` 当前按首个 child 静态选择并以只读组暴露。
 
 横切：SourceConfig 四步 pipeline、CLI / Flutter 共享 `RustBox` 生命周期、gRPC
 控制 API、结构化观测、TLS SNI / HTTP Host / QUIC v1 / DNS 嗅探与 TTL 域名恢复、Linux / Windows / macOS TUN、Linux transparent redirect。
@@ -167,7 +169,7 @@ outbound：`direct` / `block`（编译为 `Reject` 决策）/ `socks5` / `http` 
 
 1. session limits：为 TCP/UDP flow 增加统一并发容量、空闲超时与淘汰策略。
 2. UDP：限制并发、增加空闲超时并记录更完整的会话元数据。
-3. inspection + DNS：增加 QUIC v2、ECH 可观测诊断、嗅探配置/route action；实现 DNS hijack responder、非 direct socket injection 与 `ProcessLookup`。
+3. inspection + DNS：增加 QUIC v2 与 ECH 可观测诊断；扩展非 direct DNS socket injection。
 4. runtime outbound graph：URLTest 健康检查、选择持久化、切换事件与可选的既有连接中断。
 5. session control：活跃连接句柄、取消命令、UDP 指标。
 6. 性能基线：测量吞吐、延迟、RSS 与分配后再优化。

@@ -10,9 +10,10 @@ pub use rustbox_dns_core::{
     DnsRuleMatcher, DnsServerConfig, DnsServerProtocol, FakeIpConfig,
 };
 pub use rustbox_kernel::{RouteMode, TransparentRedirectMode, TunDnsMode};
+use rustbox_route::{ResolveStrategy, RouteAction, RouteOptions, RouteResolve};
 use rustbox_types::{
-    Endpoint, InboundId, IpCidr, Network, OutboundId, PortRange, ProtocolHint, RejectReason,
-    RouteDecision,
+    Endpoint, Host, InboundId, IpAddress, IpCidr, Network, OutboundId, PortRange, ProtocolHint,
+    RejectReason, RouteDecision,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -21,6 +22,7 @@ mod stages;
 pub use stages::{ConfigCompiler, ConfigError, NormalizedConfig, ParsedConfig, ValidatedConfig};
 
 mod compiler;
+pub use compiler::compile_headless_route_matcher;
 mod model;
 
 pub use model::*;
@@ -50,6 +52,7 @@ mod tests {
     fn outbound_direct(id: &str) -> OutboundConfig {
         OutboundConfig {
             id: id.to_string(),
+            dial: DialConfig::default(),
             kind: OutboundConfigKind::Direct,
         }
     }
@@ -84,6 +87,7 @@ mod tests {
             inbounds: vec![inbound_http("http")],
             outbounds: vec![OutboundConfig {
                 id: "http-out".to_string(),
+                dial: DialConfig::default(),
                 kind: OutboundConfigKind::Http {
                     server: Endpoint::localhost_v4(8080),
                     username: Some("user".to_string()),
@@ -108,6 +112,7 @@ mod tests {
             inbounds: vec![inbound_http("http")],
             outbounds: vec![OutboundConfig {
                 id: "ss".to_string(),
+                dial: DialConfig::default(),
                 kind: OutboundConfigKind::Shadowsocks {
                     server: Endpoint::localhost_v4(8388),
                     method: String::new(),
@@ -132,6 +137,7 @@ mod tests {
             inbounds: vec![inbound_http("http")],
             outbounds: vec![OutboundConfig {
                 id: "anytls".to_string(),
+                dial: DialConfig::default(),
                 kind: OutboundConfigKind::AnyTls {
                     server: Endpoint::localhost_v4(443),
                     password: "secret".to_string(),
@@ -140,6 +146,13 @@ mod tests {
                         server_name: None,
                         insecure: false,
                         alpn: Vec::new(),
+                        client_certificate_pem: None,
+                        client_private_key_pem: None,
+                        certificate_authorities_pem: Vec::new(),
+                        certificate_public_key_sha256: Vec::new(),
+                        fingerprint: None,
+                        ech_config: None,
+                        reality: None,
                     }),
                 },
             }],
@@ -163,6 +176,7 @@ mod tests {
                 outbound_direct("direct"),
                 OutboundConfig {
                     id: "auto".to_string(),
+                    dial: DialConfig::default(),
                     kind: OutboundConfigKind::UrlTest {
                         outbounds: vec!["direct".to_string()],
                         url: "https://www.gstatic.com/generate_204".to_string(),
@@ -172,6 +186,7 @@ mod tests {
                 },
                 OutboundConfig {
                     id: "select".to_string(),
+                    dial: DialConfig::default(),
                     kind: OutboundConfigKind::Selector {
                         outbounds: vec!["auto".to_string()],
                         default: None,
@@ -188,6 +203,26 @@ mod tests {
         let error = validate_error(source);
 
         assert!(error.message.contains("must not reference group outbound"));
+    }
+
+    #[test]
+    fn rejects_detour_cycles() {
+        let mut first = outbound_direct("first");
+        first.dial.detour = Some("second".to_string());
+        let mut second = outbound_direct("second");
+        second.dial.detour = Some("first".to_string());
+        let source = SourceConfig {
+            inbounds: vec![inbound_http("http")],
+            outbounds: vec![first, second],
+            dns: None,
+            route_rule_sets: Vec::new(),
+            routes: vec![RouteRuleConfig::Default {
+                outbound: "first".to_string(),
+            }],
+        };
+
+        let error = validate_error(source);
+        assert!(error.message.contains("detour cycle"));
     }
 
     #[test]

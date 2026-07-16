@@ -1,7 +1,7 @@
 use crate::ComposeError;
 use rustbox_control::OutboundGroupRegistry;
 use rustbox_dns_core::{DnsQuery, DnsResponse, DnsSubsystem};
-use rustbox_inspect::ProtocolSniffer;
+use rustbox_inspect::FlowEnricher;
 use rustbox_kernel::{Engine, Service, ServiceContext, ServiceError, TaskScope};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,9 +13,9 @@ const SESSION_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// 一代数据面及其 Tokio 任务域。
 pub(crate) struct ComposedRuntime {
     generation: u64,
-    engine: Arc<Engine<ProtocolSniffer>>,
+    engine: Arc<Engine<FlowEnricher>>,
     outbound_groups: Arc<OutboundGroupRegistry>,
-    dns: Option<DnsSubsystem>,
+    dns: Option<Arc<DnsSubsystem>>,
     services: Vec<Box<dyn Service>>,
     accept_tasks: TaskScope,
     session_tasks: TaskScope,
@@ -23,10 +23,11 @@ pub(crate) struct ComposedRuntime {
 
 impl ComposedRuntime {
     pub(crate) fn new(
-        engine: Arc<Engine<ProtocolSniffer>>,
+        engine: Arc<Engine<FlowEnricher>>,
         services: Vec<Box<dyn Service>>,
         outbound_groups: Arc<OutboundGroupRegistry>,
-        dns: Option<DnsSubsystem>,
+        dns: Option<Arc<DnsSubsystem>>,
+        session_tasks: TaskScope,
     ) -> Self {
         Self {
             generation: 0,
@@ -35,7 +36,7 @@ impl ComposedRuntime {
             dns,
             services,
             accept_tasks: TaskScope::new(),
-            session_tasks: TaskScope::new(),
+            session_tasks,
         }
     }
 

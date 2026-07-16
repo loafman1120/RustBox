@@ -5,12 +5,17 @@
 
 pub mod host;
 pub use host::*;
+pub mod dial;
+pub use dial::Dialer;
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind};
-use rustbox_route::Router;
-use rustbox_types::{Endpoint, FlowId, FlowMeta, Network, OutboundId, RejectReason, RouteDecision};
+use rustbox_route::{ResolveStrategy, RouteAction, RouteOptions, Router};
+use rustbox_types::{
+    Endpoint, FlowId, FlowMeta, Host, IpAddress, Network, OutboundId, RejectReason, RouteDecision,
+    ServiceId,
+};
 use std::collections::HashMap;
 use std::future::{Future, poll_fn};
 use std::sync::Arc;
@@ -71,7 +76,35 @@ pub trait Outbound: Send + Sync {
 
 #[derive(Clone, Copy)]
 pub struct OutboundContext<'a> {
-    pub flow: &'a FlowMeta,
+    pub flow: Option<&'a FlowMeta>,
+    pub route_options: Option<&'a RouteOptions>,
+}
+
+impl<'a> OutboundContext<'a> {
+    pub const fn for_flow(flow: &'a FlowMeta) -> Self {
+        Self {
+            flow: Some(flow),
+            route_options: None,
+        }
+    }
+
+    pub const fn for_routed_flow(flow: &'a FlowMeta, options: &'a RouteOptions) -> Self {
+        Self {
+            flow: Some(flow),
+            route_options: Some(options),
+        }
+    }
+
+    pub const fn background() -> Self {
+        Self {
+            flow: None,
+            route_options: None,
+        }
+    }
+
+    pub fn flow_id(self) -> Option<FlowId> {
+        self.flow.map(|flow| flow.id)
+    }
 }
 
 /// Flow 增强阶段在路由前运行，可观察并原样重放载荷前缀，同时补充元数据。
@@ -79,6 +112,15 @@ pub trait MetadataEnricher: Send + Sync {
     fn name(&self) -> &'static str;
 
     fn enrich(&self, flow: Flow) -> impl Future<Output = Result<Flow, InspectError>> + Send;
+}
+
+pub trait RouteResolver: Send + Sync {
+    fn resolve(
+        &self,
+        domain: String,
+        server: Option<String>,
+        strategy: ResolveStrategy,
+    ) -> BoxFuture<'_, Result<Vec<IpAddress>, NetError>>;
 }
 
 /// No-op stage used when a runtime does not install inspection.
@@ -99,8 +141,10 @@ impl MetadataEnricher for NoopEnricher {
 pub struct Engine<E = NoopEnricher> {
     router: Box<dyn Router>,
     enrichment: E,
-    outbounds: HashMap<OutboundId, Box<dyn Outbound>>,
+    outbounds: HashMap<OutboundId, Arc<dyn Outbound>>,
     observability: Arc<dyn ObservabilitySink>,
+    route_resolver: Option<Arc<dyn RouteResolver>>,
+    hijackers: HashMap<ServiceId, Arc<dyn Outbound>>,
 }
 
 impl Engine<NoopEnricher> {
@@ -110,6 +154,8 @@ impl Engine<NoopEnricher> {
             enrichment: NoopEnricher,
             outbounds: HashMap::new(),
             observability: Arc::new(NoopObservabilitySink),
+            route_resolver: None,
+            hijackers: HashMap::new(),
         }
     }
 }
@@ -188,8 +234,40 @@ impl<E: MetadataEnricher> Engine<E> {
             .enrich(flow)
             .await
             .map_err(FlowError::Inspect)?;
-        let meta = flow.meta;
-        let decision = self.router.route(&meta);
+        let mut meta = flow.meta;
+        let mut route_options = RouteOptions::default();
+        let mut next_rule = 0;
+        let decision = loop {
+            let step = self.router.route_step(&meta, next_rule);
+            next_rule = step.next_rule;
+            match step.action {
+                RouteAction::Final(decision) => break decision,
+                RouteAction::Options(options) => {
+                    apply_route_options(&mut meta, &mut route_options, options);
+                }
+                RouteAction::Resolve(resolve) => {
+                    let Host::Domain(domain) = &meta.destination.host else {
+                        continue;
+                    };
+                    let resolver = self.route_resolver.as_ref().ok_or_else(|| {
+                        FlowError::Route("route resolve action requires a DNS resolver".into())
+                    })?;
+                    let addresses = resolver
+                        .resolve(domain.clone(), resolve.server, resolve.strategy)
+                        .await
+                        .map_err(|error| FlowError::Route(error.message))?;
+                    let address = addresses.into_iter().next().ok_or_else(|| {
+                        FlowError::Route("route resolve action returned no addresses".into())
+                    })?;
+                    meta.destination.host = Host::Ip(address);
+                }
+            }
+            if next_rule == usize::MAX {
+                return Err(FlowError::Route(
+                    "non-final route action did not advance the rule cursor".into(),
+                ));
+            }
+        };
         self.emit(
             EventLevel::Debug,
             "rustbox.kernel.route",
@@ -207,7 +285,7 @@ impl<E: MetadataEnricher> Engine<E> {
                     .get(&outbound_id)
                     .ok_or(FlowError::MissingOutbound(outbound_id))?;
                 let target = meta.destination.clone();
-                let ctx = OutboundContext { flow: &meta };
+                let ctx = OutboundContext::for_routed_flow(&meta, &route_options);
 
                 match flow.payload {
                     FlowPayload::Stream(inbound_stream) => {
@@ -229,9 +307,19 @@ impl<E: MetadataEnricher> Engine<E> {
                             .open_datagram(ctx, target)
                             .await
                             .map_err(FlowError::Outbound)?;
-                        let relay = relay_datagram(inbound_socket, outbound_socket)
+                        let relay = if let Some(timeout) = route_options.udp_timeout {
+                            tokio::time::timeout(
+                                timeout,
+                                relay_datagram(inbound_socket, outbound_socket),
+                            )
                             .await
-                            .map_err(FlowError::Relay)?;
+                            .map_err(|_| FlowError::Route("UDP route timeout elapsed".into()))?
+                            .map_err(FlowError::Relay)?
+                        } else {
+                            relay_datagram(inbound_socket, outbound_socket)
+                                .await
+                                .map_err(FlowError::Relay)?
+                        };
                         Ok(FlowOutcome::Forwarded {
                             outbound: outbound_id,
                             network: Network::Udp,
@@ -240,8 +328,39 @@ impl<E: MetadataEnricher> Engine<E> {
                     }
                 }
             }
-            RouteDecision::Reject(reason) => Ok(FlowOutcome::Rejected(reason)),
-            RouteDecision::Hijack(service) => Ok(FlowOutcome::Hijacked(service)),
+            RouteDecision::Reject(reason) => {
+                apply_rejection(&reason, flow.payload);
+                Ok(FlowOutcome::Rejected(reason))
+            }
+            RouteDecision::Hijack(service) => {
+                let hijacker = self
+                    .hijackers
+                    .get(&service)
+                    .ok_or(FlowError::MissingHijacker(service))?;
+                let target = meta.destination.clone();
+                let ctx = OutboundContext::for_routed_flow(&meta, &route_options);
+                match flow.payload {
+                    FlowPayload::Stream(inbound) => {
+                        let outbound = hijacker
+                            .open_stream(ctx, target)
+                            .await
+                            .map_err(FlowError::Outbound)?;
+                        relay_stream(inbound, outbound)
+                            .await
+                            .map_err(FlowError::Relay)?;
+                    }
+                    FlowPayload::Datagram(inbound) => {
+                        let outbound = hijacker
+                            .open_datagram(ctx, target)
+                            .await
+                            .map_err(FlowError::Outbound)?;
+                        relay_datagram(inbound, outbound)
+                            .await
+                            .map_err(FlowError::Relay)?;
+                    }
+                }
+                Ok(FlowOutcome::Hijacked(service))
+            }
         }
     }
 
@@ -255,6 +374,44 @@ impl<E: MetadataEnricher> Engine<E> {
         self.observability
             .emit(Event::new(level, target, flow_id, kind))
             .await;
+    }
+}
+
+fn apply_rejection(reason: &RejectReason, mut payload: FlowPayload) {
+    // Dropping is the portable baseline. For an accepted Tokio TCP socket an
+    // abortive close maps `tcp-reset` to SO_LINGER(0), producing a real RST.
+    // ICMP errors require packet-injection authority and are handled by a
+    // packet/transparent platform adapter when one owns that capability.
+    if matches!(reason, RejectReason::TcpReset)
+        && let FlowPayload::Stream(stream) = &mut payload
+        && let Some(tcp) = stream.as_any_mut().downcast_mut::<tokio::net::TcpStream>()
+    {
+        let _ = socket2::SockRef::from(&*tcp).set_linger(Some(std::time::Duration::ZERO));
+    }
+    drop(payload);
+}
+
+fn apply_route_options(meta: &mut FlowMeta, accumulated: &mut RouteOptions, options: RouteOptions) {
+    if let Some(host) = options.override_host {
+        meta.destination.host = host.clone();
+        meta.domain = match host {
+            Host::Domain(domain) => Some(Host::Domain(domain)),
+            Host::Ip(_) => None,
+        };
+        accumulated.override_host = Some(meta.destination.host.clone());
+    }
+    if let Some(port) = options.override_port {
+        meta.destination.port = port;
+        accumulated.override_port = Some(port);
+    }
+    if options.udp_timeout.is_some() {
+        accumulated.udp_timeout = options.udp_timeout;
+    }
+    if options.udp_connect.is_some() {
+        accumulated.udp_connect = options.udp_connect;
+    }
+    if options.udp_disable_domain_unmapping.is_some() {
+        accumulated.udp_disable_domain_unmapping = options.udp_disable_domain_unmapping;
     }
 }
 
@@ -344,13 +501,20 @@ impl<E: MetadataEnricher> FlowSink for Engine<E> {
 pub struct EngineBuilder<E = NoopEnricher> {
     router: Box<dyn Router>,
     enrichment: E,
-    outbounds: HashMap<OutboundId, Box<dyn Outbound>>,
+    outbounds: HashMap<OutboundId, Arc<dyn Outbound>>,
     observability: Arc<dyn ObservabilitySink>,
+    route_resolver: Option<Arc<dyn RouteResolver>>,
+    hijackers: HashMap<ServiceId, Arc<dyn Outbound>>,
 }
 
 impl<E> EngineBuilder<E> {
     pub fn observability(mut self, observability: Arc<dyn ObservabilitySink>) -> Self {
         self.observability = observability;
+        self
+    }
+
+    pub fn route_resolver(mut self, resolver: Arc<dyn RouteResolver>) -> Self {
+        self.route_resolver = Some(resolver);
         self
     }
 
@@ -360,10 +524,30 @@ impl<E> EngineBuilder<E> {
             enrichment,
             outbounds: self.outbounds,
             observability: self.observability,
+            route_resolver: self.route_resolver,
+            hijackers: self.hijackers,
         }
     }
 
-    pub fn register_outbound(mut self, outbound: Box<dyn Outbound>) -> Result<Self, EngineError> {
+    pub fn register_hijacker(
+        mut self,
+        service: ServiceId,
+        hijacker: Arc<dyn Outbound>,
+    ) -> Result<Self, EngineError> {
+        if self.hijackers.insert(service, hijacker).is_some() {
+            return Err(EngineError::DuplicateHijacker(service));
+        }
+        Ok(self)
+    }
+
+    pub fn register_outbound(self, outbound: Box<dyn Outbound>) -> Result<Self, EngineError> {
+        self.register_outbound_arc(Arc::from(outbound))
+    }
+
+    pub fn register_outbound_arc(
+        mut self,
+        outbound: Arc<dyn Outbound>,
+    ) -> Result<Self, EngineError> {
         let id = outbound.id();
         if self.outbounds.contains_key(&id) {
             return Err(EngineError::DuplicateOutbound(id));
@@ -378,6 +562,8 @@ impl<E> EngineBuilder<E> {
             enrichment: self.enrichment,
             outbounds: self.outbounds,
             observability: self.observability,
+            route_resolver: self.route_resolver,
+            hijackers: self.hijackers,
         })
     }
 }
@@ -397,14 +583,17 @@ pub enum FlowOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FlowError {
     MissingOutbound(OutboundId),
+    MissingHijacker(ServiceId),
     Inspect(InspectError),
     Outbound(OutboundError),
     Relay(RelayError),
+    Route(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineError {
     DuplicateOutbound(OutboundId),
+    DuplicateHijacker(ServiceId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -689,6 +878,7 @@ mod tests {
             inbound: InboundId::new(NonZeroU64::new(2).expect("non-zero id")),
             domain: Some(Host::domain(format!("outbound-{outbound_id}.test"))),
             protocol_hint: None,
+            platform: Default::default(),
         }
     }
 

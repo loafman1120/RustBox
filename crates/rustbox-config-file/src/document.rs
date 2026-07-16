@@ -8,9 +8,11 @@ mod observability;
 use garde::Validate;
 use rustbox_config::{
     DnsConfig, InboundConfig, LogicalModeConfig, OutboundConfig, RouteActionConfig,
-    RouteMatchConfig, RouteMatcherConfig, RouteRuleConfig, RouteRuleSetConfig, SourceConfig,
+    RouteMatchConfig, RouteMatcherConfig, RouteOptionsConfig, RouteResolveConfig, RouteRuleConfig,
+    RouteRuleSetConfig, RouteRuleSetFormat, RouteRuleSetSourceConfig, SourceConfig,
 };
-use rustbox_types::{IpCidr, Network, PortRange, ProtocolHint, RejectReason};
+use rustbox_route::ResolveStrategy;
+use rustbox_types::{IpCidr, Network, NetworkType, PortRange, ProtocolHint, RejectReason};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
 use std::fs;
@@ -126,6 +128,97 @@ pub fn parse_json_source(input: &str) -> Result<SourceConfig, ConfigFileError> {
     parse_json_str(input).map(FileConfig::into_source)
 }
 
+pub fn parse_rule_set_source_json(input: &str) -> Result<Vec<RouteMatcherConfig>, ConfigFileError> {
+    loader::parse_json::<SourceRouteRuleSetDocument>(input)?.into_rules()
+}
+
+pub fn parse_rule_set_rustbox_toml(
+    input: &str,
+) -> Result<Vec<RouteMatcherConfig>, ConfigFileError> {
+    loader::parse_toml::<TomlRouteRuleSetDocument>(input)?.into_rules()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceRouteRuleSetDocument {
+    version: u32,
+    rules: Vec<SourceRouteMatcher>,
+}
+
+impl SourceRouteRuleSetDocument {
+    fn into_rules(self) -> Result<Vec<RouteMatcherConfig>, ConfigFileError> {
+        if !(1..=5).contains(&self.version) {
+            return Err(ConfigFileError::new(format!(
+                "unsupported sing-box rule-set source version {}",
+                self.version
+            )));
+        }
+        self.rules
+            .into_iter()
+            .map(SourceRouteMatcher::into_source)
+            .collect()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SourceRouteMatcher {
+    Logical {
+        #[serde(rename = "type")]
+        kind: SourceLogicalType,
+        mode: TomlLogicalMode,
+        rules: Vec<SourceRouteMatcher>,
+        #[serde(default)]
+        invert: bool,
+    },
+    Default {
+        #[serde(rename = "type", default)]
+        kind: Option<SourceDefaultType>,
+        #[serde(flatten)]
+        matcher: Box<TomlRouteMatchFields>,
+    },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceLogicalType {
+    Logical,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceDefaultType {
+    Default,
+    Rule,
+}
+
+impl SourceRouteMatcher {
+    fn into_source(self) -> Result<RouteMatcherConfig, ConfigFileError> {
+        match self {
+            Self::Logical {
+                kind,
+                mode,
+                rules,
+                invert,
+            } => {
+                let _ = kind;
+                Ok(RouteMatcherConfig::Logical {
+                    mode: mode.into(),
+                    rules: rules
+                        .into_iter()
+                        .map(Self::into_source)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    invert,
+                })
+            }
+            Self::Default { kind, matcher } => {
+                let _ = kind;
+                Ok(RouteMatcherConfig::Conditions(Box::new((*matcher).into())))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Validate)]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +232,12 @@ struct ConfigDocument {
     #[serde(default)]
     #[garde(dive)]
     outbounds: Vec<OutboundConfig>,
+    /// Bidirectional network endpoints. They are lowered into the same
+    /// route-addressable runtime graph as outbounds; keeping the distinction
+    /// in the document avoids duplicating compiler and data-plane machinery.
+    #[serde(default)]
+    #[garde(dive)]
+    endpoints: Vec<OutboundConfig>,
     #[garde(dive)]
     dns: Option<DnsConfig>,
     #[serde(default)]
@@ -161,7 +260,19 @@ impl ConfigDocument {
                 config.normalize_derived_modes();
             }
         }
-        let outbounds = self.outbounds;
+        let mut outbounds = self.outbounds;
+        for endpoint in self.endpoints {
+            if !matches!(
+                endpoint.kind,
+                rustbox_config::OutboundConfigKind::WireGuard { .. }
+            ) {
+                return Err(ConfigFileError::new(format!(
+                    "endpoint `{}` uses an unsupported endpoint type; currently only `wireguard` is supported",
+                    endpoint.id
+                )));
+            }
+            outbounds.push(endpoint);
+        }
         let routes = self
             .routes
             .into_iter()
@@ -211,6 +322,27 @@ enum TomlRouteRuleConfig {
         #[serde(default)]
         invert: bool,
     },
+    RouteOptions {
+        override_address: Option<String>,
+        override_port: Option<u16>,
+        #[serde(default, with = "humantime_serde::option")]
+        udp_timeout: Option<std::time::Duration>,
+        udp_connect: Option<bool>,
+        udp_disable_domain_unmapping: Option<bool>,
+        #[serde(flatten)]
+        matcher: Box<TomlRouteMatchFields>,
+    },
+    Resolve {
+        server: Option<String>,
+        #[serde(default)]
+        strategy: TomlResolveStrategy,
+        #[serde(flatten)]
+        matcher: Box<TomlRouteMatchFields>,
+    },
+    HijackDns {
+        #[serde(flatten)]
+        matcher: Box<TomlRouteMatchFields>,
+    },
 }
 
 impl TomlRouteRuleConfig {
@@ -243,6 +375,62 @@ impl TomlRouteRuleConfig {
                 invert,
                 action: route_action(outbound, reject)?,
             }),
+            Self::RouteOptions {
+                override_address,
+                override_port,
+                udp_timeout,
+                udp_connect,
+                udp_disable_domain_unmapping,
+                matcher,
+            } => Ok(RouteRuleConfig::Rule {
+                matcher: RouteMatcherConfig::Conditions(Box::new((*matcher).into())),
+                action: RouteActionConfig::Options(RouteOptionsConfig {
+                    override_address: override_address
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(ConfigFileError::new)?,
+                    override_port,
+                    udp_timeout,
+                    udp_connect,
+                    udp_disable_domain_unmapping,
+                }),
+            }),
+            Self::Resolve {
+                server,
+                strategy,
+                matcher,
+            } => Ok(RouteRuleConfig::Rule {
+                matcher: RouteMatcherConfig::Conditions(Box::new((*matcher).into())),
+                action: RouteActionConfig::Resolve(RouteResolveConfig {
+                    server,
+                    strategy: strategy.into(),
+                }),
+            }),
+            Self::HijackDns { matcher } => Ok(RouteRuleConfig::Rule {
+                matcher: RouteMatcherConfig::Conditions(Box::new((*matcher).into())),
+                action: RouteActionConfig::HijackDns,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlResolveStrategy {
+    #[default]
+    PreferIpv4,
+    PreferIpv6,
+    Ipv4Only,
+    Ipv6Only,
+}
+
+impl From<TomlResolveStrategy> for ResolveStrategy {
+    fn from(value: TomlResolveStrategy) -> Self {
+        match value {
+            TomlResolveStrategy::PreferIpv4 => Self::PreferIpv4,
+            TomlResolveStrategy::PreferIpv6 => Self::PreferIpv6,
+            TomlResolveStrategy::Ipv4Only => Self::Ipv4Only,
+            TomlResolveStrategy::Ipv6Only => Self::Ipv6Only,
         }
     }
 }
@@ -321,6 +509,24 @@ struct TomlRouteMatchFields {
     #[serde(default)]
     rule_set: Vec<String>,
     #[serde(default)]
+    process_name: Vec<String>,
+    #[serde(default)]
+    process_path: Vec<String>,
+    #[serde(default)]
+    package_name: Vec<String>,
+    #[serde(default)]
+    user_id: Vec<u32>,
+    #[serde(default)]
+    user_name: Vec<String>,
+    #[serde(default)]
+    interface: Vec<String>,
+    #[serde(default)]
+    wifi_ssid: Vec<String>,
+    #[serde(default)]
+    wifi_bssid: Vec<String>,
+    #[serde(default)]
+    network_type: Vec<NetworkType>,
+    #[serde(default)]
     invert: bool,
 }
 
@@ -349,6 +555,15 @@ impl From<TomlRouteMatchFields> for RouteMatchConfig {
                 .chain(value.source_port_range)
                 .collect(),
             rule_set: value.rule_set,
+            process_name: value.process_name,
+            process_path: value.process_path,
+            package_name: value.package_name,
+            user_id: value.user_id,
+            user_name: value.user_name,
+            interface: value.interface,
+            wifi_ssid: value.wifi_ssid,
+            wifi_bssid: value.wifi_bssid,
+            network_type: value.network_type,
             invert: value.invert,
         }
     }
@@ -414,34 +629,46 @@ enum TomlRouteRuleSetConfig {
     Local {
         id: String,
         path: String,
+        #[serde(default)]
+        format: TomlRouteRuleSetFormat,
+        #[serde(default = "default_rule_set_reload_interval", with = "humantime_serde")]
+        reload_interval: std::time::Duration,
     },
     Inline {
         id: String,
         rules: Vec<TomlRouteMatcherConfig>,
+    },
+    Remote {
+        id: String,
+        url: String,
+        #[serde(default = "default_remote_rule_set_format")]
+        format: TomlRouteRuleSetFormat,
+        #[serde(default = "default_rule_set_update_interval", with = "humantime_serde")]
+        update_interval: std::time::Duration,
+        cache_path: Option<String>,
     },
 }
 
 impl TomlRouteRuleSetConfig {
     fn into_source(self, base_dir: Option<&Path>) -> Result<RouteRuleSetConfig, ConfigFileError> {
         match self {
-            Self::Local { id, path } => {
+            Self::Local {
+                id,
+                path,
+                format,
+                reload_interval,
+            } => {
                 let path = resolve_config_path(base_dir, &path);
-                let text = fs::read_to_string(&path).map_err(|err| {
-                    ConfigFileError::new(format!(
-                        "failed to read route rule-set `{}`: {err}",
-                        path.display()
-                    ))
-                })?;
-                let document =
-                    loader::parse_toml::<TomlRouteRuleSetDocument>(&text).map_err(|error| {
-                        ConfigFileError::new(format!(
-                            "failed to parse route rule-set `{}`: {error}",
-                            path.display()
-                        ))
-                    })?;
+                let format = RouteRuleSetFormat::from(format);
+                let rules = load_rule_set_rules(&path, format)?;
                 Ok(RouteRuleSetConfig {
                     id,
-                    rules: document.into_rules()?,
+                    rules,
+                    source: RouteRuleSetSourceConfig::Local {
+                        path: path.to_string_lossy().into_owned(),
+                        format,
+                        reload_interval,
+                    },
                 })
             }
             Self::Inline { id, rules } => Ok(RouteRuleSetConfig {
@@ -450,19 +677,125 @@ impl TomlRouteRuleSetConfig {
                     .into_iter()
                     .map(TomlRouteMatcherConfig::into_source)
                     .collect::<Result<Vec<_>, _>>()?,
+                source: RouteRuleSetSourceConfig::Inline,
             }),
+            Self::Remote {
+                id,
+                url,
+                format,
+                update_interval,
+                cache_path,
+            } => {
+                let format = RouteRuleSetFormat::from(format);
+                let cache_path = cache_path
+                    .map(|path| resolve_config_path(base_dir, &path))
+                    .unwrap_or_else(|| {
+                        base_dir
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(".rustbox")
+                            .join("rule-sets")
+                            .join(format!("{id}.cache"))
+                    });
+                let rules = if cache_path.exists() {
+                    load_rule_set_rules(&cache_path, format)?
+                } else {
+                    Vec::new()
+                };
+                Ok(RouteRuleSetConfig {
+                    id,
+                    rules,
+                    source: RouteRuleSetSourceConfig::Remote {
+                        url,
+                        format,
+                        update_interval,
+                        cache_path: cache_path.to_string_lossy().into_owned(),
+                    },
+                })
+            }
         }
     }
+}
+
+fn load_rule_set_rules(
+    path: &Path,
+    format: RouteRuleSetFormat,
+) -> Result<Vec<RouteMatcherConfig>, ConfigFileError> {
+    if matches!(format, RouteRuleSetFormat::Binary) {
+        let bytes = fs::read(path).map_err(|err| {
+            ConfigFileError::new(format!(
+                "failed to read route rule-set `{}`: {err}",
+                path.display()
+            ))
+        })?;
+        return crate::parse_rule_set_srs(&bytes).map_err(|error| {
+            ConfigFileError::new(format!(
+                "failed to parse route rule-set `{}`: {error}",
+                path.display()
+            ))
+        });
+    }
+    let text = fs::read_to_string(path).map_err(|err| {
+        ConfigFileError::new(format!(
+            "failed to read route rule-set `{}`: {err}",
+            path.display()
+        ))
+    })?;
+    let document = match format {
+        RouteRuleSetFormat::Rustbox => loader::parse_toml::<TomlRouteRuleSetDocument>(&text),
+        RouteRuleSetFormat::Source => loader::parse_json::<TomlRouteRuleSetDocument>(&text),
+        RouteRuleSetFormat::Binary => unreachable!(),
+    }
+    .map_err(|error| {
+        ConfigFileError::new(format!(
+            "failed to parse route rule-set `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    document.into_rules()
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TomlRouteRuleSetFormat {
+    #[default]
+    Rustbox,
+    Source,
+    Binary,
+}
+
+fn default_remote_rule_set_format() -> TomlRouteRuleSetFormat {
+    TomlRouteRuleSetFormat::Source
+}
+
+impl From<TomlRouteRuleSetFormat> for RouteRuleSetFormat {
+    fn from(value: TomlRouteRuleSetFormat) -> Self {
+        match value {
+            TomlRouteRuleSetFormat::Rustbox => Self::Rustbox,
+            TomlRouteRuleSetFormat::Source => Self::Source,
+            TomlRouteRuleSetFormat::Binary => Self::Binary,
+        }
+    }
+}
+
+fn default_rule_set_reload_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(1)
+}
+
+fn default_rule_set_update_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(86_400)
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TomlRouteRuleSetDocument {
+    #[serde(default)]
+    version: Option<u32>,
     rules: Vec<TomlRouteMatcherConfig>,
 }
 
 impl TomlRouteRuleSetDocument {
     fn into_rules(self) -> Result<Vec<RouteMatcherConfig>, ConfigFileError> {
+        let _ = self.version;
         self.rules
             .into_iter()
             .map(TomlRouteMatcherConfig::into_source)
@@ -476,6 +809,10 @@ enum TomlRejectReason {
     Policy,
     NoRoute,
     UnsupportedNetwork,
+    Drop,
+    TcpReset,
+    IcmpPortUnreachable,
+    IcmpHostUnreachable,
 }
 
 impl From<TomlRejectReason> for RejectReason {
@@ -484,6 +821,10 @@ impl From<TomlRejectReason> for RejectReason {
             TomlRejectReason::Policy => Self::Policy,
             TomlRejectReason::NoRoute => Self::NoRoute,
             TomlRejectReason::UnsupportedNetwork => Self::UnsupportedNetwork,
+            TomlRejectReason::Drop => Self::Drop,
+            TomlRejectReason::TcpReset => Self::TcpReset,
+            TomlRejectReason::IcmpPortUnreachable => Self::IcmpPortUnreachable,
+            TomlRejectReason::IcmpHostUnreachable => Self::IcmpHostUnreachable,
         }
     }
 }

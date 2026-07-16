@@ -9,6 +9,7 @@ use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket};
 use rustbox_kernel::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
+use rustbox_transport::{StreamTransport, TransportContext};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
@@ -23,6 +24,7 @@ use tokio_rustls::TlsConnector;
 use uuid::Uuid;
 
 mod datagram;
+mod vision;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VlessTlsConfig {
@@ -43,6 +45,8 @@ pub struct VlessOutbound {
     uuid: [u8; 16],
     tls: Option<(ServerName<'static>, Arc<ClientConfig>)>,
     network: Arc<dyn NetworkProvider>,
+    transport: Option<Arc<dyn StreamTransport>>,
+    vision: bool,
 }
 
 impl VlessOutbound {
@@ -50,12 +54,22 @@ impl VlessOutbound {
         id: OutboundId,
         server: Endpoint,
         uuid: &str,
+        flow: Option<&str>,
         tls: VlessTlsConfig,
         network: Arc<dyn NetworkProvider>,
     ) -> Result<Self, VlessConfigError> {
         let uuid = Uuid::parse_str(uuid).map_err(|error| VlessConfigError {
             message: format!("invalid VLESS UUID: {error}"),
         })?;
+        let vision = match flow.filter(|value| !value.is_empty()) {
+            None => false,
+            Some("xtls-rprx-vision") => true,
+            Some(value) => {
+                return Err(VlessConfigError {
+                    message: format!("unsupported VLESS flow `{value}`"),
+                });
+            }
+        };
         let tls = if tls.enabled {
             Some((
                 tls_server_name(tls.server_name.as_deref(), &server)?,
@@ -70,7 +84,14 @@ impl VlessOutbound {
             uuid: *uuid.as_bytes(),
             tls,
             network,
+            transport: None,
+            vision,
         })
+    }
+
+    pub fn with_transport(mut self, transport: Arc<dyn StreamTransport>) -> Self {
+        self.transport = Some(transport);
+        self
     }
 
     async fn connect_with_command(
@@ -78,15 +99,27 @@ impl VlessOutbound {
         target: &Endpoint,
         command: u8,
     ) -> Result<Box<dyn ByteStream>, OutboundError> {
-        let stream = self
-            .network
-            .connect_tcp(TcpConnect {
-                target: self.server.clone(),
-            })
-            .await
-            .map_err(|error| OutboundError::new(error.message))?;
-        let mut stream: Box<dyn ByteStream> = match &self.tls {
-            Some((server_name, config)) => {
+        let stream = if let Some(transport) = &self.transport {
+            transport
+                .connect(
+                    TransportContext {
+                        network: &*self.network,
+                    },
+                    self.server.clone(),
+                )
+                .await
+                .map_err(|error| OutboundError::new(error.message))?
+        } else {
+            self.network
+                .connect_tcp(TcpConnect {
+                    target: self.server.clone(),
+                })
+                .await
+                .map_err(|error| OutboundError::new(error.message))?
+        };
+        let mut stream: Box<dyn ByteStream> = match (&self.transport, &self.tls) {
+            (Some(_), _) => stream,
+            (None, Some((server_name, config))) => {
                 let tls = TlsConnector::from(config.clone())
                     .connect(server_name.clone(), stream)
                     .await
@@ -95,9 +128,10 @@ impl VlessOutbound {
                     })?;
                 Box::new(tls)
             }
-            None => stream,
+            (None, None) => stream,
         };
-        let header = encode_request(&self.uuid, command, target)?;
+        let use_vision = self.vision && command == 0x01;
+        let header = encode_request(&self.uuid, use_vision, command, target)?;
         stream
             .write_all(&header)
             .await
@@ -106,7 +140,12 @@ impl VlessOutbound {
             .flush()
             .await
             .map_err(|error| OutboundError::new(format!("flush VLESS request: {error}")))?;
-        Ok(Box::new(VlessStream::new(stream)))
+        let stream = VlessStream::new(stream);
+        if use_vision {
+            Ok(Box::new(vision::VisionConn::new(stream, self.uuid)))
+        } else {
+            Ok(Box::new(stream))
+        }
     }
 
     async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
@@ -141,11 +180,18 @@ impl Outbound for VlessOutbound {
 
 fn encode_request(
     uuid: &[u8; 16],
+    vision: bool,
     command: u8,
     target: &Endpoint,
 ) -> Result<Vec<u8>, OutboundError> {
     let mut output = Vec::with_capacity(64);
-    output.push(0x00);
+    if vision {
+        output.push(18);
+        output.extend_from_slice(&[0x0a, 0x10]);
+        output.extend_from_slice(b"xtls-rprx-vision");
+    } else {
+        output.push(0x00);
+    }
     output.extend_from_slice(uuid);
     output.push(0x00);
     output.push(command);
@@ -355,8 +401,13 @@ mod tests {
         let uuid = *Uuid::parse_str("b831381d-6324-4d53-ad4f-8cda48b30811")
             .unwrap()
             .as_bytes();
-        let header =
-            encode_request(&uuid, 0x01, &Endpoint::new(Host::domain("example.com"), 80)).unwrap();
+        let header = encode_request(
+            &uuid,
+            false,
+            0x01,
+            &Endpoint::new(Host::domain("example.com"), 80),
+        )
+        .unwrap();
         assert_eq!(header[0], 0);
         assert_eq!(&header[1..17], &uuid);
         assert_eq!(&header[17..22], &[0, 1, 0, 80, 2]);

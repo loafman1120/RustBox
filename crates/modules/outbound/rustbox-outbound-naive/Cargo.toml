@@ -1,0 +1,15 @@
+[package]
+name = "rustbox-outbound-naive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-transport = { path = "../../transport/rustbox-transport" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+base64 = "0.22"
+
+[lints]
+workspace = true

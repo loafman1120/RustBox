@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+atomic-waker = "1"
 fast-socks5 = "1.0.0"
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-inbound-http = { path = "../rustbox-inbound-http" }

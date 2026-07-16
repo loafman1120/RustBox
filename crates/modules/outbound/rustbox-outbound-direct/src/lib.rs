@@ -46,7 +46,7 @@ impl Outbound for DirectOutbound {
     ) -> BoxFuture<'_, Result<Box<dyn ByteStream>, OutboundError>> {
         // 出站模块只执行连接动作，并在能力调用前后发出结构化观测事件。
         let outbound = self.id.to_string();
-        let flow_id = Some(ctx.flow.id);
+        let flow_id = ctx.flow_id();
         let target_text = target.to_string();
 
         Box::pin(async move {
@@ -108,7 +108,7 @@ impl Outbound for DirectOutbound {
         target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, OutboundError>> {
         let outbound = self.id.to_string();
-        let flow_id = Some(ctx.flow.id);
+        let flow_id = ctx.flow_id();
         let target_text = target.to_string();
 
         Box::pin(async move {

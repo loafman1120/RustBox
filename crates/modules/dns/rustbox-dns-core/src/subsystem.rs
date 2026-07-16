@@ -1,13 +1,19 @@
 use crate::{
-    CachingResolver, DnsConfig, DnsError, DnsQuery, DnsResponse, FakeIpAllocator, HickoryTransport,
-    RecordingResolver, Resolver, ReverseDns, RuleBasedResolver,
+    CachingResolver, DnsConfig, DnsError, DnsName, DnsQuery, DnsRecordType, DnsResponse,
+    DnsTransport, FakeIpAllocator, HickoryTransport, RecordingResolver, Resolver, ReverseDns,
+    RuleBasedResolver,
 };
+use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
+use hickory_resolver::proto::rr::rdata::{A, AAAA};
+use hickory_resolver::proto::rr::{RData, Record, RecordType};
+use rustbox_types::{Host, IpAddress};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Fully assembled concrete DNS graph. Only the cross-subsystem reverse map is shared.
 pub struct DnsSubsystem {
     resolver: RecordingResolver<CachingResolver<RuleBasedResolver>>,
+    transports: HashMap<String, Arc<HickoryTransport>>,
     reverse: Arc<ReverseDns>,
 }
 
@@ -18,9 +24,9 @@ impl DnsSubsystem {
             .clone()
             .or_else(|| config.servers.first().map(|server| server.id.clone()))
             .ok_or_else(|| DnsError::new("DNS needs at least one server or final_server"))?;
-        let mut transports: HashMap<String, HickoryTransport> = HashMap::new();
+        let mut transports: HashMap<String, Arc<HickoryTransport>> = HashMap::new();
         for server in config.servers {
-            transports.insert(server.id.clone(), HickoryTransport::new(server)?);
+            transports.insert(server.id.clone(), Arc::new(HickoryTransport::new(server)?));
         }
         if !transports.contains_key(&final_server) {
             return Err(DnsError::new(format!(
@@ -32,16 +38,100 @@ impl DnsSubsystem {
             .filter(|item| item.enabled)
             .map(FakeIpAllocator::new)
             .transpose()?;
-        let rules = RuleBasedResolver::new(transports, config.rules, final_server, fake_ip);
+        let rules = RuleBasedResolver::new(transports.clone(), config.rules, final_server, fake_ip);
         let cached = CachingResolver::new(rules, config.cache);
         let reverse = Arc::new(ReverseDns::new(4096));
         let resolver = RecordingResolver::new(cached, reverse.clone());
-        Ok(Self { resolver, reverse })
+        Ok(Self {
+            resolver,
+            transports,
+            reverse,
+        })
     }
     pub fn reverse_dns(&self) -> Arc<ReverseDns> {
         self.reverse.clone()
     }
     pub async fn resolve(&self, query: DnsQuery) -> Result<DnsResponse, DnsError> {
         self.resolver.resolve(query).await
+    }
+
+    pub async fn resolve_with_server(
+        &self,
+        server: &str,
+        query: DnsQuery,
+    ) -> Result<DnsResponse, DnsError> {
+        self.transports
+            .get(server)
+            .ok_or_else(|| DnsError::new(format!("unknown DNS server `{server}`")))?
+            .exchange(query)
+            .await
+    }
+
+    /// Resolve one DNS wire-format request and preserve its transaction/query
+    /// metadata in the response. This is shared by UDP and TCP route hijacks.
+    pub async fn exchange_wire(&self, packet: &[u8]) -> Result<Vec<u8>, DnsError> {
+        let request = Message::from_vec(packet)
+            .map_err(|error| DnsError::new(format!("decode DNS request: {error}")))?;
+        let mut response = Message::new();
+        response
+            .set_id(request.id())
+            .set_message_type(MessageType::Response)
+            .set_op_code(request.op_code())
+            .set_recursion_desired(request.recursion_desired())
+            .set_recursion_available(true);
+        for query in request.queries() {
+            response.add_query(query.clone());
+        }
+        let Some(query) = request.queries().first() else {
+            response.set_response_code(ResponseCode::FormErr);
+            return response
+                .to_vec()
+                .map_err(|error| DnsError::new(format!("encode DNS response: {error}")));
+        };
+        if request.queries().len() != 1 {
+            response.set_response_code(ResponseCode::FormErr);
+        } else {
+            let record_type = match query.query_type() {
+                RecordType::A => Some(DnsRecordType::A),
+                RecordType::AAAA => Some(DnsRecordType::Aaaa),
+                _ => None,
+            };
+            if let Some(record_type) = record_type {
+                let dns_query = DnsQuery {
+                    name: DnsName::new(query.name().to_utf8())?,
+                    record_type,
+                };
+                match self.resolve(dns_query).await {
+                    Ok(answer) => {
+                        for answer in answer.answers {
+                            let data = match answer.host {
+                                Host::Ip(IpAddress::V4(value)) => {
+                                    Some(RData::A(A(std::net::Ipv4Addr::from(value))))
+                                }
+                                Host::Ip(IpAddress::V6(value)) => {
+                                    Some(RData::AAAA(AAAA(std::net::Ipv6Addr::from(value))))
+                                }
+                                Host::Domain(_) => None,
+                            };
+                            if let Some(data) = data {
+                                response.add_answer(Record::from_rdata(
+                                    query.name().clone(),
+                                    answer.ttl_seconds,
+                                    data,
+                                ));
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        response.set_response_code(ResponseCode::ServFail);
+                    }
+                }
+            } else {
+                response.set_response_code(ResponseCode::NotImp);
+            }
+        }
+        response
+            .to_vec()
+            .map_err(|error| DnsError::new(format!("encode DNS response: {error}")))
     }
 }

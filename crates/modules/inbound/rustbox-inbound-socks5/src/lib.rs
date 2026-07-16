@@ -3,11 +3,12 @@
 //! 本模块把 `fast-socks5` 的协议状态机适配到 RustBox 的 Flow 边界：
 //! 握手、命令解析、reply 和 UDP header 由第三方库负责，路由和出站仍交给内核。
 
+use atomic_waker::AtomicWaker;
 use core::future::Future;
 use core::num::NonZeroU64;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Poll};
 use fast_socks5::server::Socks5ServerProtocol;
 use fast_socks5::util::target_addr::TargetAddr;
 use fast_socks5::{ReplyError, Socks5Command, new_udp_header, parse_udp_request};
@@ -673,6 +674,7 @@ fn flow_meta(
         inbound: inbound_id,
         domain: Some(destination.host.clone()),
         protocol_hint: Some(ProtocolHint::Socks5),
+        platform: Default::default(),
     }
 }
 
@@ -708,35 +710,24 @@ fn spawn_udp_control_watcher(
 
 struct UdpAssociationState {
     closed: AtomicBool,
-    recv_waker: Mutex<Option<Waker>>,
+    recv_waker: AtomicWaker,
 }
 
 impl UdpAssociationState {
     fn new() -> Self {
         Self {
             closed: AtomicBool::new(false),
-            recv_waker: Mutex::new(None),
+            recv_waker: AtomicWaker::new(),
         }
     }
 
     fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
+        self.closed.load(Ordering::Acquire)
     }
 
     fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
-        if let Some(waker) = self
-            .recv_waker
-            .lock()
-            .expect("udp association waker lock")
-            .take()
-        {
-            waker.wake();
-        }
-    }
-
-    fn remember_waker(&self, waker: &Waker) {
-        *self.recv_waker.lock().expect("udp association waker lock") = Some(waker.clone());
+        self.closed.store(true, Ordering::Release);
+        self.recv_waker.wake();
     }
 }
 
@@ -811,13 +802,15 @@ impl DatagramSocket for Socks5UdpRelaySocket {
                 }
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                 Poll::Pending => {
+                    // Register before re-checking: either close() observes this
+                    // waker or the acquire load observes the closed state.
+                    this.state.recv_waker.register(cx.waker());
                     if this.state.is_closed() {
                         return Poll::Ready(Err(IoError::new(
                             IoErrorKind::Closed,
                             "SOCKS5 UDP association is closed",
                         )));
                     }
-                    this.state.remember_waker(cx.waker());
                     return Poll::Pending;
                 }
             }
@@ -975,8 +968,49 @@ mod tests {
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
     use rustbox_types::OutboundId;
+    use std::future::poll_fn;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
+
+    struct CloseDuringRecv {
+        state: Arc<UdpAssociationState>,
+    }
+
+    impl DatagramSocket for CloseDuringRecv {
+        fn poll_recv_from(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut [u8],
+        ) -> Poll<Result<(usize, Endpoint), IoError>> {
+            self.state.close();
+            Poll::Pending
+        }
+
+        fn poll_send_to(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+            _target: &Endpoint,
+        ) -> Poll<Result<usize, IoError>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_close_between_pending_and_registration_is_observed() {
+        let state = Arc::new(UdpAssociationState::new());
+        let inner = Box::new(CloseDuringRecv {
+            state: state.clone(),
+        });
+        let mut relay = Socks5UdpRelaySocket::new(inner, Endpoint::localhost_v4(0).host, state);
+        let mut buf = [0_u8; 1];
+
+        let error = poll_fn(|cx| Pin::new(&mut relay).poll_recv_from(cx, &mut buf))
+            .await
+            .expect_err("close raced with waker registration");
+
+        assert_eq!(error.kind, IoErrorKind::Closed);
+    }
 
     #[tokio::test]
     async fn socks5_connect_tunnels_bytes_to_direct_outbound() {

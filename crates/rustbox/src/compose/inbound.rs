@@ -126,6 +126,7 @@ pub(crate) fn compose_inbounds(
                 let (packet_devices, network_control) = tun_platform_capabilities()?;
                 let mtu = config.mtu.unwrap_or(1500) as usize;
                 let stack = rustbox_stack::PacketFlowStack::new(inbound.id)
+                    .with_interface(config.interface_name.clone())
                     .with_mtu(mtu)
                     .with_observability(observability.clone());
                 let dns_servers = config

@@ -249,6 +249,11 @@ fn outbound_kind_name(kind: &CompiledOutboundKind) -> &'static str {
         CompiledOutboundKind::Vless { .. } => "vless",
         CompiledOutboundKind::Trojan { .. } => "trojan",
         CompiledOutboundKind::AnyTls { .. } => "anytls",
+        CompiledOutboundKind::Hysteria2 { .. } => "hysteria2",
+        CompiledOutboundKind::Naive { .. } => "naive",
+        CompiledOutboundKind::Tuic { .. } => "tuic",
+        CompiledOutboundKind::WireGuard { .. } => "wireguard",
+        CompiledOutboundKind::ShadowTls { .. } => "shadowtls",
     }
 }
 
@@ -270,16 +275,19 @@ mod tests {
                 CompiledOutbound {
                     id: direct,
                     logical_id: "direct".into(),
+                    dial: Default::default(),
                     kind: CompiledOutboundKind::Direct,
                 },
                 CompiledOutbound {
                     id: block,
                     logical_id: "block".into(),
+                    dial: Default::default(),
                     kind: CompiledOutboundKind::Block,
                 },
                 CompiledOutbound {
                     id: selector,
                     logical_id: "select".into(),
+                    dial: Default::default(),
                     kind: CompiledOutboundKind::Selector {
                         outbounds: vec![direct, block],
                         selected: RouteDecision::Forward(direct),
@@ -313,11 +321,13 @@ mod tests {
                 CompiledOutbound {
                     id: direct,
                     logical_id: "direct".into(),
+                    dial: Default::default(),
                     kind: CompiledOutboundKind::Direct,
                 },
                 CompiledOutbound {
                     id: automatic,
                     logical_id: "auto".into(),
+                    dial: Default::default(),
                     kind: CompiledOutboundKind::UrlTest {
                         outbounds: vec![direct],
                         selected: RouteDecision::Forward(direct),

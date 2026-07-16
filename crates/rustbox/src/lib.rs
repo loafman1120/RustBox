@@ -6,9 +6,11 @@
 mod app;
 mod compose;
 mod control;
+mod dns_hijack;
 mod error;
 mod platform;
 mod routing;
+mod ruleset;
 mod runtime;
 
 pub(crate) use compose::RuntimeGraphBuilder;

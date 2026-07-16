@@ -288,6 +288,7 @@ pub async fn handle_http_proxy_connection(
         inbound: inbound_id,
         domain: Some(request.target.host.clone()),
         protocol_hint: Some(ProtocolHint::Http),
+        platform: Default::default(),
     };
     let flow = Flow {
         meta,

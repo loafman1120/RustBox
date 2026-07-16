@@ -12,6 +12,7 @@ use core::future::Future;
 use core::pin::Pin;
 use rustbox_io::{ByteStream, DatagramSocket, PacketDevice};
 use rustbox_types::{Endpoint, IpAddress, IpCidr, Network};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -48,6 +49,12 @@ pub trait StreamListener: Send {
 pub struct TaskScope {
     cancellation: CancellationToken,
     tracker: TaskTracker,
+}
+
+/// Minimal DNS boundary consumed by the dialer.  DNS protocol and caching stay
+/// in rustbox-dns-core; the socket layer only needs ordered addresses.
+pub trait DomainResolver: Send + Sync {
+    fn resolve(&self, domain: String) -> BoxFuture<'_, Result<Vec<IpAddress>, NetError>>;
 }
 
 impl TaskScope {
@@ -146,6 +153,26 @@ impl ObservabilitySink for NoopObservabilitySink {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TcpConnect {
     pub target: Endpoint,
+}
+
+/// Per-outbound socket policy.  This is deliberately a value type: protocol
+/// implementations borrow one configured provider instead of carrying a bag
+/// of shared option objects.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DialOptions {
+    pub bind_interface: Option<String>,
+    pub inet4_bind_address: Option<IpAddress>,
+    pub inet6_bind_address: Option<IpAddress>,
+    pub routing_mark: Option<u32>,
+    pub connect_timeout: Option<Duration>,
+    /// `None` leaves the platform default untouched; `Some(None)` disables it.
+    pub tcp_keepalive: Option<Option<TcpKeepaliveOptions>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TcpKeepaliveOptions {
+    pub idle: Duration,
+    pub interval: Option<Duration>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,6 +313,23 @@ pub trait ProcessLookup: Send + Sync {
         &self,
         key: ConnectionKey,
     ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>>;
+}
+
+/// Platform network context sampled before route evaluation. Implementations
+/// may cache OS queries, but must not mutate network state.
+pub trait NetworkMetadataLookup: Send + Sync {
+    fn lookup_network(
+        &self,
+        key: ConnectionKey,
+    ) -> BoxFuture<'_, Result<NetworkMetadataInfo, NetworkMetadataError>>;
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NetworkMetadataInfo {
+    pub interface: Option<String>,
+    pub wifi_ssid: Option<String>,
+    pub wifi_bssid: Option<String>,
+    pub network_type: Option<rustbox_types::NetworkType>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -433,6 +477,7 @@ capability_error!(NetError);
 capability_error!(PacketDeviceError);
 capability_error!(NetworkControlError);
 capability_error!(ProcessLookupError);
+capability_error!(NetworkMetadataError);
 capability_error!(TransparentProxyError);
 
 #[cfg(test)]

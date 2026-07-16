@@ -1,0 +1,14 @@
+[package]
+name = "rustbox-outbound-mux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-transport = { path = "../../transport/rustbox-transport" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+
+[lints]
+workspace = true

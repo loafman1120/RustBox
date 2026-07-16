@@ -4,15 +4,17 @@ mod document;
 mod error;
 mod loader;
 mod migration;
+mod srs;
 mod validation;
 
 pub use document::SUPPORTED_SCHEMA_VERSION;
 pub use document::{
     ConfigLoader, FileConfig, FileObservabilityConfig, load_json_file, load_json_source,
-    load_toml_file, load_toml_source, parse_json_source, parse_json_str, parse_toml_source,
-    parse_toml_str,
+    load_toml_file, load_toml_source, parse_json_source, parse_json_str,
+    parse_rule_set_rustbox_toml, parse_rule_set_source_json, parse_toml_source, parse_toml_str,
 };
 pub use error::ConfigFileError;
+pub use srs::parse_rule_set_srs;
 
 #[cfg(test)]
 mod tests {
@@ -58,6 +60,7 @@ password = "secret"
 [[outbounds]]
 id = "direct"
 type = "direct"
+dial = { connect_timeout = "5s", tcp_keep_alive = "2m" }
 
 [[outbounds]]
 id = "socks-out"
@@ -138,6 +141,10 @@ outbound = "direct"
 
         assert_eq!(config.source.inbounds.len(), 3);
         assert_eq!(config.source.outbounds.len(), 11);
+        assert_eq!(
+            config.source.outbounds[0].dial.connect_timeout,
+            Some(std::time::Duration::from_secs(5))
+        );
         assert_eq!(config.source.routes.len(), 1);
         assert!(matches!(
             &config.source.inbounds[2].kind,
@@ -372,6 +379,58 @@ rules = [
     }
 
     #[test]
+    fn parses_non_final_route_actions() {
+        let config = parse_toml_str(
+            r#"
+schema_version = 1
+
+[[inbounds]]
+id = "http"
+type = "http-connect"
+listen = "127.0.0.1:18080"
+
+[[outbounds]]
+id = "direct"
+type = "direct"
+
+[[routes]]
+type = "route-options"
+domain_suffix = ["example.test"]
+override_address = "edge.example.test"
+override_port = 8443
+udp_timeout = "30s"
+udp_connect = true
+
+[[routes]]
+type = "resolve"
+domain_suffix = ["example.test"]
+strategy = "prefer-ipv6"
+
+[[routes]]
+type = "default"
+outbound = "direct"
+"#,
+        )
+        .expect("non-final actions");
+
+        assert!(matches!(
+            &config.source.routes[0],
+            RouteRuleConfig::Rule {
+                action: RouteActionConfig::Options(options),
+                ..
+            } if options.override_port == Some(8443)
+                && options.udp_timeout == Some(std::time::Duration::from_secs(30))
+        ));
+        assert!(matches!(
+            &config.source.routes[1],
+            RouteRuleConfig::Rule {
+                action: RouteActionConfig::Resolve(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn parses_tun_and_transparent_inbounds() {
         let config = parse_toml_str(
             r#"
@@ -564,6 +623,7 @@ listen = "127.0.0.1:1080"
 [[outbounds]]
 id = "direct"
 type = "direct"
+dial = { connect_timeout = "5s", tcp_keep_alive = "2m" }
 
 [[routes]]
 type = "default"
@@ -615,5 +675,122 @@ outbound = "direct"
             &config.source.routes[0],
             RouteRuleConfig::Default { outbound } if outbound == "direct"
         ));
+    }
+
+    #[test]
+    fn parses_modern_outbounds_and_shared_multiplex() {
+        let config = parse_toml_str(r#"
+schema_version = 1
+
+[[inbounds]]
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:2080"
+
+[[outbounds]]
+id = "tuic"
+type = "tuic"
+server = "tuic.example.test:443"
+uuid = "00000000-0000-0000-0000-000000000001"
+password = "secret"
+heartbeat = "5s"
+tls = { enabled = true, server_name = "tuic.example.test", alpn = ["h3"] }
+
+[[outbounds]]
+id = "wireguard"
+type = "wireguard"
+addresses = ["10.0.0.2/32"]
+private_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+mtu = 1408
+peers = [{ server = "192.0.2.1:51820", public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", allowed_ips = ["0.0.0.0/0"], persistent_keepalive = "25s", reserved = [1, 2, 3] }]
+
+[[outbounds]]
+id = "shadow"
+type = "shadow-tls"
+server = "shadow.example.test:443"
+version = 3
+password = "secret"
+tls = { enabled = true, server_name = "www.example.com" }
+
+[[outbounds]]
+id = "vmess"
+type = "vmess"
+server = "vmess.example.test:443"
+uuid = "00000000-0000-0000-0000-000000000002"
+dial = { multiplex = { enabled = true, protocol = "mux-cool", max_streams = 16, max_connections = 2, buffer_size = 32768 } }
+
+[[routes]]
+type = "default"
+outbound = "tuic"
+"#).expect("parse modern outbounds");
+
+        assert_eq!(config.source.outbounds.len(), 4);
+        assert!(matches!(
+            config.source.outbounds[0].kind,
+            OutboundConfigKind::Tuic { .. }
+        ));
+        assert!(matches!(
+            config.source.outbounds[1].kind,
+            OutboundConfigKind::WireGuard { .. }
+        ));
+        assert!(matches!(
+            config.source.outbounds[2].kind,
+            OutboundConfigKind::ShadowTls { .. }
+        ));
+        let multiplex = config.source.outbounds[3]
+            .dial
+            .multiplex
+            .as_ref()
+            .expect("multiplex");
+        assert_eq!(multiplex.max_streams, 16);
+        assert_eq!(multiplex.max_connections, 2);
+    }
+
+    #[test]
+    fn lowers_wireguard_endpoint_into_the_shared_route_graph() {
+        let config = parse_toml_str(r#"
+schema_version = 1
+
+[[inbounds]]
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:2080"
+
+[[endpoints]]
+id = "wg"
+type = "wireguard"
+addresses = ["10.0.0.2/32"]
+private_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+peers = [{ server = "192.0.2.1:51820", public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", allowed_ips = ["0.0.0.0/0"] }]
+
+[[routes]]
+type = "default"
+outbound = "wg"
+"#).expect("parse endpoint");
+
+        assert_eq!(config.source.outbounds.len(), 1);
+        assert_eq!(config.source.outbounds[0].id, "wg");
+        assert!(matches!(
+            config.source.outbounds[0].kind,
+            OutboundConfigKind::WireGuard { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_outbound_only_protocol_in_endpoint_section() {
+        let error = parse_toml_str(
+            r#"
+schema_version = 1
+[[inbounds]]
+id = "mixed"
+type = "mixed"
+listen = "127.0.0.1:2080"
+[[endpoints]]
+id = "direct"
+type = "direct"
+"#,
+        )
+        .expect_err("direct is not an endpoint");
+        assert!(error.to_string().contains("only `wireguard`"));
     }
 }

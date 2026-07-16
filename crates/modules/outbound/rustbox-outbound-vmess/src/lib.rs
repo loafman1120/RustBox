@@ -11,8 +11,9 @@ mod header;
 mod kdf;
 
 use rustbox_io::{ByteStream, DatagramSocket};
-use rustbox_kernel::{BoxFuture, NetworkProvider, TcpConnect};
+use rustbox_kernel::{BoxFuture, NetworkProvider, TaskScope, TcpConnect};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
+use rustbox_transport::{StreamTransport, TransportContext};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
@@ -75,6 +76,8 @@ pub struct VmessOutbound {
     security: header::Security,
     tls: Option<(ServerName<'static>, Arc<ClientConfig>)>,
     network: Arc<dyn NetworkProvider>,
+    sessions: TaskScope,
+    transport: Option<Arc<dyn StreamTransport>>,
 }
 
 impl VmessOutbound {
@@ -85,6 +88,7 @@ impl VmessOutbound {
         security: Option<&str>,
         tls: VmessTlsConfig,
         network: Arc<dyn NetworkProvider>,
+        sessions: TaskScope,
     ) -> Result<Self, VmessConfigError> {
         let uuid = Uuid::parse_str(uuid).map_err(|error| VmessConfigError {
             message: format!("invalid VMess UUID: {error}"),
@@ -115,7 +119,14 @@ impl VmessOutbound {
             security,
             tls,
             network,
+            sessions,
+            transport: None,
         })
+    }
+
+    pub fn with_transport(mut self, transport: Arc<dyn StreamTransport>) -> Self {
+        self.transport = Some(transport);
+        self
     }
 
     async fn connect_protocol(
@@ -123,15 +134,27 @@ impl VmessOutbound {
         target: &Endpoint,
         is_udp: bool,
     ) -> Result<VmessProtocolStream, OutboundError> {
-        let stream = self
-            .network
-            .connect_tcp(TcpConnect {
-                target: self.server.clone(),
-            })
-            .await
-            .map_err(|error| OutboundError::new(error.message))?;
-        let mut stream: Box<dyn ByteStream> = match &self.tls {
-            Some((name, config)) => Box::new(
+        let stream = if let Some(transport) = &self.transport {
+            transport
+                .connect(
+                    TransportContext {
+                        network: &*self.network,
+                    },
+                    self.server.clone(),
+                )
+                .await
+                .map_err(|error| OutboundError::new(error.message))?
+        } else {
+            self.network
+                .connect_tcp(TcpConnect {
+                    target: self.server.clone(),
+                })
+                .await
+                .map_err(|error| OutboundError::new(error.message))?
+        };
+        let mut stream: Box<dyn ByteStream> = match (&self.transport, &self.tls) {
+            (Some(_), _) => stream,
+            (None, Some((name, config))) => Box::new(
                 TlsConnector::from(config.clone())
                     .connect(name.clone(), stream)
                     .await
@@ -139,7 +162,7 @@ impl VmessOutbound {
                         OutboundError::new(format!("VMess TLS handshake failed: {error}"))
                     })?,
             ),
-            None => stream,
+            (None, None) => stream,
         };
         let sealed = header::seal_request_header(
             &self.command_key,
@@ -175,6 +198,7 @@ impl VmessOutbound {
     async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
         let protocol = self.connect_protocol(target, false).await?;
         Ok(Box::new(conn::spawn_vmess_relay(
+            &self.sessions,
             protocol.stream,
             protocol.read_cipher,
             protocol.write_cipher,

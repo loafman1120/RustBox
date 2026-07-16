@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio_rustls::TlsAcceptor;
 
-const UOT_SENTINEL: &str = "sp.v2.udp-over-tcp.arpa";
+const UOT_SENTINEL: &str = rustbox_io::uot::SENTINEL;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnyTlsServerConfig {
@@ -223,6 +223,7 @@ async fn submit_stream(
             inbound,
             domain: None,
             protocol_hint: None,
+            platform: Default::default(),
         };
         sink.submit(Flow {
             meta,
@@ -241,6 +242,7 @@ async fn submit_stream(
             inbound,
             domain,
             protocol_hint: None,
+            platform: Default::default(),
         };
         sink.submit(Flow {
             meta,
@@ -536,46 +538,19 @@ async fn read_socks_target(stream: &Stream) -> io::Result<Endpoint> {
     read_stream_bytes(stream, &mut port).await?;
     Ok(Endpoint::new(host, u16::from_be_bytes(port)))
 }
-fn encode_target(target: &Endpoint) -> io::Result<Vec<u8>> {
-    let mut out = Vec::new();
-    match &target.host {
-        Host::Ip(IpAddress::V4(v)) => {
-            out.push(1);
-            out.extend_from_slice(v)
-        }
-        Host::Domain(v) => {
-            out.push(3);
-            out.push(
-                u8::try_from(v.len())
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "domain too long"))?,
-            );
-            out.extend_from_slice(v.as_bytes())
-        }
-        Host::Ip(IpAddress::V6(v)) => {
-            out.push(4);
-            out.extend_from_slice(v)
-        }
-    };
-    out.extend_from_slice(&target.port.to_be_bytes());
-    Ok(out)
-}
 fn encode_uot_datagram(target: &Endpoint, payload: &[u8]) -> io::Result<Vec<u8>> {
-    let mut out = encode_target(target)?;
-    out.extend_from_slice(
-        &u16::try_from(payload.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "UOT packet too large"))?
-            .to_be_bytes(),
-    );
-    out.extend_from_slice(payload);
-    Ok(out)
+    rustbox_io::uot::encode_datagram(target, payload)
 }
 async fn read_uot_datagram(stream: &Stream) -> io::Result<(Vec<u8>, Endpoint)> {
-    let endpoint = read_socks_target(stream).await?;
-    let mut length = [0; 2];
-    read_stream_bytes(stream, &mut length).await?;
-    let mut payload = vec![0; usize::from(u16::from_be_bytes(length))];
-    read_stream_bytes(stream, &mut payload).await?;
-    Ok((payload, endpoint))
+    rustbox_io::uot::read_datagram(&mut UotStreamReader(stream)).await
+}
+
+struct UotStreamReader<'a>(&'a Stream);
+
+impl rustbox_io::uot::Reader for UotStreamReader<'_> {
+    async fn read_exact<'a>(&'a mut self, output: &'a mut [u8]) -> io::Result<()> {
+        read_stream_bytes(self.0, output).await
+    }
 }
 fn io_error(error: io::Error) -> IoError {
     let kind = match error.kind() {
@@ -665,9 +640,10 @@ mod tests {
             inbound: inbound_id,
             domain: None,
             protocol_hint: None,
+            platform: Default::default(),
         };
         let mut stream = outbound
-            .open_stream(rustbox_kernel::OutboundContext { flow: &meta }, target)
+            .open_stream(rustbox_kernel::OutboundContext::for_flow(&meta), target)
             .await
             .expect("open");
         stream.write_all(b"ping").await.unwrap();

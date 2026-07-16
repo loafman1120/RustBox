@@ -1,0 +1,16 @@
+[package]
+name = "rustbox-outbound-hysteria2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rsteria2 = "0.1.1"
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+tokio = { version = "1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[lints]
+workspace = true

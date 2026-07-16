@@ -29,6 +29,9 @@ listen = "127.0.0.1:2080"
 [[outbounds]]
 id = "direct"
 type = "direct"
+# Dial policy is shared by every concrete outbound. `routing_mark` is
+# Linux/Android-only; unsupported platform options fail explicitly.
+# dial = { bind_interface = "eth0", inet4_bind_address = "192.0.2.10", routing_mark = 255, connect_timeout = "8s", tcp_keep_alive = "5m", tcp_keep_alive_interval = "75s", domain_resolver = "local" }
 
 # Drop matched traffic with a policy rejection.
 [[outbounds]]
@@ -48,6 +51,8 @@ server = "127.0.0.1:1081"
 id = "http-out"
 type = "http"
 server = "proxy.example.test:8080"
+# Build a proxy chain by dialing this proxy server through socks-out.
+# dial = { detour = "socks-out" }
 # username = "alice"
 # password = "secret"
 
@@ -76,10 +81,9 @@ password = "test-password"
 # interval_seconds = 300
 # tolerance_ms = 50
 
-# vmess requires AEAD (alter_id = 0) and tcp transport; native UDP is supported.
-# vless is plain only; native length-framed UDP is supported, while the `flow`
-# field is rejected by the compiler.
-# trojan requires TLS and tcp transport; UDP ASSOCIATE is supported.
+# VMess requires AEAD (alter_id = 0). VMess/VLESS/Trojan accept typed
+# websocket/http2/grpc/http-upgrade transports. VLESS supports
+# flow = "xtls-rprx-vision" with TLS/Reality.
 # anytls uses the pinned protocol-compatible anytls 0.2.3 client; CI covers
 # TCP via sing-box and UDP via the in-tree anytls server round-trip.
 # [[outbounds]]
@@ -89,15 +93,17 @@ password = "test-password"
 # uuid = "00000000-0000-0000-0000-000000000001"
 # security = "auto"
 # alter_id = 0
-# transport = "tcp"
+# transport = { type = "websocket", path = "/proxy", host = "vmess.example.test" }
 # tls = { enabled = true, server_name = "vmess.example.test", alpn = ["h2"] }
+# dial = { multiplex = { enabled = true, protocol = "mux-cool", max_streams = 32, max_connections = 4, buffer_size = 65536 } }
 #
 # [[outbounds]]
 # id = "vless-out"
 # type = "vless"
 # server = "vless.example.test:443"
 # uuid = "00000000-0000-0000-0000-000000000002"
-# transport = "tcp"
+# flow = "xtls-rprx-vision"
+# transport = { type = "grpc", service_name = "vless" }
 # tls = { enabled = true, server_name = "vless.example.test" }
 #
 # [[outbounds]]
@@ -105,7 +111,7 @@ password = "test-password"
 # type = "trojan"
 # server = "trojan.example.test:443"
 # password = "test-password"
-# transport = "tcp"
+# transport = { type = "http-upgrade", path = "/tunnel" }
 # tls = { enabled = true, server_name = "trojan.example.test" }
 #
 # [[outbounds]]
@@ -115,8 +121,8 @@ password = "test-password"
 # password = "test-password"
 # tls = { enabled = true, server_name = "anytls.example.test" }
 
-# Optional DNS plan. This is parsed and validated today; concrete DNS network
-# transports are the next adapter step.
+# Optional DNS plan. UDP/TCP/DoT/DoH/DoQ transports and route hijack-dns are
+# composed into the live runtime.
 # [dns.cache]
 # enabled = true
 # max_entries = 1024

@@ -68,7 +68,7 @@ impl Outbound for HttpProxyOutbound {
         target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn ByteStream>, OutboundError>> {
         let outbound = self.id.to_string();
-        let flow_id = Some(ctx.flow.id);
+        let flow_id = ctx.flow_id();
         let target_text = target.to_string();
 
         Box::pin(async move {
@@ -330,7 +330,7 @@ mod tests {
         let meta = flow_meta(target.clone());
 
         let mut stream = outbound
-            .open_stream(OutboundContext { flow: &meta }, target)
+            .open_stream(OutboundContext::for_flow(&meta), target)
             .await
             .expect("open http tunnel");
         let mut buf = [0_u8; 4];
@@ -361,7 +361,7 @@ mod tests {
         let meta = flow_meta(target.clone());
 
         let error = match outbound
-            .open_stream(OutboundContext { flow: &meta }, target)
+            .open_stream(OutboundContext::for_flow(&meta), target)
             .await
         {
             Ok(_) => panic!("expected non-200 CONNECT response to fail"),
@@ -407,6 +407,7 @@ mod tests {
             inbound: InboundId::new(NonZeroU64::new(2).expect("non-zero inbound id")),
             domain: None,
             protocol_hint: None,
+            platform: Default::default(),
         }
     }
 }

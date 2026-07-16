@@ -47,6 +47,7 @@ pub struct PacketFlowStack {
     inbound: InboundId,
     observability: Arc<dyn ObservabilitySink>,
     mtu: u16,
+    interface: Option<String>,
 }
 
 impl PacketFlowStack {
@@ -55,6 +56,7 @@ impl PacketFlowStack {
             inbound,
             observability: Arc::new(NoopObservabilitySink),
             mtu: 1500,
+            interface: None,
         }
     }
 
@@ -65,6 +67,11 @@ impl PacketFlowStack {
 
     pub fn with_mtu(mut self, mtu: usize) -> Self {
         self.mtu = mtu.clamp(1280, u16::MAX as usize) as u16;
+        self
+    }
+
+    pub fn with_interface(mut self, interface: Option<String>) -> Self {
+        self.interface = interface;
         self
     }
 
@@ -93,7 +100,7 @@ impl PacketFlowStack {
                 .accept()
                 .await
                 .map_err(|err| StackError::new(format!("ipstack accept failed: {err}")))?;
-            match flow_from_ipstack_stream(self.inbound, stream) {
+            match flow_from_ipstack_stream(self.inbound, self.interface.as_deref(), stream) {
                 Ok(flow) => {
                     self.emit(
                         EventLevel::Debug,
@@ -182,13 +189,17 @@ pub struct StackCapability {
     pub supports_ipv6: bool,
 }
 
-fn flow_from_ipstack_stream(inbound: InboundId, stream: IpStackStream) -> Result<Flow, StackError> {
+fn flow_from_ipstack_stream(
+    inbound: InboundId,
+    interface: Option<&str>,
+    stream: IpStackStream,
+) -> Result<Flow, StackError> {
     match stream {
         IpStackStream::Tcp(stream) => {
             let source = socket_addr_to_endpoint(stream.local_addr());
             let destination = socket_addr_to_endpoint(stream.peer_addr());
             Ok(Flow {
-                meta: flow_meta(inbound, Network::Tcp, source, destination),
+                meta: flow_meta(inbound, interface, Network::Tcp, source, destination),
                 payload: FlowPayload::Stream(Box::new(stream)),
             })
         }
@@ -196,7 +207,13 @@ fn flow_from_ipstack_stream(inbound: InboundId, stream: IpStackStream) -> Result
             let source = socket_addr_to_endpoint(stream.local_addr());
             let destination = socket_addr_to_endpoint(stream.peer_addr());
             Ok(Flow {
-                meta: flow_meta(inbound, Network::Udp, source, destination.clone()),
+                meta: flow_meta(
+                    inbound,
+                    interface,
+                    Network::Udp,
+                    source,
+                    destination.clone(),
+                ),
                 payload: FlowPayload::Datagram(Box::new(IpStackDatagram {
                     inner: stream,
                     destination,
@@ -210,6 +227,7 @@ fn flow_from_ipstack_stream(inbound: InboundId, stream: IpStackStream) -> Result
 
 fn flow_meta(
     inbound: InboundId,
+    interface: Option<&str>,
     network: Network,
     source: Endpoint,
     destination: Endpoint,
@@ -222,6 +240,10 @@ fn flow_meta(
         inbound,
         domain: None,
         protocol_hint: None,
+        platform: rustbox_types::PlatformMetadata {
+            interface: interface.map(str::to_owned),
+            ..Default::default()
+        },
     }
 }
 

@@ -4,8 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+fingerprint = ["rustbox-transport/fingerprint"]
+
 [dependencies]
 rustbox-config = { path = "../control/rustbox-config" }
+rustbox-config-file = { path = "../rustbox-config-file" }
 rustbox-control = { path = "../control/rustbox-control" }
 rustbox-control-api = { path = "../control/rustbox-control-api" }
 rustbox-dns-core = { path = "../modules/dns/rustbox-dns-core" }
@@ -15,10 +19,17 @@ rustbox-inbound-socks5 = { path = "../modules/inbound/rustbox-inbound-socks5" }
 rustbox-inbound-transparent = { path = "../modules/inbound/rustbox-inbound-transparent" }
 rustbox-inbound-tun = { path = "../modules/inbound/rustbox-inbound-tun" }
 rustbox-inspect = { path = "../modules/inspect/rustbox-inspect" }
+rustbox-io = { path = "../foundation/rustbox-io" }
 rustbox-kernel = { path = "../kernel/rustbox-kernel" }
 rustbox-outbound-direct = { path = "../modules/outbound/rustbox-outbound-direct" }
 rustbox-outbound-anytls = { path = "../modules/outbound/rustbox-outbound-anytls" }
 rustbox-outbound-http = { path = "../modules/outbound/rustbox-outbound-http" }
+rustbox-outbound-hysteria2 = { path = "../modules/outbound/rustbox-outbound-hysteria2" }
+rustbox-outbound-naive = { path = "../modules/outbound/rustbox-outbound-naive" }
+rustbox-outbound-tuic = { path = "../modules/outbound/rustbox-outbound-tuic" }
+rustbox-outbound-wireguard = { path = "../modules/outbound/rustbox-outbound-wireguard" }
+rustbox-outbound-shadowtls = { path = "../modules/outbound/rustbox-outbound-shadowtls" }
+rustbox-outbound-mux = { path = "../modules/outbound/rustbox-outbound-mux" }
 rustbox-outbound-shadowsocks = { path = "../modules/outbound/rustbox-outbound-shadowsocks" }
 rustbox-outbound-socks5 = { path = "../modules/outbound/rustbox-outbound-socks5" }
 rustbox-outbound-trojan = { path = "../modules/outbound/rustbox-outbound-trojan" }
@@ -29,7 +40,15 @@ rustbox-platform = { path = "../platform/rustbox-platform" }
 rustbox-route = { path = "../kernel/rustbox-route" }
 rustbox-stack = { path = "../modules/stack/rustbox-stack" }
 rustbox-types = { path = "../foundation/rustbox-types" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+rustbox-transport = { path = "../modules/transport/rustbox-transport" }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+base64 = "0.22"
+hex = "0.4"
+rustls-pemfile = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -8,9 +8,9 @@ use rustbox_io::PacketDevice;
 use rustbox_io::{IoError, IoErrorKind};
 use rustbox_kernel::{
     BoxFuture, ConnectionKey, InterfaceRef, NetworkControl, NetworkControlError, NetworkLease,
-    NetworkOperation, NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo,
-    PacketDeviceLease, PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError,
-    RollbackPolicy,
+    NetworkMetadataLookup, NetworkOperation, NetworkTransaction, PacketDeviceConfig,
+    PacketDeviceError, PacketDeviceInfo, PacketDeviceLease, PacketDeviceProvider, ProcessInfo,
+    ProcessLookup, ProcessLookupError, RollbackPolicy,
 };
 use rustbox_types::IpAddress;
 use std::pin::Pin;
@@ -38,6 +38,16 @@ pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_kernel::Transpa
     None
 }
 
+pub(super) fn process() -> Option<std::sync::Arc<dyn ProcessLookup>> {
+    Some(std::sync::Arc::new(WindowsPlatform::new()))
+}
+
+pub(super) fn network_metadata() -> Option<std::sync::Arc<dyn NetworkMetadataLookup>> {
+    Some(std::sync::Arc::new(
+        network_metadata::NetworkMetadataProvider::default(),
+    ))
+}
+
 /// Windows 平台能力集合的占位实现。
 #[derive(Clone, Debug, Default)]
 pub struct WindowsPlatform;
@@ -53,5 +63,6 @@ fn process_lookup_status_message() -> &'static str {
 }
 
 mod network_control;
+mod network_metadata;
 mod packet_device;
 mod process;

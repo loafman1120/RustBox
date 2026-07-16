@@ -3,7 +3,10 @@
 //! This is the only place where an operating-system implementation is
 //! selected. Consumers depend on this crate and never name a platform module.
 
-use rustbox_kernel::{NetworkControl, PacketDeviceProvider, TransparentProxyProvider};
+use rustbox_kernel::{
+    NetworkControl, NetworkMetadataLookup, PacketDeviceProvider, ProcessLookup,
+    TransparentProxyProvider,
+};
 use std::fmt;
 use std::sync::Arc;
 
@@ -45,7 +48,16 @@ mod current;
 #[path = "platform/macos.rs"]
 mod current;
 
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "android")]
+#[path = "platform/android.rs"]
+mod current;
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "android"
+)))]
 mod current {
     use super::*;
 
@@ -65,6 +77,14 @@ mod current {
     pub(super) fn transparent() -> Option<Arc<dyn TransparentProxyProvider>> {
         None
     }
+
+    pub(super) fn process() -> Option<Arc<dyn ProcessLookup>> {
+        None
+    }
+
+    pub(super) fn network_metadata() -> Option<Arc<dyn NetworkMetadataLookup>> {
+        None
+    }
 }
 
 pub const SUPPORTS_TUN: bool = matches!(
@@ -82,6 +102,14 @@ pub fn tun_capabilities() -> Option<TunCapabilities> {
 
 pub fn transparent_proxy_provider() -> Option<Arc<dyn TransparentProxyProvider>> {
     current::transparent()
+}
+
+pub fn process_lookup_provider() -> Option<Arc<dyn ProcessLookup>> {
+    current::process()
+}
+
+pub fn network_metadata_provider() -> Option<Arc<dyn NetworkMetadataLookup>> {
+    current::network_metadata()
 }
 
 #[cfg(test)]

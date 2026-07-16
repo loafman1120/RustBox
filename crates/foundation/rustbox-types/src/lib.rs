@@ -294,6 +294,38 @@ pub enum ProtocolHint {
     Other(&'static str),
 }
 
+/// Platform network classification captured before routing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkType {
+    Ethernet,
+    Wifi,
+    Cellular,
+    Other,
+}
+
+/// Optional process ownership metadata. Missing fields mean the platform could
+/// not determine them; they never imply an empty name/path/user.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProcessMetadata {
+    pub pid: Option<u32>,
+    pub name: Option<String>,
+    pub path: Option<String>,
+    pub package_name: Option<String>,
+    pub user_id: Option<u32>,
+    pub user_name: Option<String>,
+}
+
+/// Optional platform/network metadata used by route conditions.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlatformMetadata {
+    pub process: Option<ProcessMetadata>,
+    pub interface: Option<String>,
+    pub wifi_ssid: Option<String>,
+    pub wifi_bssid: Option<String>,
+    pub network_type: Option<NetworkType>,
+}
+
 macro_rules! id_type {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -323,6 +355,11 @@ id_type!(OutboundId);
 id_type!(SessionId);
 id_type!(ServiceId);
 
+/// Stable internal service id used by the route `hijack-dns` action.
+pub fn dns_hijack_service_id() -> ServiceId {
+    ServiceId::new(NonZeroU64::MIN)
+}
+
 /// 流元数据是路由和观测的核心输入，不持有真实 socket 或平台资源。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlowMeta {
@@ -333,6 +370,7 @@ pub struct FlowMeta {
     pub inbound: InboundId,
     pub domain: Option<Host>,
     pub protocol_hint: Option<ProtocolHint>,
+    pub platform: PlatformMetadata,
 }
 
 /// 路由层输出的纯决策：转发、拒绝或交给内部服务处理。
@@ -348,6 +386,10 @@ pub enum RejectReason {
     Policy,
     NoRoute,
     UnsupportedNetwork,
+    Drop,
+    TcpReset,
+    IcmpPortUnreachable,
+    IcmpHostUnreachable,
 }
 
 /// 跨层传播的轻量错误信息，保留错误类别但不绑定具体平台错误类型。

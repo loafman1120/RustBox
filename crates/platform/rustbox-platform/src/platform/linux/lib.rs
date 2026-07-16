@@ -9,11 +9,11 @@ use rustbox_io::PacketDevice;
 use rustbox_io::{IoError, IoErrorKind};
 use rustbox_kernel::{
     AcceptedTransparentStream, BoxFuture, ConnectionKey, InterfaceRef, NetworkControl,
-    NetworkControlError, NetworkLease, NetworkOperation, NetworkTransaction, PacketDeviceConfig,
-    PacketDeviceError, PacketDeviceInfo, PacketDeviceLease, PacketDeviceProvider, ProcessInfo,
-    ProcessLookup, ProcessLookupError, RollbackPolicy, TransparentProxyError,
-    TransparentProxyProvider, TransparentRedirectMode, TransparentStreamListener,
-    TransparentTcpBind,
+    NetworkControlError, NetworkLease, NetworkMetadataLookup, NetworkOperation, NetworkTransaction,
+    PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
+    PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError, RollbackPolicy,
+    TransparentProxyError, TransparentProxyProvider, TransparentRedirectMode,
+    TransparentStreamListener, TransparentTcpBind,
 };
 use rustbox_types::IpAddress;
 use rustbox_types::{Endpoint, Host};
@@ -45,6 +45,16 @@ pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_kernel::Transpa
     Some(std::sync::Arc::new(LinuxPlatform::new()))
 }
 
+pub(super) fn process() -> Option<std::sync::Arc<dyn ProcessLookup>> {
+    Some(std::sync::Arc::new(LinuxPlatform::new()))
+}
+
+pub(super) fn network_metadata() -> Option<std::sync::Arc<dyn NetworkMetadataLookup>> {
+    Some(std::sync::Arc::new(
+        network_metadata::NetworkMetadataProvider::default(),
+    ))
+}
+
 /// Linux 平台能力集合。
 ///
 /// 当前实现先提供 typed capability 边界和明确诊断；真实实现应在后续小步中把
@@ -63,6 +73,7 @@ fn process_lookup_status_message() -> &'static str {
 }
 
 mod network_control;
+mod network_metadata;
 mod packet_device;
 mod process;
 mod transparent;

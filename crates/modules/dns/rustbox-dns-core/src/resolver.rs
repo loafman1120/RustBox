@@ -3,10 +3,10 @@ use crate::{
     DnsRuleConfig, DnsTransport, FakeIpAllocator, HickoryTransport, Resolver,
 };
 use rustbox_types::{Host, IpAddress};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 pub struct RuleBasedResolver {
-    transports: HashMap<String, HickoryTransport>,
+    transports: HashMap<String, Arc<HickoryTransport>>,
     rules: Vec<DnsRuleConfig>,
     final_server: String,
     fake_ip: Option<FakeIpAllocator>,
@@ -14,7 +14,7 @@ pub struct RuleBasedResolver {
 
 impl RuleBasedResolver {
     pub fn new(
-        transports: HashMap<String, HickoryTransport>,
+        transports: HashMap<String, Arc<HickoryTransport>>,
         rules: Vec<DnsRuleConfig>,
         final_server: impl Into<String>,
         fake_ip: Option<FakeIpAllocator>,

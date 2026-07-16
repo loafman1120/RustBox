@@ -39,7 +39,7 @@ use tokio_rustls::TlsConnector;
 
 const IDLE_SESSION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const IDLE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
-const UOT_SENTINEL: &str = "sp.v2.udp-over-tcp.arpa";
+const UOT_SENTINEL: &str = rustbox_io::uot::SENTINEL;
 
 /// Peer implementation profile covered by RustBox's unit and process-level
 /// end-to-end tests.
@@ -158,7 +158,7 @@ impl Outbound for AnyTlsOutbound {
         target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn ByteStream>, OutboundError>> {
         let outbound = self.id.to_string();
-        let flow_id = Some(ctx.flow.id);
+        let flow_id = ctx.flow_id();
         let target_text = target.to_string();
 
         Box::pin(async move {
@@ -197,7 +197,7 @@ impl Outbound for AnyTlsOutbound {
         target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, OutboundError>> {
         let outbound = self.id.to_string();
-        let flow_id = Some(ctx.flow.id);
+        let flow_id = ctx.flow_id();
         let target_text = target.to_string();
 
         Box::pin(async move {
@@ -693,81 +693,19 @@ fn close_stream_in_background(stream: Arc<Stream>) {
 }
 
 fn encode_uot_datagram(target: &Endpoint, payload: &[u8]) -> io::Result<Vec<u8>> {
-    let payload_length = u16::try_from(payload.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "UOT packet is too large"))?;
-    let mut frame = encode_uot_target(target)?;
-    frame.extend_from_slice(&payload_length.to_be_bytes());
-    frame.extend_from_slice(payload);
-    Ok(frame)
+    rustbox_io::uot::encode_datagram(target, payload)
 }
 
 async fn read_uot_datagram(stream: &Stream) -> io::Result<(Vec<u8>, Endpoint)> {
-    let source = read_uot_target(stream).await?;
-    let mut payload_length = [0_u8; 2];
-    read_stream_bytes(stream, &mut payload_length).await?;
-    let mut payload = vec![0_u8; usize::from(u16::from_be_bytes(payload_length))];
-    read_stream_bytes(stream, &mut payload).await?;
-    Ok((payload, source))
+    rustbox_io::uot::read_datagram(&mut UotStreamReader(stream)).await
 }
 
-fn encode_uot_target(target: &Endpoint) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::new();
-    match &target.host {
-        Host::Ip(IpAddress::V4(octets)) => {
-            encoded.push(0x00);
-            encoded.extend_from_slice(octets);
-        }
-        Host::Ip(IpAddress::V6(octets)) => {
-            encoded.push(0x01);
-            encoded.extend_from_slice(octets);
-        }
-        Host::Domain(domain) => {
-            let length = u8::try_from(domain.len()).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "UOT domain exceeds 255 bytes")
-            })?;
-            encoded.push(0x02);
-            encoded.push(length);
-            encoded.extend_from_slice(domain.as_bytes());
-        }
+struct UotStreamReader<'a>(&'a Stream);
+
+impl rustbox_io::uot::Reader for UotStreamReader<'_> {
+    async fn read_exact<'a>(&'a mut self, output: &'a mut [u8]) -> io::Result<()> {
+        read_stream_bytes(self.0, output).await
     }
-    encoded.extend_from_slice(&target.port.to_be_bytes());
-    Ok(encoded)
-}
-
-async fn read_uot_target(stream: &Stream) -> io::Result<Endpoint> {
-    let mut kind = [0_u8; 1];
-    read_stream_bytes(stream, &mut kind).await?;
-    let host = match kind[0] {
-        0x00 => {
-            let mut octets = [0_u8; 4];
-            read_stream_bytes(stream, &mut octets).await?;
-            Host::Ip(IpAddress::V4(octets))
-        }
-        0x01 => {
-            let mut octets = [0_u8; 16];
-            read_stream_bytes(stream, &mut octets).await?;
-            Host::Ip(IpAddress::V6(octets))
-        }
-        0x02 => {
-            let mut length = [0_u8; 1];
-            read_stream_bytes(stream, &mut length).await?;
-            let mut domain = vec![0_u8; usize::from(length[0])];
-            read_stream_bytes(stream, &mut domain).await?;
-            Host::domain(
-                String::from_utf8(domain)
-                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
-            )
-        }
-        value => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unsupported UOT address type {value}"),
-            ));
-        }
-    };
-    let mut port = [0_u8; 2];
-    read_stream_bytes(stream, &mut port).await?;
-    Ok(Endpoint::new(host, u16::from_be_bytes(port)))
 }
 
 #[cfg(test)]
@@ -878,7 +816,7 @@ mod tests {
         let meta = flow_meta(target.clone(), Network::Tcp);
 
         let mut stream = outbound
-            .open_stream(OutboundContext { flow: &meta }, target)
+            .open_stream(OutboundContext::for_flow(&meta), target)
             .await
             .expect("open anytls stream");
         stream.write_all(b"ping").await.expect("write ping");
@@ -912,7 +850,7 @@ mod tests {
         let meta = flow_meta(target.clone(), Network::Udp);
 
         let mut socket = outbound
-            .open_datagram(OutboundContext { flow: &meta }, target.clone())
+            .open_datagram(OutboundContext::for_flow(&meta), target.clone())
             .await
             .expect("open anytls UOT socket");
         let sent =
@@ -1056,6 +994,7 @@ mod tests {
             inbound: InboundId::new(NonZeroU64::new(2).expect("non-zero inbound id")),
             domain: None,
             protocol_hint: None,
+            platform: Default::default(),
         }
     }
 }

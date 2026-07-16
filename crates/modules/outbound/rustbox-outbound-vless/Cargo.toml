@@ -8,11 +8,14 @@ license.workspace = true
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
+rustbox-transport = { path = "../../transport/rustbox-transport" }
 rustls = "0.23.41"
 tokio = { version = "1", features = ["io-util"] }
 tokio-rustls = "0.26.4"
 uuid = "1"
 webpki-roots = "1"
+rand = "0.9"
+tracing = "0.1"
 
 [lints]
 workspace = true

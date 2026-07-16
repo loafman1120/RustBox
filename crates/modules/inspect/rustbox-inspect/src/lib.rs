@@ -15,9 +15,13 @@ use core::pin::Pin;
 use observe::{ObservedDatagram, ObservedStream};
 use protocol::{SniffResult, sniff_tcp, sniff_udp};
 use rustbox_io::{ByteStream, DatagramSocket, IoError};
-use rustbox_kernel::{Flow, FlowPayload, InspectError, MetadataEnricher};
-use rustbox_types::{Endpoint, Host, ProtocolHint};
+use rustbox_kernel::{
+    ConnectionKey, Flow, FlowDirection, FlowPayload, InspectError, MetadataEnricher,
+    NetworkMetadataLookup, ProcessLookup,
+};
+use rustbox_types::{Endpoint, Host, ProcessMetadata, ProtocolHint};
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::time::{Instant, timeout_at};
@@ -82,6 +86,84 @@ impl ProtocolSniffer {
 impl Default for ProtocolSniffer {
     fn default() -> Self {
         Self::new(SniffConfig::default())
+    }
+}
+
+/// Single concrete enrichment pipeline used by the engine. It keeps the hot
+/// routing path synchronous while performing process ownership and bounded
+/// protocol sniffing asynchronously before route evaluation.
+#[derive(Clone)]
+pub struct FlowEnricher {
+    sniffer: ProtocolSniffer,
+    process_lookup: Option<Arc<dyn ProcessLookup>>,
+    network_lookup: Option<Arc<dyn NetworkMetadataLookup>>,
+}
+
+impl FlowEnricher {
+    pub fn new(sniffer: ProtocolSniffer, process_lookup: Option<Arc<dyn ProcessLookup>>) -> Self {
+        Self {
+            sniffer,
+            process_lookup,
+            network_lookup: None,
+        }
+    }
+
+    pub fn with_network_lookup(mut self, lookup: Option<Arc<dyn NetworkMetadataLookup>>) -> Self {
+        self.network_lookup = lookup;
+        self
+    }
+}
+
+impl MetadataEnricher for FlowEnricher {
+    fn name(&self) -> &'static str {
+        "flow-enricher"
+    }
+
+    async fn enrich(&self, mut flow: Flow) -> Result<Flow, InspectError> {
+        let key = ConnectionKey {
+            network: flow.meta.network,
+            local: flow.meta.source.clone(),
+            remote: flow.meta.destination.clone(),
+            direction: FlowDirection::Inbound,
+        };
+        let process_key = key.clone();
+        let process = async {
+            match &self.process_lookup {
+                Some(lookup) => lookup.lookup(process_key).await.ok().flatten(),
+                None => None,
+            }
+        };
+        let network = async {
+            match &self.network_lookup {
+                Some(lookup) => lookup.lookup_network(key).await.ok(),
+                None => None,
+            }
+        };
+        let (process, network) = tokio::join!(process, network);
+        if let Some(info) = process {
+            let name = info.executable_path.as_deref().and_then(|path| {
+                Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            });
+            flow.meta.platform.process = Some(ProcessMetadata {
+                pid: info.pid,
+                name,
+                path: info.executable_path,
+                package_name: info.package_name,
+                user_id: info.user_id,
+                user_name: None,
+            });
+        }
+        if let Some(info) = network {
+            if flow.meta.platform.interface.is_none() {
+                flow.meta.platform.interface = info.interface;
+            }
+            flow.meta.platform.wifi_ssid = info.wifi_ssid;
+            flow.meta.platform.wifi_bssid = info.wifi_bssid;
+            flow.meta.platform.network_type = info.network_type;
+        }
+        self.sniffer.enrich(flow).await
     }
 }
 
@@ -221,6 +303,7 @@ mod tests {
                 inbound: InboundId::new(NonZeroU64::new(1).unwrap()),
                 domain: None,
                 protocol_hint: None,
+                platform: Default::default(),
             },
             payload: FlowPayload::Stream(Box::new(MemoryStream::with_read_data(request.clone()))),
         };

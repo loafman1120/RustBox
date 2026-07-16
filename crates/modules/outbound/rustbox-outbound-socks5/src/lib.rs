@@ -70,7 +70,7 @@ impl Outbound for Socks5Outbound {
         target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn ByteStream>, OutboundError>> {
         let outbound = self.id.to_string();
-        let flow_id = Some(ctx.flow.id);
+        let flow_id = ctx.flow_id();
         let target_text = target.to_string();
 
         Box::pin(async move {
@@ -115,7 +115,7 @@ impl Outbound for Socks5Outbound {
         target: Endpoint,
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, OutboundError>> {
         let outbound = self.id.to_string();
-        let flow_id = Some(ctx.flow.id);
+        let flow_id = ctx.flow_id();
         let target_text = target.to_string();
 
         Box::pin(async move {
@@ -380,7 +380,7 @@ mod tests {
         );
         let mut stream = outbound
             .open_stream(
-                OutboundContext { flow: &meta },
+                OutboundContext::for_flow(&meta),
                 Endpoint::localhost_v4(echo_addr.port()),
             )
             .await
@@ -409,7 +409,7 @@ mod tests {
         let target = Endpoint::localhost_v4(echo_addr.port());
         let meta = flow_meta(outbound_id, target.clone(), Network::Udp);
         let mut socket = outbound
-            .open_datagram(OutboundContext { flow: &meta }, target.clone())
+            .open_datagram(OutboundContext::for_flow(&meta), target.clone())
             .await
             .expect("open socks datagram");
 
@@ -457,6 +457,7 @@ mod tests {
             inbound: InboundId::new(NonZeroU64::new(2).expect("non-zero inbound id")),
             domain: Some(Host::domain(format!("outbound-{outbound_id}.test"))),
             protocol_hint: None,
+            platform: Default::default(),
         }
     }
 

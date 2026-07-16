@@ -204,6 +204,7 @@ async fn accept_loop(
                 inbound: inbound_id,
                 domain: Some(accepted.original_destination.host.clone()),
                 protocol_hint: None,
+                platform: Default::default(),
             },
             payload: FlowPayload::Stream(accepted.stream),
         };

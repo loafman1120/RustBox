@@ -6,12 +6,24 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use rustbox_types::Endpoint;
+use std::any::Any;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// 可装入 trait object 的 Tokio 有序字节流。
-pub trait ByteStream: AsyncRead + AsyncWrite + Send + Unpin {}
+pub mod uot;
 
-impl<T> ByteStream for T where T: AsyncRead + AsyncWrite + Send + Unpin + ?Sized {}
+/// 可装入 trait object 的 Tokio 有序字节流。
+pub trait ByteStream: AsyncRead + AsyncWrite + Send + Unpin + Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T> ByteStream for T
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin + Any,
+{
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 
 /// 面向 UDP 等无连接数据报的接口，和字节流保持独立。
 pub trait DatagramSocket: Send + Unpin {

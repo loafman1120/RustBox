@@ -1,11 +1,11 @@
 use super::{compose_engine, compose_inbounds};
-use crate::{ComposeError, runtime::ComposedRuntime};
+use crate::{ComposeError, ruleset::RuleSetService, runtime::ComposedRuntime};
 use rustbox_config::{
     CompiledConfig, CompiledOutboundKind, ConfigCompiler, ConfigError, SourceConfig,
 };
 use rustbox_dns_core::{DnsConfig, DnsServerConfig, DnsSubsystem};
 use rustbox_kernel::FlowSink;
-use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink, TokioNetworkProvider};
+use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink, TaskScope, TokioNetworkProvider};
 #[cfg(test)]
 use rustbox_types::Endpoint;
 use std::sync::Arc;
@@ -47,13 +47,41 @@ impl RuntimeGraphBuilder {
     }
 
     fn compose(self, compiled: CompiledConfig) -> Result<ComposedRuntime, ComposeError> {
-        let dns = compose_dns(&compiled)?;
-        let reverse_dns = dns.as_ref().map(DnsSubsystem::reverse_dns);
-        let (engine, outbound_groups) =
-            compose_engine(&compiled, &self.host, &self.observability, reverse_dns)?;
+        let dns = compose_dns(&compiled)?.map(Arc::new);
+        let reverse_dns = dns.as_ref().map(|dns| dns.reverse_dns());
+        let session_tasks = TaskScope::new();
+        let (engine, outbound_groups, rule_set_store) = compose_engine(
+            &compiled,
+            &self.host,
+            &self.observability,
+            dns.clone(),
+            reverse_dns,
+            &session_tasks,
+        )?;
         let sink: Arc<dyn FlowSink> = engine.clone();
-        let services = compose_inbounds(compiled.inbounds, &self.host, &self.observability, &sink)?;
-        Ok(ComposedRuntime::new(engine, services, outbound_groups, dns))
+        let mut services =
+            compose_inbounds(compiled.inbounds, &self.host, &self.observability, &sink)?;
+        if compiled.route_rule_sets.iter().any(|rule_set| {
+            !matches!(
+                rule_set.source,
+                rustbox_config::RouteRuleSetSourceConfig::Inline
+            )
+        }) {
+            services.insert(
+                0,
+                Box::new(RuleSetService::new(
+                    compiled.route_rule_sets,
+                    rule_set_store,
+                )),
+            );
+        }
+        Ok(ComposedRuntime::new(
+            engine,
+            services,
+            outbound_groups,
+            dns,
+            session_tasks,
+        ))
     }
 }
 

@@ -5,18 +5,21 @@ impl ProcessLookup for LinuxPlatform {
         &self,
         key: ConnectionKey,
     ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>> {
-        Box::pin(async move { lookup_linux_process(key) })
+        Box::pin(async move { lookup_linux_process(key).await })
     }
 }
 
-fn lookup_linux_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
+async fn lookup_linux_process(
+    key: ConnectionKey,
+) -> Result<Option<ProcessInfo>, ProcessLookupError> {
     let protocol = match key.network {
         rustbox_types::Network::Tcp => "-tanp",
         rustbox_types::Network::Udp => "-uanp",
     };
-    let output = Command::new("ss")
+    let output = tokio::process::Command::new("ss")
         .args(["-H", protocol])
         .output()
+        .await
         .map_err(|err| ProcessLookupError::new(format!("start ss process lookup: {err}")))?;
     if !output.status.success() {
         return Err(ProcessLookupError::new(format!(
@@ -44,7 +47,8 @@ fn lookup_linux_process(key: ConnectionKey) -> Result<Option<ProcessInfo>, Proce
     else {
         return Ok(None);
     };
-    let executable_path = std::fs::read_link(format!("/proc/{pid}/exe"))
+    let executable_path = tokio::fs::read_link(format!("/proc/{pid}/exe"))
+        .await
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
     Ok(Some(ProcessInfo {

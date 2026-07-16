@@ -1,0 +1,18 @@
+[package]
+name = "rustbox-outbound-wireguard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.22"
+boringtun = "0.7"
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+tokio = { version = "1", features = ["io-util", "net", "rt", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+ts_netstack_smoltcp = { version = "0.4", features = ["tokio"] }
+
+[lints]
+workspace = true

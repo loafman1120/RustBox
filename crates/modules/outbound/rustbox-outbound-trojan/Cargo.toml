@@ -8,6 +8,7 @@ license.workspace = true
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
+rustbox-transport = { path = "../../transport/rustbox-transport" }
 rustls = "0.23.41"
 sha2 = "0.10"
 tokio = { version = "1", features = ["io-util"] }

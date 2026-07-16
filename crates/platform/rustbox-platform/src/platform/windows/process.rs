@@ -5,11 +5,13 @@ impl ProcessLookup for WindowsPlatform {
         &self,
         key: ConnectionKey,
     ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>> {
-        Box::pin(async move { lookup_windows_process(&key) })
+        Box::pin(async move { lookup_windows_process(&key).await })
     }
 }
 
-fn lookup_windows_process(key: &ConnectionKey) -> Result<Option<ProcessInfo>, ProcessLookupError> {
+async fn lookup_windows_process(
+    key: &ConnectionKey,
+) -> Result<Option<ProcessInfo>, ProcessLookupError> {
     let command = match key.network {
         rustbox_types::Network::Tcp => "Get-NetTCPConnection",
         rustbox_types::Network::Udp => "Get-NetUDPEndpoint",
@@ -18,9 +20,10 @@ fn lookup_windows_process(key: &ConnectionKey) -> Result<Option<ProcessInfo>, Pr
         "$c={command} -LocalPort {} -ErrorAction SilentlyContinue | Select-Object -First 1; if($null -ne $c){{$p=Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; Write-Output $c.OwningProcess; Write-Output $p.Path}}",
         key.local.port
     );
-    let output = Command::new("powershell.exe")
+    let output = tokio::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
+        .await
         .map_err(|err| ProcessLookupError::new(format!("start process lookup: {err}")))?;
     if !output.status.success() {
         return Err(ProcessLookupError::new(format!(

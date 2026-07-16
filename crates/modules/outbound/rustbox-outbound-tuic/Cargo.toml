@@ -1,0 +1,19 @@
+[package]
+name = "rustbox-outbound-tuic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-transport = { path = "../../transport/rustbox-transport" }
+rustbox-types = { path = "../../../foundation/rustbox-types" }
+bytes = "1"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+uuid = "1"
+
+[lints]
+workspace = true

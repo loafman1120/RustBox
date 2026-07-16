@@ -39,8 +39,20 @@ impl ConfigCompiler {
             outbound_kinds.insert(logical_id.to_string(), outbound.kind());
         }
 
+        validate_dial_policies(&normalized.source, &outbound_ids, &outbound_kinds)?;
+
         for outbound in &normalized.source.outbounds {
             let logical_id = outbound.logical_id();
+            if let Some(multiplex) = &outbound.dial.multiplex
+                && multiplex.enabled
+                && (multiplex.max_streams == 0
+                    || multiplex.max_connections == 0
+                    || multiplex.buffer_size < 4096)
+            {
+                return Err(ConfigError::new(format!(
+                    "outbound `{logical_id}` multiplex requires max_streams/max_connections > 0 and buffer_size >= 4096"
+                )));
+            }
             match &outbound.kind {
                 OutboundConfigKind::Socks5 {
                     username, password, ..
@@ -121,9 +133,8 @@ impl ConfigCompiler {
                         uuid,
                         security.as_deref(),
                         tls.as_ref(),
-                        transport.as_deref(),
+                        transport.as_ref(),
                     )?;
-                    validate_tcp_transport("vmess", logical_id, transport.as_deref())?;
                     if alter_id.is_some_and(|value| value != 0) {
                         return Err(ConfigError::new(format!(
                             "vmess outbound `{logical_id}` supports only alter_id=0 AEAD"
@@ -143,12 +154,21 @@ impl ConfigCompiler {
                         uuid,
                         flow.as_deref(),
                         tls.as_ref(),
-                        transport.as_deref(),
+                        transport.as_ref(),
                     )?;
-                    validate_tcp_transport("vless", logical_id, transport.as_deref())?;
-                    if flow.as_deref().is_some_and(|value| !value.is_empty()) {
+                    if flow
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty() && value != "xtls-rprx-vision")
+                    {
                         return Err(ConfigError::new(format!(
-                            "vless outbound `{logical_id}` currently supports only plain VLESS without Vision flow"
+                            "vless outbound `{logical_id}` has an unsupported flow"
+                        )));
+                    }
+                    if flow.as_deref() == Some("xtls-rprx-vision")
+                        && !tls.as_ref().is_some_and(|tls| tls.enabled)
+                    {
+                        return Err(ConfigError::new(format!(
+                            "vless outbound `{logical_id}` Vision flow requires TLS or REALITY"
                         )));
                     }
                 }
@@ -163,9 +183,8 @@ impl ConfigCompiler {
                         logical_id,
                         password,
                         tls.as_ref(),
-                        transport.as_deref(),
+                        transport.as_ref(),
                     )?;
-                    validate_tcp_transport("trojan", logical_id, transport.as_deref())?;
                     if tls.as_ref().is_some_and(|value| !value.enabled) {
                         return Err(ConfigError::new(format!(
                             "trojan outbound `{logical_id}` requires TLS"
@@ -185,6 +204,115 @@ impl ConfigCompiler {
                             "anytls outbound `{logical_id}` requires TLS"
                         )));
                     }
+                }
+                OutboundConfigKind::Hysteria2 {
+                    password,
+                    hop_interval,
+                    ..
+                } => {
+                    if password.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "hysteria2 outbound `{logical_id}` password must not be empty"
+                        )));
+                    }
+                    if hop_interval.is_some_and(|interval| interval.is_zero()) {
+                        return Err(ConfigError::new(format!(
+                            "hysteria2 outbound `{logical_id}` hop_interval must be greater than zero"
+                        )));
+                    }
+                }
+                OutboundConfigKind::Naive {
+                    username,
+                    password,
+                    tls,
+                    ..
+                } => {
+                    if username.is_empty() || password.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "naive outbound `{logical_id}` requires non-empty username and password"
+                        )));
+                    }
+                    if !tls.as_ref().is_some_and(|tls| tls.enabled) {
+                        return Err(ConfigError::new(format!(
+                            "naive outbound `{logical_id}` requires TLS"
+                        )));
+                    }
+                    validate_tls_and_transport("naive", logical_id, tls.as_ref(), None)?;
+                }
+                OutboundConfigKind::Tuic {
+                    uuid,
+                    password,
+                    tls,
+                    heartbeat,
+                    ..
+                } => {
+                    if uuid.is_empty() || password.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "tuic outbound `{logical_id}` requires non-empty uuid and password"
+                        )));
+                    }
+                    if heartbeat.is_zero() {
+                        return Err(ConfigError::new(format!(
+                            "tuic outbound `{logical_id}` heartbeat must be greater than zero"
+                        )));
+                    }
+                    if !tls.as_ref().is_some_and(|tls| tls.enabled) {
+                        return Err(ConfigError::new(format!(
+                            "tuic outbound `{logical_id}` requires TLS"
+                        )));
+                    }
+                    validate_tls_and_transport("tuic", logical_id, tls.as_ref(), None)?;
+                }
+                OutboundConfigKind::WireGuard {
+                    addresses,
+                    private_key,
+                    peers,
+                    mtu,
+                    ..
+                } => {
+                    if addresses.is_empty() || private_key.is_empty() || peers.is_empty() {
+                        return Err(ConfigError::new(format!(
+                            "wireguard outbound `{logical_id}` requires addresses, private_key and peers"
+                        )));
+                    }
+                    if !(1280..=u16::MAX as usize).contains(mtu) {
+                        return Err(ConfigError::new(format!(
+                            "wireguard outbound `{logical_id}` MTU must be between 1280 and 65535"
+                        )));
+                    }
+                    for peer in peers {
+                        if peer.public_key.is_empty() || peer.allowed_ips.is_empty() {
+                            return Err(ConfigError::new(format!(
+                                "wireguard outbound `{logical_id}` peer requires public_key and allowed_ips"
+                            )));
+                        }
+                        if peer
+                            .persistent_keepalive
+                            .is_some_and(|value| value.is_zero())
+                        {
+                            return Err(ConfigError::new(format!(
+                                "wireguard outbound `{logical_id}` peer keepalive must be greater than zero"
+                            )));
+                        }
+                    }
+                }
+                OutboundConfigKind::ShadowTls {
+                    version,
+                    password,
+                    tls,
+                    ..
+                } => {
+                    if *version != 3 {
+                        return Err(ConfigError::new(format!(
+                            "shadowtls outbound `{logical_id}` currently supports only version 3"
+                        )));
+                    }
+                    if password.is_empty() || !tls.as_ref().is_some_and(|value| value.enabled) {
+                        return Err(ConfigError::new(format!(
+                            "shadowtls outbound `{logical_id}` requires password and TLS"
+                        )));
+                    }
+                    validate_tls_and_transport("shadowtls", logical_id, tls.as_ref(), None)?;
                 }
                 OutboundConfigKind::Direct | OutboundConfigKind::Block => {}
             }
@@ -260,7 +388,9 @@ impl ConfigCompiler {
                     rule_set.id
                 )));
             }
-            if rule_set.rules.is_empty() {
+            if rule_set.rules.is_empty()
+                && matches!(rule_set.source, RouteRuleSetSourceConfig::Inline)
+            {
                 return Err(ConfigError::new(format!(
                     "route rule-set `{}` must contain at least one rule",
                     rule_set.id
@@ -494,10 +624,88 @@ impl ConfigCompiler {
                         password: password.clone(),
                         tls: tls.clone(),
                     },
+                    OutboundConfigKind::Hysteria2 {
+                        server,
+                        password,
+                        server_name,
+                        insecure,
+                        up_mbps,
+                        down_mbps,
+                        obfs_password,
+                        hop_ports,
+                        hop_interval,
+                        pin_sha256,
+                        ca_pem,
+                        fast_open,
+                    } => CompiledOutboundKind::Hysteria2 {
+                        server: server.clone(),
+                        password: password.clone(),
+                        server_name: server_name.clone(),
+                        insecure: *insecure,
+                        up_mbps: *up_mbps,
+                        down_mbps: *down_mbps,
+                        obfs_password: obfs_password.clone(),
+                        hop_ports: hop_ports.clone(),
+                        hop_interval: *hop_interval,
+                        pin_sha256: pin_sha256.clone(),
+                        ca_pem: ca_pem.clone(),
+                        fast_open: *fast_open,
+                    },
+                    OutboundConfigKind::Naive {
+                        server,
+                        username,
+                        password,
+                        tls,
+                        headers,
+                    } => CompiledOutboundKind::Naive {
+                        server: server.clone(),
+                        username: username.clone(),
+                        password: password.clone(),
+                        tls: tls.clone(),
+                        headers: headers.clone(),
+                    },
+                    OutboundConfigKind::Tuic {
+                        server,
+                        uuid,
+                        password,
+                        tls,
+                        heartbeat,
+                    } => CompiledOutboundKind::Tuic {
+                        server: server.clone(),
+                        uuid: uuid.clone(),
+                        password: password.clone(),
+                        tls: tls.clone(),
+                        heartbeat: *heartbeat,
+                    },
+                    OutboundConfigKind::WireGuard {
+                        addresses,
+                        private_key,
+                        listen_port,
+                        peers,
+                        mtu,
+                    } => CompiledOutboundKind::WireGuard {
+                        addresses: addresses.clone(),
+                        private_key: private_key.clone(),
+                        listen_port: *listen_port,
+                        peers: peers.clone(),
+                        mtu: *mtu,
+                    },
+                    OutboundConfigKind::ShadowTls {
+                        server,
+                        version,
+                        password,
+                        tls,
+                    } => CompiledOutboundKind::ShadowTls {
+                        server: server.clone(),
+                        version: *version,
+                        password: password.clone(),
+                        tls: tls.clone(),
+                    },
                 };
                 Ok(CompiledOutbound {
                     id: OutboundId::new(non_zero_id(index)),
                     logical_id: outbound.id.clone(),
+                    dial: compile_dial_policy(&outbound.dial, &source_outbound_ids),
                     kind,
                 })
             })
@@ -531,6 +739,7 @@ impl ConfigCompiler {
                 Ok(CompiledRouteRuleSet {
                     id: rule_set.id.clone(),
                     rules,
+                    source: rule_set.source.clone(),
                 })
             })
             .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -554,7 +763,7 @@ impl ConfigCompiler {
                 )),
                 RouteRuleConfig::Rule { matcher, action } => Ok(CompiledRouteRule::Rule {
                     matcher: compile_route_matcher(matcher, &inbound_by_logical_id)?,
-                    decision: route_action_decision(action, &outbounds)?,
+                    action: compile_route_action(action, &outbounds)?,
                 }),
                 RouteRuleConfig::Logical {
                     mode,
@@ -570,7 +779,7 @@ impl ConfigCompiler {
                             .collect::<Result<Vec<_>, _>>()?,
                         invert: *invert,
                     },
-                    decision: route_action_decision(action, &outbounds)?,
+                    action: compile_route_action(action, &outbounds)?,
                 }),
             })
             .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -608,6 +817,7 @@ impl OutboundConfig {
 
     fn kind(&self) -> OutboundKind {
         match &self.kind {
+            OutboundConfigKind::Block => OutboundKind::Unavailable,
             OutboundConfigKind::Selector { .. } => OutboundKind::Selector,
             OutboundConfigKind::UrlTest { .. } => OutboundKind::UrlTest,
             _ => OutboundKind::Concrete,
@@ -633,7 +843,12 @@ impl CompiledOutbound {
             | CompiledOutboundKind::Vmess { .. }
             | CompiledOutboundKind::Vless { .. }
             | CompiledOutboundKind::Trojan { .. }
-            | CompiledOutboundKind::AnyTls { .. } => RouteDecision::Forward(self.id),
+            | CompiledOutboundKind::AnyTls { .. }
+            | CompiledOutboundKind::Hysteria2 { .. }
+            | CompiledOutboundKind::Naive { .. }
+            | CompiledOutboundKind::Tuic { .. }
+            | CompiledOutboundKind::WireGuard { .. }
+            | CompiledOutboundKind::ShadowTls { .. } => RouteDecision::Forward(self.id),
             CompiledOutboundKind::Block => RouteDecision::Reject(RejectReason::Policy),
             CompiledOutboundKind::Selector { .. } | CompiledOutboundKind::UrlTest { .. } => {
                 RouteDecision::Forward(self.id)
@@ -645,8 +860,131 @@ impl CompiledOutbound {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutboundKind {
     Concrete,
+    Unavailable,
     Selector,
     UrlTest,
+}
+
+fn validate_dial_policies(
+    source: &SourceConfig,
+    outbound_ids: &HashSet<String>,
+    outbound_kinds: &HashMap<String, OutboundKind>,
+) -> Result<(), ConfigError> {
+    let policies = source
+        .outbounds
+        .iter()
+        .map(|outbound| (outbound.id.as_str(), outbound.dial.detour.as_deref()))
+        .collect::<HashMap<_, _>>();
+    let dns_servers = source
+        .dns
+        .as_ref()
+        .map(|dns| {
+            dns.servers
+                .iter()
+                .map(|server| server.id.as_str())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    for outbound in &source.outbounds {
+        let dial = &outbound.dial;
+        if dial.disable_tcp_keep_alive
+            && (dial.tcp_keep_alive.is_some() || dial.tcp_keep_alive_interval.is_some())
+        {
+            return Err(ConfigError::new(format!(
+                "outbound `{}` cannot disable and configure TCP keepalive together",
+                outbound.id
+            )));
+        }
+        if matches!(dial.inet4_bind_address, Some(std::net::IpAddr::V6(_))) {
+            return Err(ConfigError::new(format!(
+                "outbound `{}` inet4_bind_address must be IPv4",
+                outbound.id
+            )));
+        }
+        if matches!(dial.inet6_bind_address, Some(std::net::IpAddr::V4(_))) {
+            return Err(ConfigError::new(format!(
+                "outbound `{}` inet6_bind_address must be IPv6",
+                outbound.id
+            )));
+        }
+        if let Some(resolver) = &dial.domain_resolver
+            && !dns_servers.contains(resolver.as_str())
+        {
+            return Err(ConfigError::new(format!(
+                "outbound `{}` references unknown domain_resolver `{resolver}`",
+                outbound.id
+            )));
+        }
+        if let Some(detour) = &dial.detour {
+            if !outbound_ids.contains(detour) {
+                return Err(ConfigError::new(format!(
+                    "outbound `{}` references unknown detour `{detour}`",
+                    outbound.id
+                )));
+            }
+            if outbound_kinds.get(detour) != Some(&OutboundKind::Concrete) {
+                return Err(ConfigError::new(format!(
+                    "outbound `{}` detour `{detour}` must be a concrete outbound",
+                    outbound.id
+                )));
+            }
+        }
+
+        let mut seen = HashSet::new();
+        let mut cursor = Some(outbound.id.as_str());
+        while let Some(id) = cursor {
+            if !seen.insert(id) {
+                return Err(ConfigError::new(format!(
+                    "detour cycle detected from outbound `{}` at `{id}`",
+                    outbound.id
+                )));
+            }
+            cursor = policies.get(id).copied().flatten();
+        }
+    }
+    Ok(())
+}
+
+fn compile_dial_policy(
+    dial: &DialConfig,
+    outbound_ids: &HashMap<String, OutboundId>,
+) -> CompiledDialPolicy {
+    let tcp_keepalive = if dial.disable_tcp_keep_alive {
+        Some(None)
+    } else {
+        dial.tcp_keep_alive
+            .or_else(|| {
+                dial.tcp_keep_alive_interval
+                    .map(|_| std::time::Duration::from_secs(300))
+            })
+            .map(|idle| {
+                Some(rustbox_kernel::TcpKeepaliveOptions {
+                    idle,
+                    interval: dial.tcp_keep_alive_interval,
+                })
+            })
+    };
+    CompiledDialPolicy {
+        detour: dial.detour.as_ref().map(|id| outbound_ids[id]),
+        options: rustbox_kernel::DialOptions {
+            bind_interface: dial.bind_interface.clone(),
+            inet4_bind_address: dial.inet4_bind_address.map(config_ip_address),
+            inet6_bind_address: dial.inet6_bind_address.map(config_ip_address),
+            routing_mark: dial.routing_mark,
+            connect_timeout: dial.connect_timeout,
+            tcp_keepalive,
+        },
+        domain_resolver: dial.domain_resolver.clone(),
+        multiplex: dial.multiplex.clone(),
+    }
+}
+
+fn config_ip_address(address: std::net::IpAddr) -> IpAddress {
+    match address {
+        std::net::IpAddr::V4(address) => IpAddress::V4(address.octets()),
+        std::net::IpAddr::V6(address) => IpAddress::V6(address.octets()),
+    }
 }
 
 fn validate_optional_credentials(
@@ -777,7 +1115,7 @@ fn validate_proxy_protocol_config(
     uuid: &str,
     option: Option<&str>,
     tls: Option<&OutboundTlsConfig>,
-    transport: Option<&str>,
+    transport: Option<&V2RayTransportConfig>,
 ) -> Result<(), ConfigError> {
     if uuid.is_empty() {
         return Err(ConfigError::new(format!(
@@ -797,7 +1135,7 @@ fn validate_secret_protocol_config(
     logical_id: &str,
     password: &str,
     tls: Option<&OutboundTlsConfig>,
-    transport: Option<&str>,
+    transport: Option<&V2RayTransportConfig>,
 ) -> Result<(), ConfigError> {
     if password.is_empty() {
         return Err(ConfigError::new(format!(
@@ -811,11 +1149,13 @@ fn validate_tls_and_transport(
     protocol: &str,
     logical_id: &str,
     tls: Option<&OutboundTlsConfig>,
-    transport: Option<&str>,
+    transport: Option<&V2RayTransportConfig>,
 ) -> Result<(), ConfigError> {
-    if transport == Some("") {
+    if let Some(V2RayTransportConfig::Http2 { hosts, .. }) = transport
+        && hosts.is_empty()
+    {
         return Err(ConfigError::new(format!(
-            "{protocol} outbound `{logical_id}` transport must not be empty"
+            "{protocol} outbound `{logical_id}` HTTP/2 transport requires at least one host"
         )));
     }
     if let Some(tls) = tls {
@@ -829,19 +1169,28 @@ fn validate_tls_and_transport(
                 "{protocol} outbound `{logical_id}` tls.alpn must not contain empty values"
             )));
         }
-    }
-    Ok(())
-}
-
-fn validate_tcp_transport(
-    protocol: &str,
-    logical_id: &str,
-    transport: Option<&str>,
-) -> Result<(), ConfigError> {
-    if transport.is_some_and(|value| value != "tcp") {
-        return Err(ConfigError::new(format!(
-            "{protocol} outbound `{logical_id}` currently supports only tcp transport"
-        )));
+        if tls.client_certificate_pem.is_some() != tls.client_private_key_pem.is_some() {
+            return Err(ConfigError::new(format!(
+                "{protocol} outbound `{logical_id}` TLS client certificate and private key must be configured together"
+            )));
+        }
+        if tls.ech_config.is_some() && tls.reality.is_some() {
+            return Err(ConfigError::new(format!(
+                "{protocol} outbound `{logical_id}` cannot combine ECH and REALITY"
+            )));
+        }
+        if let Some(reality) = &tls.reality {
+            if reality.public_key.is_empty() {
+                return Err(ConfigError::new(format!(
+                    "{protocol} outbound `{logical_id}` REALITY public_key must not be empty"
+                )));
+            }
+            if reality.short_id.len() > 16 || reality.short_id.len() % 2 != 0 {
+                return Err(ConfigError::new(format!(
+                    "{protocol} outbound `{logical_id}` REALITY short_id must be even-length hex of at most eight bytes"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -860,7 +1209,16 @@ fn validate_route_action(
                 )))
             }
         }
-        RouteActionConfig::Reject(_) => Ok(()),
+        RouteActionConfig::Reject(_)
+        | RouteActionConfig::HijackDns
+        | RouteActionConfig::Options(_) => Ok(()),
+        RouteActionConfig::Resolve(resolve) => {
+            if resolve.server.as_deref() == Some("") {
+                Err(ConfigError::new("route resolve server must not be empty"))
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1045,6 +1403,15 @@ fn compile_route_matcher(
                     ports: conditions.port.clone(),
                     source_ports: conditions.source_port.clone(),
                     rule_sets: conditions.rule_set.clone(),
+                    process_names: conditions.process_name.clone(),
+                    process_paths: conditions.process_path.clone(),
+                    package_names: conditions.package_name.clone(),
+                    user_ids: conditions.user_id.clone(),
+                    user_names: conditions.user_name.clone(),
+                    interfaces: conditions.interface.clone(),
+                    wifi_ssids: conditions.wifi_ssid.clone(),
+                    wifi_bssids: conditions.wifi_bssid.clone(),
+                    network_types: conditions.network_type.clone(),
                     invert: conditions.invert,
                 },
             )))
@@ -1064,17 +1431,40 @@ fn compile_route_matcher(
     }
 }
 
-fn route_action_decision(
+pub fn compile_headless_route_matcher(
+    matcher: &RouteMatcherConfig,
+) -> Result<CompiledRouteMatcher, ConfigError> {
+    compile_route_matcher(matcher, &HashMap::new())
+}
+
+fn compile_route_action(
     action: &RouteActionConfig,
     outbounds: &[CompiledOutbound],
-) -> Result<RouteDecision, ConfigError> {
+) -> Result<RouteAction, ConfigError> {
     match action {
         RouteActionConfig::Outbound(outbound) => outbounds
             .iter()
             .find(|compiled| compiled.logical_id() == outbound)
             .ok_or_else(|| ConfigError::new(format!("unknown outbound `{outbound}`")))
-            .map(CompiledOutbound::route_decision),
-        RouteActionConfig::Reject(reason) => Ok(RouteDecision::Reject(reason.clone())),
+            .map(CompiledOutbound::route_decision)
+            .map(RouteAction::Final),
+        RouteActionConfig::Reject(reason) => {
+            Ok(RouteAction::Final(RouteDecision::Reject(reason.clone())))
+        }
+        RouteActionConfig::HijackDns => Ok(RouteAction::Final(RouteDecision::Hijack(
+            rustbox_types::dns_hijack_service_id(),
+        ))),
+        RouteActionConfig::Options(options) => Ok(RouteAction::Options(RouteOptions {
+            override_host: options.override_address.clone(),
+            override_port: options.override_port,
+            udp_timeout: options.udp_timeout,
+            udp_connect: options.udp_connect,
+            udp_disable_domain_unmapping: options.udp_disable_domain_unmapping,
+        })),
+        RouteActionConfig::Resolve(resolve) => Ok(RouteAction::Resolve(RouteResolve {
+            server: resolve.server.clone(),
+            strategy: resolve.strategy,
+        })),
     }
 }
 

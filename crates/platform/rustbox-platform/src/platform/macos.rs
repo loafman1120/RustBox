@@ -32,6 +32,15 @@ pub(super) fn transparent() -> Option<std::sync::Arc<dyn rustbox_kernel::Transpa
     None
 }
 
+pub(super) fn process() -> Option<std::sync::Arc<dyn rustbox_kernel::ProcessLookup>> {
+    None
+}
+
+pub(super) fn network_metadata() -> Option<std::sync::Arc<dyn rustbox_kernel::NetworkMetadataLookup>>
+{
+    None
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MacosPlatform;
 

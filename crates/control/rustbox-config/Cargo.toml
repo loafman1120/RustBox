@@ -6,9 +6,11 @@ license.workspace = true
 
 [dependencies]
 garde = { version = "0.23", features = ["derive"] }
+humantime-serde = "1"
 regex = "1"
 rustbox-dns-core = { path = "../../modules/dns/rustbox-dns-core" }
 rustbox-kernel = { path = "../../kernel/rustbox-kernel" }
+rustbox-route = { path = "../../kernel/rustbox-route" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"

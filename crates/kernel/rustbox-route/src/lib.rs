@@ -2,18 +2,67 @@
 //!
 //! 路由层只消费 `FlowMeta` 并返回 `RouteDecision`，不发起 DNS、进程查询或 I/O。
 
+use arc_swap::ArcSwap;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use regex::Regex;
 use rustbox_types::{
-    FlowMeta, Host, InboundId, IpAddress, IpCidr, Network, OutboundId, PortRange, ProtocolHint,
-    RejectReason, RouteDecision,
+    FlowMeta, Host, InboundId, IpAddress, IpCidr, Network, NetworkType, OutboundId, PortRange,
+    ProtocolHint, RejectReason, RouteDecision,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// A route rule may either finish routing or mutate per-flow route state and
+/// continue evaluating later rules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RouteAction {
+    Final(RouteDecision),
+    Options(RouteOptions),
+    Resolve(RouteResolve),
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RouteOptions {
+    pub override_host: Option<Host>,
+    pub override_port: Option<u16>,
+    pub udp_timeout: Option<Duration>,
+    pub udp_connect: Option<bool>,
+    pub udp_disable_domain_unmapping: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RouteResolve {
+    pub server: Option<String>,
+    pub strategy: ResolveStrategy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResolveStrategy {
+    #[default]
+    PreferIpv4,
+    PreferIpv6,
+    Ipv4Only,
+    Ipv6Only,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteStep {
+    pub action: RouteAction,
+    pub next_rule: usize,
+}
 
 /// 纯路由决策接口。
 pub trait Router: Send + Sync {
     fn route(&self, flow: &FlowMeta) -> RouteDecision;
+
+    fn route_step(&self, flow: &FlowMeta, _start_rule: usize) -> RouteStep {
+        RouteStep {
+            action: RouteAction::Final(self.route(flow)),
+            next_rule: usize::MAX,
+        }
+    }
 }
 
 /// 始终转发到同一个 outbound 的最小路由器，主要用于默认图和测试。
@@ -54,12 +103,19 @@ impl Router for RejectRouter {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RouteRule {
     matcher: RouteMatcher,
-    decision: RouteDecision,
+    action: RouteAction,
 }
 
 impl RouteRule {
     pub fn new(matcher: RouteMatcher, decision: RouteDecision) -> Self {
-        Self { matcher, decision }
+        Self {
+            matcher,
+            action: RouteAction::Final(decision),
+        }
+    }
+
+    pub fn with_action(matcher: RouteMatcher, action: RouteAction) -> Self {
+        Self { matcher, action }
     }
 }
 
@@ -112,6 +168,15 @@ pub struct RouteConditions {
     pub ports: Vec<PortRange>,
     pub source_ports: Vec<PortRange>,
     pub rule_sets: Vec<String>,
+    pub process_names: Vec<String>,
+    pub process_paths: Vec<String>,
+    pub package_names: Vec<String>,
+    pub user_ids: Vec<u32>,
+    pub user_names: Vec<String>,
+    pub interfaces: Vec<String>,
+    pub wifi_ssids: Vec<String>,
+    pub wifi_bssids: Vec<String>,
+    pub network_types: Vec<NetworkType>,
     pub invert: bool,
 }
 
@@ -161,6 +226,75 @@ impl RouteConditions {
         }
 
         if !self.source_ip_cidrs.is_empty() && !self.matches_source_ip(flow) {
+            return false;
+        }
+
+        let platform = &flow.platform;
+        let process = platform.process.as_ref();
+        if !self.process_names.is_empty()
+            && !process
+                .and_then(|value| value.name.as_deref())
+                .is_some_and(|value| contains_case_insensitive(&self.process_names, value))
+        {
+            return false;
+        }
+        if !self.process_paths.is_empty()
+            && !process
+                .and_then(|value| value.path.as_deref())
+                .is_some_and(|value| contains_case_insensitive(&self.process_paths, value))
+        {
+            return false;
+        }
+        if !self.package_names.is_empty()
+            && !process
+                .and_then(|value| value.package_name.as_deref())
+                .is_some_and(|value| contains_case_insensitive(&self.package_names, value))
+        {
+            return false;
+        }
+        if !self.user_ids.is_empty()
+            && !process
+                .and_then(|value| value.user_id)
+                .is_some_and(|value| self.user_ids.contains(&value))
+        {
+            return false;
+        }
+        if !self.user_names.is_empty()
+            && !process
+                .and_then(|value| value.user_name.as_deref())
+                .is_some_and(|value| contains_case_insensitive(&self.user_names, value))
+        {
+            return false;
+        }
+        if !self.interfaces.is_empty()
+            && !platform
+                .interface
+                .as_deref()
+                .is_some_and(|value| contains_case_insensitive(&self.interfaces, value))
+        {
+            return false;
+        }
+        if !self.wifi_ssids.is_empty()
+            && !platform
+                .wifi_ssid
+                .as_deref()
+                .is_some_and(|value| self.wifi_ssids.iter().any(|candidate| candidate == value))
+        {
+            return false;
+        }
+        if !self.wifi_bssids.is_empty()
+            && !platform
+                .wifi_bssid
+                .as_deref()
+                .is_some_and(|value| contains_case_insensitive(&self.wifi_bssids, value))
+        {
+            return false;
+        }
+        if !self.network_types.is_empty()
+            && !platform
+                .network_type
+                .is_some_and(|value| self.network_types.contains(&value))
+        {
             return false;
         }
 
@@ -223,6 +357,63 @@ pub struct RouteRuleSet {
     pub rules: Vec<RouteMatcher>,
 }
 
+#[derive(Clone)]
+pub struct RuleSetStore {
+    snapshot: Arc<ArcSwap<HashMap<String, RouteRuleSet>>>,
+}
+
+impl RuleSetStore {
+    pub fn new() -> Self {
+        Self {
+            snapshot: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+        }
+    }
+
+    pub fn replace(&self, id: impl Into<String>, rule_set: RouteRuleSet) {
+        let current = self.snapshot.load();
+        let mut next = (**current).clone();
+        next.insert(id.into(), rule_set);
+        self.snapshot.store(Arc::new(next));
+    }
+
+    pub fn remove(&self, id: &str) {
+        let current = self.snapshot.load();
+        if !current.contains_key(id) {
+            return;
+        }
+        let mut next = (**current).clone();
+        next.remove(id);
+        self.snapshot.store(Arc::new(next));
+    }
+
+    pub fn snapshot(&self) -> Arc<HashMap<String, RouteRuleSet>> {
+        self.snapshot.load_full()
+    }
+}
+
+impl Default for RuleSetStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for RuleSetStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuleSetStore")
+            .field("count", &self.snapshot.load().len())
+            .finish()
+    }
+}
+
+impl PartialEq for RuleSetStore {
+    fn eq(&self, other: &Self) -> bool {
+        *self.snapshot.load_full() == *other.snapshot.load_full()
+    }
+}
+
+impl Eq for RuleSetStore {}
+
 impl RouteRuleSet {
     pub fn new(rules: Vec<RouteMatcher>) -> Self {
         Self { rules }
@@ -239,7 +430,7 @@ impl RouteRuleSet {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RouteTable {
     rules: Vec<RouteRule>,
-    rule_sets: HashMap<String, RouteRuleSet>,
+    rule_sets: RuleSetStore,
     default: Option<RouteDecision>,
 }
 
@@ -262,7 +453,14 @@ impl RouteTable {
         id: impl Into<String>,
         rule_set: RouteRuleSet,
     ) -> Option<RouteRuleSet> {
-        self.rule_sets.insert(id.into(), rule_set)
+        let id = id.into();
+        let previous = self.rule_sets.snapshot().get(&id).cloned();
+        self.rule_sets.replace(id, rule_set);
+        previous
+    }
+
+    pub fn rule_set_store(&self) -> RuleSetStore {
+        self.rule_sets.clone()
     }
 
     pub fn insert_domain(
@@ -284,12 +482,36 @@ impl RouteTable {
 
 impl Router for RouteTable {
     fn route(&self, flow: &FlowMeta) -> RouteDecision {
+        let rule_sets = self.rule_sets.snapshot();
         self.rules
             .iter()
-            .find(|rule| rule.matcher.matches(flow, &self.rule_sets))
-            .map(|rule| rule.decision.clone())
+            .filter(|rule| rule.matcher.matches(flow, &rule_sets))
+            .find_map(|rule| match &rule.action {
+                RouteAction::Final(decision) => Some(decision.clone()),
+                RouteAction::Options(_) | RouteAction::Resolve(_) => None,
+            })
             .or_else(|| self.default.clone())
             .unwrap_or(RouteDecision::Reject(RejectReason::NoRoute))
+    }
+
+    fn route_step(&self, flow: &FlowMeta, start_rule: usize) -> RouteStep {
+        let rule_sets = self.rule_sets.snapshot();
+        for (index, rule) in self.rules.iter().enumerate().skip(start_rule) {
+            if rule.matcher.matches(flow, &rule_sets) {
+                return RouteStep {
+                    action: rule.action.clone(),
+                    next_rule: index.saturating_add(1),
+                };
+            }
+        }
+        RouteStep {
+            action: RouteAction::Final(
+                self.default
+                    .clone()
+                    .unwrap_or(RouteDecision::Reject(RejectReason::NoRoute)),
+            ),
+            next_rule: usize::MAX,
+        }
     }
 }
 
@@ -383,6 +605,77 @@ mod tests {
     }
 
     #[test]
+    fn continues_after_non_final_action_and_uses_updated_metadata() {
+        let proxy = outbound_id(1);
+        let mut table =
+            RouteTable::new().with_default(RouteDecision::Reject(RejectReason::NoRoute));
+        table.push_rule(RouteRule::with_action(
+            RouteMatcher::Conditions(Box::new(RouteConditions {
+                domain_suffixes: vec!["example.test".to_string()],
+                ..RouteConditions::default()
+            })),
+            RouteAction::Options(RouteOptions {
+                override_host: Some(Host::domain("edge.internal")),
+                override_port: Some(8443),
+                ..RouteOptions::default()
+            }),
+        ));
+        table.push_rule(RouteRule::new(
+            RouteMatcher::Conditions(Box::new(RouteConditions {
+                domains: vec!["edge.internal".to_string()],
+                ports: vec![PortRange::single(8443)],
+                ..RouteConditions::default()
+            })),
+            RouteDecision::Forward(proxy),
+        ));
+
+        let mut flow = flow_with_domain("api.example.test");
+        let first = table.route_step(&flow, 0);
+        let RouteAction::Options(options) = first.action else {
+            panic!("expected route options")
+        };
+        flow.destination.host = options.override_host.expect("override host");
+        flow.destination.port = options.override_port.expect("override port");
+        flow.domain = Some(flow.destination.host.clone());
+        let second = table.route_step(&flow, first.next_rule);
+        assert_eq!(
+            second.action,
+            RouteAction::Final(RouteDecision::Forward(proxy))
+        );
+    }
+
+    #[test]
+    fn rule_set_store_replaces_snapshot_without_rebuilding_table() {
+        let proxy = outbound_id(1);
+        let direct = outbound_id(2);
+        let mut table = RouteTable::new().with_default(RouteDecision::Forward(direct));
+        table.insert_rule_set("dynamic", RouteRuleSet::new(Vec::new()));
+        table.push_rule(RouteRule::new(
+            RouteMatcher::Conditions(Box::new(RouteConditions {
+                rule_sets: vec!["dynamic".to_string()],
+                ..RouteConditions::default()
+            })),
+            RouteDecision::Forward(proxy),
+        ));
+        assert_eq!(
+            table.route(&flow_with_domain("ads.example")),
+            RouteDecision::Forward(direct)
+        );
+
+        table.rule_set_store().replace(
+            "dynamic",
+            RouteRuleSet::new(vec![RouteMatcher::Conditions(Box::new(RouteConditions {
+                domain_keywords: vec!["ads".to_string()],
+                ..RouteConditions::default()
+            }))]),
+        );
+        assert_eq!(
+            table.route(&flow_with_domain("ads.example")),
+            RouteDecision::Forward(proxy)
+        );
+    }
+
+    #[test]
     fn matches_network_port_cidr_and_invert() {
         let direct = outbound_id(1);
         let block = RouteDecision::Reject(RejectReason::Policy);
@@ -452,6 +745,37 @@ mod tests {
         assert_eq!(table.route(&flow), RouteDecision::Forward(direct));
     }
 
+    #[test]
+    fn matches_process_and_platform_network_metadata() {
+        let proxy = outbound_id(1);
+        let direct = outbound_id(2);
+        let mut table = RouteTable::new().with_default(RouteDecision::Forward(direct));
+        table.push_rule(RouteRule::new(
+            RouteMatcher::Conditions(Box::new(RouteConditions {
+                process_names: vec!["browser.exe".into()],
+                package_names: vec!["com.example.browser".into()],
+                interfaces: vec!["wlan0".into()],
+                wifi_ssids: vec!["Office".into()],
+                network_types: vec![NetworkType::Wifi],
+                ..RouteConditions::default()
+            })),
+            RouteDecision::Forward(proxy),
+        ));
+        let mut flow = flow_with_domain("example.test");
+        flow.platform.interface = Some("WLAN0".into());
+        flow.platform.wifi_ssid = Some("Office".into());
+        flow.platform.network_type = Some(NetworkType::Wifi);
+        flow.platform.process = Some(rustbox_types::ProcessMetadata {
+            name: Some("Browser.EXE".into()),
+            package_name: Some("com.example.browser".into()),
+            ..Default::default()
+        });
+
+        assert_eq!(table.route(&flow), RouteDecision::Forward(proxy));
+        flow.platform.wifi_ssid = Some("Guest".into());
+        assert_eq!(table.route(&flow), RouteDecision::Forward(direct));
+    }
+
     fn flow_with_domain(domain: &str) -> FlowMeta {
         FlowMeta {
             id: FlowId::new(NonZeroU64::new(1).expect("non-zero")),
@@ -461,6 +785,7 @@ mod tests {
             inbound: InboundId::new(NonZeroU64::new(1).expect("non-zero")),
             domain: Some(Host::domain(domain)),
             protocol_hint: None,
+            platform: Default::default(),
         }
     }
 

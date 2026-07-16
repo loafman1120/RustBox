@@ -12,14 +12,19 @@ rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 net-route = "0.4.6"
 nix = { version = "0.31.3", features = ["net"] }
-tokio = { version = "1", features = ["io-util", "net"] }
+tokio = { version = "1", features = ["fs", "io-util", "net", "process", "sync", "time"] }
 tun-rs = "2.8.7"
+
+[target.'cfg(target_os = "android")'.dependencies]
+rustbox-types = { path = "../../foundation/rustbox-types" }
+tokio = { version = "1", features = ["fs"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 net-route = "0.4.6"
 tun-rs = { version = "2.8.7", features = ["async"] }
+tokio = { version = "1", features = ["process", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rustbox-io = { path = "../../foundation/rustbox-io" }

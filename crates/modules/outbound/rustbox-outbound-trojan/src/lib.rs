@@ -7,6 +7,7 @@
 use rustbox_io::{ByteStream, DatagramSocket};
 use rustbox_kernel::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
+use rustbox_transport::{StreamTransport, TransportContext};
 use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
@@ -46,6 +47,7 @@ pub struct TrojanOutbound {
     server_name: ServerName<'static>,
     tls_config: Arc<ClientConfig>,
     network: Arc<dyn NetworkProvider>,
+    transport: Option<Arc<dyn StreamTransport>>,
 }
 
 impl TrojanOutbound {
@@ -73,7 +75,13 @@ impl TrojanOutbound {
             server_name,
             tls_config,
             network,
+            transport: None,
         })
+    }
+
+    pub fn with_transport(mut self, transport: Arc<dyn StreamTransport>) -> Self {
+        self.transport = Some(transport);
+        self
     }
 
     async fn connect(&self, target: &Endpoint) -> Result<Box<dyn ByteStream>, OutboundError> {
@@ -85,18 +93,34 @@ impl TrojanOutbound {
         target: &Endpoint,
         command: u8,
     ) -> Result<Box<dyn ByteStream>, OutboundError> {
-        let stream = self
-            .network
-            .connect_tcp(TcpConnect {
-                target: self.server.clone(),
-            })
-            .await
-            .map_err(|error| OutboundError::new(error.message))?;
-        let connector = TlsConnector::from(self.tls_config.clone());
-        let mut stream = connector
-            .connect(self.server_name.clone(), stream)
-            .await
-            .map_err(|error| OutboundError::new(format!("trojan TLS handshake failed: {error}")))?;
+        let mut stream: Box<dyn ByteStream> = if let Some(transport) = &self.transport {
+            transport
+                .connect(
+                    TransportContext {
+                        network: &*self.network,
+                    },
+                    self.server.clone(),
+                )
+                .await
+                .map_err(|error| OutboundError::new(error.message))?
+        } else {
+            let stream = self
+                .network
+                .connect_tcp(TcpConnect {
+                    target: self.server.clone(),
+                })
+                .await
+                .map_err(|error| OutboundError::new(error.message))?;
+            let connector = TlsConnector::from(self.tls_config.clone());
+            Box::new(
+                connector
+                    .connect(self.server_name.clone(), stream)
+                    .await
+                    .map_err(|error| {
+                        OutboundError::new(format!("trojan TLS handshake failed: {error}"))
+                    })?,
+            )
+        };
         let header = build_header(&self.password_hash, command, target)?;
         stream
             .write_all(&header)

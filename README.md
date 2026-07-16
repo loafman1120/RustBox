@@ -27,11 +27,11 @@ runtime substitution is unnecessary. The workspace forbids handwritten
 `unsafe` Rust; the Flutter bridge's generated native export is the only FFI
 boundary.
 
-Known cleanup work is deliberately narrower than a redesign: choose one
-workspace-wide rustls crypto provider, remove or adopt the currently unused
-`rustbox-transport` prototype, replace the SOCKS5 UDP association's hand-managed
-waker, bring the VMess framing task under structured task ownership, and split
-the largest SOCKS5/config/control modules without adding pass-through crates.
+The shared `rustbox-transport` layer is used by VMess, VLESS, Trojan,
+ShadowTLS, NaiveProxy and Mux.Cool instead of repeating carrier/TLS code in
+every inbound/outbound pair. The SOCKS5 UDP association uses an
+atomic waker with a post-registration close check, and VMess framing runs in the
+generation's session task scope with symmetric direction termination.
 UDP session limits and idle eviction are not yet implemented. See
 [architecture](docs/architecture.md) and
 [code structure](docs/code-structure.md) for the stable boundaries and current
@@ -197,7 +197,19 @@ nested keys are separated with `__` (for example,
 `RUSTBOX_OBSERVABILITY__LEVEL=debug`). Cross-reference and protocol checks are
 performed later by `rustbox-config`, after the document has been normalized.
 Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `vmess`,
-`vless`, `trojan`, `anytls`, `selector`, `urltest`.
+`vless`, `trojan`, `anytls`, `hysteria2`, `tuic`, `naive`, `shadow-tls`,
+`wireguard`, `selector`, `urltest`. WireGuard may also be declared under
+`[[endpoints]]`; the file frontend lowers it into the same route-addressable
+runtime graph without duplicating its implementation.
+
+VMess/VLESS/Trojan share typed WebSocket, HTTP/2, gRPC and HTTPUpgrade
+transports. Their TLS layer supports custom roots, mTLS, SPKI pinning, ECH and
+Reality; VLESS supports `xtls-rprx-vision`. Browser-style TLS fingerprinting is
+an explicit `fingerprint` Cargo feature because its BoringSSL backend requires
+NASM at build time. Mux.Cool uses a bounded multi-carrier Tokio actor pool for
+TCP and XUDP, and UoT address/framing code is shared by protocol adapters. See
+the [P1 routing and transport guide](docs/p1-routing-transport.md) for the full
+configuration surface and platform notes.
 
 The `anytls` outbound uses the pinned, protocol-compatible `anytls 0.2.3`
 client and is continuously tested against a sing-box AnyTLS server. See the
@@ -205,9 +217,9 @@ client and is continuously tested against a sing-box AnyTLS server. See the
 
 The DNS subsystem supports rule-based UDP, TCP, DoT, DoH, and DoQ upstreams,
 one bounded cache, FakeIP allocation, and TTL-based reverse domain recovery for
-later routing. Upstream transports currently dial directly; DNS hijack targets
-can be applied to TUN configuration, but a local port-53 responder is not yet
-implemented. See [DNS transports](docs/dns-transports.md).
+later routing. Route `hijack-dns` terminates captured TCP/UDP DNS flows in the
+in-process resolver and returns wire-format responses. See
+[DNS transports](docs/dns-transports.md).
 
 ## Verify
 

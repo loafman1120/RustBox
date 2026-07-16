@@ -4,10 +4,33 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+fingerprint = ["meow-transport/boring-tls"]
+
 [dependencies]
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
+meow-transport = { version = "0.17.0", features = ["ech", "grpc", "h2", "httpupgrade", "tls", "ws"] }
+tokio = { version = "1", features = ["io-util", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+h2 = "0.4"
+http = "1"
+bytes = "1"
+rand = "0.9"
+sync_wrapper = "1"
+rustls = "0.23.41"
+tokio-rustls = "0.26.4"
+webpki-roots = "1"
+rustls-pemfile = "2"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+x509-parser = "0.18"
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
 
 [lints]
 workspace = true
