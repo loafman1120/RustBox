@@ -1,31 +1,44 @@
 use super::{compose_engine, compose_inbounds};
-use crate::{ComposeError, ruleset::RuleSetService, runtime::ComposedRuntime};
+use crate::{ComposeError, RuntimeCapabilities, ruleset::RuleSetService, runtime::ComposedRuntime};
 use rustbox_config::{
     CompiledConfig, CompiledOutboundKind, ConfigCompiler, ConfigError, SourceConfig,
 };
 use rustbox_dns_core::{DnsConfig, DnsServerConfig, DnsSubsystem};
 use rustbox_kernel::FlowSink;
-use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink, TaskScope, TokioNetworkProvider};
+use rustbox_kernel::{
+    DialOptions, NetworkProvider, NetworkProviderPurpose, NoopObservabilitySink, ObservabilitySink,
+    TaskScope,
+};
 #[cfg(test)]
 use rustbox_types::Endpoint;
 use std::sync::Arc;
 
 pub(crate) struct RuntimeGraphBuilder {
-    host: Arc<TokioNetworkProvider>,
+    capabilities: RuntimeCapabilities,
+    host: Arc<dyn NetworkProvider>,
     observability: Arc<dyn ObservabilitySink>,
 }
 
 impl RuntimeGraphBuilder {
     pub(crate) fn new() -> Self {
-        Self {
-            host: Arc::new(TokioNetworkProvider::new()),
-            observability: Arc::new(NoopObservabilitySink),
-        }
+        Self::with_capabilities(
+            RuntimeCapabilities::default(),
+            Arc::new(NoopObservabilitySink),
+        )
     }
 
-    pub(crate) fn with_observability(observability: Arc<dyn ObservabilitySink>) -> Self {
+    pub(crate) fn with_capabilities(
+        capabilities: RuntimeCapabilities,
+        observability: Arc<dyn ObservabilitySink>,
+    ) -> Self {
+        let host = capabilities.network.create(
+            NetworkProviderPurpose::Inbound,
+            DialOptions::default(),
+            None,
+        );
         Self {
-            host: Arc::new(TokioNetworkProvider::new()),
+            capabilities,
+            host,
             observability,
         }
     }
@@ -52,15 +65,20 @@ impl RuntimeGraphBuilder {
         let session_tasks = TaskScope::new();
         let (engine, outbound_groups, rule_set_store) = compose_engine(
             &compiled,
-            &self.host,
+            &self.capabilities,
             &self.observability,
             dns.clone(),
             reverse_dns,
             &session_tasks,
         )?;
         let sink: Arc<dyn FlowSink> = engine.clone();
-        let mut services =
-            compose_inbounds(compiled.inbounds, &self.host, &self.observability, &sink)?;
+        let mut services = compose_inbounds(
+            compiled.inbounds,
+            &self.host,
+            &self.capabilities,
+            &self.observability,
+            &sink,
+        )?;
         if compiled.route_rule_sets.iter().any(|rule_set| {
             !matches!(
                 rule_set.source,

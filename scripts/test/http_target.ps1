@@ -1,10 +1,14 @@
 param(
     [Parameter(Mandatory)] [int]$Port,
-    [Parameter(Mandatory)] [string]$Body
+    [Parameter(Mandatory)] [string]$Body,
+    [string]$ListenAddress = "127.0.0.1"
 )
 
 $ErrorActionPreference = "Stop"
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+$listener = [System.Net.Sockets.TcpListener]::new(
+    [System.Net.IPAddress]::Parse($ListenAddress),
+    $Port
+)
 $listener.Start()
 try {
     while ($true) {

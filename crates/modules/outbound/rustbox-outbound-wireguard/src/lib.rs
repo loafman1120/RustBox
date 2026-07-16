@@ -349,6 +349,11 @@ async fn run_udp(
     mut commands: mpsc::Receiver<UdpCommand>,
     packets: mpsc::Sender<Result<(Vec<u8>, Endpoint), IoError>>,
 ) {
+    // The netstack request remains queued while Recv would block, so keep the
+    // same future alive when a send command wins the select. Canceling and
+    // recreating it can let the abandoned receive consume the response.
+    let receive = socket.recv_from_bytes();
+    tokio::pin!(receive);
     loop {
         tokio::select! {
             command = commands.recv() => match command {
@@ -359,14 +364,17 @@ async fn run_udp(
                 }
                 None => return,
             },
-            received = socket.recv_from_bytes() => match received {
-                Ok((source, packet)) => {
-                    if packets.send(Ok((packet.to_vec(), socket_endpoint(source)))).await.is_err() { return; }
+            received = &mut receive => {
+                match received {
+                    Ok((source, packet)) => {
+                        if packets.send(Ok((packet.to_vec(), socket_endpoint(source)))).await.is_err() { return; }
+                    }
+                    Err(error) => {
+                        let _ = packets.send(Err(io_error(format!("WireGuard UDP receive: {error}")))).await;
+                        return;
+                    }
                 }
-                Err(error) => {
-                    let _ = packets.send(Err(io_error(format!("WireGuard UDP receive: {error}")))).await;
-                    return;
-                }
+                receive.set(socket.recv_from_bytes());
             }
         }
     }

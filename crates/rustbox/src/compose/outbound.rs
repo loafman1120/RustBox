@@ -1,5 +1,5 @@
 use crate::{
-    ComposeError,
+    ComposeError, RuntimeCapabilities,
     dns_hijack::DnsHijackOutbound,
     routing::{RuntimeRouter, route_table},
 };
@@ -13,8 +13,8 @@ use rustbox_dns_core::{DnsName, DnsQuery, DnsRecordType, DnsResponse, DnsSubsyst
 use rustbox_inspect::{FlowEnricher, ProtocolSniffer, SniffConfig};
 use rustbox_kernel::Engine;
 use rustbox_kernel::{
-    BoxFuture, Dialer, DomainResolver, NetError, NetworkProvider, ObservabilitySink, Outbound,
-    RouteResolver, TaskScope, TokioNetworkProvider,
+    BoxFuture, Dialer, DomainResolver, NetError, NetworkProvider, NetworkProviderPurpose,
+    ObservabilitySink, Outbound, RouteResolver, TaskScope,
 };
 use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
 use rustbox_outbound_direct::DirectOutbound;
@@ -53,7 +53,7 @@ type ComposedEngine = (
 
 pub(crate) fn compose_engine(
     compiled: &CompiledConfig,
-    host: &Arc<TokioNetworkProvider>,
+    capabilities: &RuntimeCapabilities,
     observability: &Arc<dyn ObservabilitySink>,
     dns: Option<Arc<DnsSubsystem>>,
     reverse_dns: Option<Arc<ReverseDns>>,
@@ -66,8 +66,8 @@ pub(crate) fn compose_engine(
     let sniffer = reverse_dns.map_or_else(ProtocolSniffer::default, |reverse| {
         ProtocolSniffer::with_reverse_dns(SniffConfig::default(), reverse)
     });
-    let enricher = FlowEnricher::new(sniffer, rustbox_platform::process_lookup_provider())
-        .with_network_lookup(rustbox_platform::network_metadata_provider());
+    let enricher = FlowEnricher::new(sniffer, capabilities.process_lookup.clone())
+        .with_network_lookup(capabilities.network_metadata.clone());
     let mut base_builder = Engine::builder(Box::new(router)).observability(observability.clone());
     if let Some(dns) = &dns {
         base_builder = base_builder.route_resolver(Arc::new(RouteDnsResolver { dns: dns.clone() }));
@@ -90,26 +90,25 @@ pub(crate) fn compose_engine(
                     )))
                 })?,
             )),
-            None if outbound.dial.options == Default::default()
-                && outbound.dial.domain_resolver.is_none() =>
-            {
-                host.clone()
-            }
             None => {
-                let mut provider =
-                    TokioNetworkProvider::with_options(outbound.dial.options.clone());
-                if let Some(server) = &outbound.dial.domain_resolver {
+                let resolver = if let Some(server) = &outbound.dial.domain_resolver {
                     let dns = dns.clone().ok_or_else(|| {
                         ComposeError::Config(ConfigError::new(
                             "domain_resolver requires a configured DNS subsystem",
                         ))
                     })?;
-                    provider = provider.with_resolver(Arc::new(DialDomainResolver {
+                    Some(Arc::new(DialDomainResolver {
                         dns,
                         server: server.clone(),
-                    }));
-                }
-                Arc::new(provider)
+                    }) as Arc<dyn DomainResolver>)
+                } else {
+                    None
+                };
+                capabilities.network.create(
+                    NetworkProviderPurpose::Outbound,
+                    outbound.dial.options.clone(),
+                    resolver,
+                )
             }
         };
         match &outbound.kind {

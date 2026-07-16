@@ -3,8 +3,8 @@ use super::net::{
     socket_addr_to_endpoint,
 };
 use super::{
-    BoxFuture, DialOptions, DomainResolver, NetError, NetworkProvider, StreamListener, TcpBind,
-    TcpConnect, UdpBind,
+    BoxFuture, DialOptions, DomainResolver, NetError, NetworkProvider, NetworkProviderFactory,
+    NetworkProviderPurpose, StreamListener, TcpBind, TcpConnect, UdpBind,
 };
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -39,6 +39,25 @@ impl TokioNetworkProvider {
     pub fn with_resolver(mut self, resolver: std::sync::Arc<dyn DomainResolver>) -> Self {
         self.resolver = Some(resolver);
         self
+    }
+}
+
+/// Default factory used by CLI and desktop embeddings.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokioNetworkProviderFactory;
+
+impl NetworkProviderFactory for TokioNetworkProviderFactory {
+    fn create(
+        &self,
+        _purpose: NetworkProviderPurpose,
+        options: DialOptions,
+        resolver: Option<std::sync::Arc<dyn DomainResolver>>,
+    ) -> std::sync::Arc<dyn NetworkProvider> {
+        let mut provider = TokioNetworkProvider::with_options(options);
+        if let Some(resolver) = resolver {
+            provider = provider.with_resolver(resolver);
+        }
+        std::sync::Arc::new(provider)
     }
 }
 

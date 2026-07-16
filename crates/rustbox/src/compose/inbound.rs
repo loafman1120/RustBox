@@ -1,7 +1,4 @@
-use crate::{
-    ComposeError,
-    platform::{transparent_proxy_provider, tun_platform_capabilities},
-};
+use crate::{ComposeError, RuntimeCapabilities};
 use rustbox_config::{CompiledInbound, CompiledInboundKind, ConfigError};
 use rustbox_inbound_anytls::{AnyTlsInbound, AnyTlsServerConfig};
 use rustbox_inbound_http::{HttpInboundCredentials, HttpProxyInbound};
@@ -13,13 +10,14 @@ use rustbox_inbound_transparent::{
 };
 use rustbox_inbound_tun::{TunInbound, TunInboundConfig as RuntimeTunInboundConfig};
 use rustbox_kernel::{FlowSink, Service};
-use rustbox_kernel::{ObservabilitySink, TokioNetworkProvider};
+use rustbox_kernel::{NetworkProvider, ObservabilitySink};
 use rustbox_types::Host;
 use std::sync::Arc;
 
 pub(crate) fn compose_inbounds(
     inbounds: Vec<CompiledInbound>,
-    host: &Arc<TokioNetworkProvider>,
+    host: &Arc<dyn NetworkProvider>,
+    capabilities: &RuntimeCapabilities,
     observability: &Arc<dyn ObservabilitySink>,
     sink: &Arc<dyn FlowSink>,
 ) -> Result<Vec<Box<dyn Service>>, ComposeError> {
@@ -108,7 +106,11 @@ pub(crate) fn compose_inbounds(
                 services.push(Box::new(inbound));
             }
             CompiledInboundKind::Transparent(config) => {
-                let provider = transparent_proxy_provider()?;
+                let provider = capabilities.transparent_proxy.clone().ok_or_else(|| {
+                    ComposeError::Config(ConfigError::new(
+                        "transparent inbound requires a host transparent-proxy capability",
+                    ))
+                })?;
                 let inbound = TransparentProxyInbound::new(
                     inbound.id,
                     config.listen,
@@ -123,7 +125,16 @@ pub(crate) fn compose_inbounds(
                 services.push(Box::new(inbound));
             }
             CompiledInboundKind::Tun(config) => {
-                let (packet_devices, network_control) = tun_platform_capabilities()?;
+                let packet_devices = capabilities.packet_device.clone().ok_or_else(|| {
+                    ComposeError::Config(ConfigError::new(
+                        "tun inbound requires a host packet-device capability",
+                    ))
+                })?;
+                let network_control = capabilities.network_control.clone().ok_or_else(|| {
+                    ComposeError::Config(ConfigError::new(
+                        "tun inbound requires a host network-control capability",
+                    ))
+                })?;
                 let mtu = config.mtu.unwrap_or(1500) as usize;
                 let stack = rustbox_stack::PacketFlowStack::new(inbound.id)
                     .with_interface(config.interface_name.clone())

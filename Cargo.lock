@@ -5274,8 +5274,6 @@ dependencies = [
 [[package]]
 name = "ts_netstack_smoltcp_core"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3286fa0a2c03a7df8ad4a862d78c885638cbff8f9a414975d3f0933a90406495"
 dependencies = [
  "bytes",
  "flume",

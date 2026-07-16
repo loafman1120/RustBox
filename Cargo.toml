@@ -49,3 +49,9 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.rust]
 # Workspace crates inherit this unless they contain generated bridge glue.
 unsafe_code = "forbid"
+
+[patch.crates-io]
+# ts_netstack_smoltcp_core 0.4.0 retries canceled socket commands after the
+# socket has closed, which can panic inside smoltcp. Remove this patch when an
+# upstream release includes the disconnected-response guard below.
+ts_netstack_smoltcp_core = { path = "third_party/ts_netstack_smoltcp_core" }

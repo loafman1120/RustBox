@@ -6,12 +6,13 @@
 pub mod net;
 mod tokio_host;
 
-pub use tokio_host::TokioNetworkProvider;
+pub use tokio_host::{TokioNetworkProvider, TokioNetworkProviderFactory};
 
 use core::future::Future;
 use core::pin::Pin;
 use rustbox_io::{ByteStream, DatagramSocket, PacketDevice};
 use rustbox_types::{Endpoint, IpAddress, IpCidr, Network};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -49,6 +50,31 @@ pub trait StreamListener: Send {
 pub struct TaskScope {
     cancellation: CancellationToken,
     tracker: TaskTracker,
+}
+
+/// Creates network providers for a particular dial policy.
+///
+/// Embedded hosts use this boundary to ensure every physical data-plane socket
+/// is opened by host-owned code (for example, so Android can call
+/// `VpnService.protect`).
+/// Detoured connections do not pass through this factory because they are
+/// opened by another outbound rather than by the physical network.
+pub trait NetworkProviderFactory: Send + Sync {
+    fn create(
+        &self,
+        purpose: NetworkProviderPurpose,
+        options: DialOptions,
+        resolver: Option<Arc<dyn DomainResolver>>,
+    ) -> Arc<dyn NetworkProvider>;
+}
+
+/// Distinguishes local listeners from sockets that must escape through the
+/// physical network. Mobile factories commonly protect only `Outbound`
+/// providers from the VPN route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkProviderPurpose {
+    Inbound,
+    Outbound,
 }
 
 /// Minimal DNS boundary consumed by the dialer.  DNS protocol and caching stay

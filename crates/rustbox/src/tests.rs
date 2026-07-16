@@ -13,6 +13,36 @@ use rustbox_observability::ObservabilityStore;
 use rustbox_types::{Endpoint, Host, IpAddress, IpCidr};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex;
+
+#[derive(Default)]
+struct RecordingNetworkFactory {
+    created: Mutex<
+        Vec<(
+            rustbox_kernel::NetworkProviderPurpose,
+            rustbox_kernel::DialOptions,
+        )>,
+    >,
+}
+
+impl rustbox_kernel::NetworkProviderFactory for RecordingNetworkFactory {
+    fn create(
+        &self,
+        purpose: rustbox_kernel::NetworkProviderPurpose,
+        options: rustbox_kernel::DialOptions,
+        resolver: Option<Arc<dyn rustbox_kernel::DomainResolver>>,
+    ) -> Arc<dyn rustbox_kernel::NetworkProvider> {
+        self.created
+            .lock()
+            .expect("factory lock")
+            .push((purpose, options.clone()));
+        let mut provider = rustbox_kernel::TokioNetworkProvider::with_options(options);
+        if let Some(resolver) = resolver {
+            provider = provider.with_resolver(resolver);
+        }
+        Arc::new(provider)
+    }
+}
 
 fn inbound_http(id: &str) -> InboundConfig {
     InboundConfig {
@@ -40,6 +70,52 @@ fn composes_default_http_proxy_runtime_graph() {
 
     assert_eq!(runtime.outbound_count(), 1);
     assert_eq!(runtime.service_count(), 1);
+}
+
+#[tokio::test]
+async fn injected_network_factory_is_reused_for_outbound_reload_and_restart() {
+    let factory = Arc::new(RecordingNetworkFactory::default());
+    let mut source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
+    source.outbounds[0].dial.routing_mark = Some(42);
+    let options = RustBoxOptions::default()
+        .with_capabilities(RuntimeCapabilities::default().with_network(factory.clone()));
+    let mut runtime = RustBox::with_options(source.clone(), options).expect("compose");
+
+    let created = factory.created.lock().expect("factory lock").clone();
+    assert_eq!(
+        created.len(),
+        2,
+        "one inbound host and one physical outbound"
+    );
+    assert_eq!(
+        created[0].0,
+        rustbox_kernel::NetworkProviderPurpose::Inbound
+    );
+    assert_eq!(created[0].1, rustbox_kernel::DialOptions::default());
+    assert_eq!(
+        created[1].0,
+        rustbox_kernel::NetworkProviderPurpose::Outbound
+    );
+    assert_eq!(created[1].1.routing_mark, Some(42));
+
+    runtime.reload(source).await.expect("reload");
+    runtime.start().await.expect("start");
+    runtime.stop().await.expect("stop");
+    runtime.start().await.expect("restart");
+    runtime.stop().await.expect("final stop");
+
+    let created = factory.created.lock().expect("factory lock");
+    assert_eq!(
+        created.len(),
+        6,
+        "capabilities must survive reload and restart"
+    );
+    assert!(created.iter().all(|(purpose, options)| {
+        (*purpose == rustbox_kernel::NetworkProviderPurpose::Inbound
+            && options == &rustbox_kernel::DialOptions::default())
+            || (*purpose == rustbox_kernel::NetworkProviderPurpose::Outbound
+                && options.routing_mark == Some(42))
+    }));
 }
 
 #[tokio::test]

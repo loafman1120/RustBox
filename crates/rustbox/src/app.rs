@@ -1,5 +1,6 @@
 use crate::{
-    ComposeError, RuntimeGraphBuilder, control::ControlGrpcService, runtime::RuntimeSupervisor,
+    ComposeError, RuntimeCapabilities, RuntimeGraphBuilder, control::ControlGrpcService,
+    runtime::RuntimeSupervisor,
 };
 use rustbox_config::SourceConfig;
 use rustbox_control::{EngineCommand, EngineSnapshot, EngineState};
@@ -13,6 +14,7 @@ use std::{net::SocketAddr, sync::Arc};
 /// Shared application options used by CLI, Flutter, and embedded hosts.
 pub struct RustBoxOptions {
     observability: Arc<dyn ObservabilitySink>,
+    capabilities: RuntimeCapabilities,
     control_grpc: Option<ControlGrpcOptions>,
 }
 
@@ -24,6 +26,12 @@ pub(crate) struct ControlGrpcOptions {
 impl RustBoxOptions {
     pub fn with_observability(mut self, observability: Arc<dyn ObservabilitySink>) -> Self {
         self.observability = observability;
+        self
+    }
+
+    /// Replace the platform capabilities used by the runtime composition root.
+    pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self {
+        self.capabilities = capabilities;
         self
     }
 
@@ -48,6 +56,7 @@ impl Default for RustBoxOptions {
     fn default() -> Self {
         Self {
             observability: Arc::new(NoopObservabilitySink),
+            capabilities: RuntimeCapabilities::default(),
             control_grpc: None,
         }
     }
@@ -60,6 +69,7 @@ impl Default for RustBoxOptions {
 pub struct RustBox {
     source: SourceConfig,
     observability: Arc<dyn ObservabilitySink>,
+    capabilities: RuntimeCapabilities,
     runtime: RuntimeSupervisor,
     snapshot: EngineSnapshot,
     control_grpc: Option<ControlGrpcService>,
@@ -94,8 +104,10 @@ impl RustBox {
                 .map_err(|error| ComposeError::Control(error.message))?;
         }
         let observability = options.observability;
-        let runtime = RuntimeGraphBuilder::with_observability(observability.clone())
-            .compose_source(source.clone())?;
+        let capabilities = options.capabilities;
+        let runtime =
+            RuntimeGraphBuilder::with_capabilities(capabilities.clone(), observability.clone())
+                .compose_source(source.clone())?;
         let snapshot = EngineSnapshot {
             state: EngineState::Prepared,
             generation: 0,
@@ -108,6 +120,7 @@ impl RustBox {
         Ok(Self {
             source,
             observability,
+            capabilities,
             runtime: RuntimeSupervisor::new(runtime),
             snapshot,
             control_grpc,
@@ -156,8 +169,11 @@ impl RustBox {
             self.snapshot.state,
             EngineState::Stopped | EngineState::Failed
         ) {
-            let runtime = RuntimeGraphBuilder::with_observability(self.observability.clone())
-                .compose_source(self.source.clone())?;
+            let runtime = RuntimeGraphBuilder::with_capabilities(
+                self.capabilities.clone(),
+                self.observability.clone(),
+            )
+            .compose_source(self.source.clone())?;
             if let Some(control) = &self.control_grpc {
                 control.replace_outbound_groups(runtime.outbound_groups());
             }
@@ -207,8 +223,11 @@ impl RustBox {
     }
 
     pub async fn reload(&mut self, source: SourceConfig) -> Result<(), RustBoxError> {
-        let next = RuntimeGraphBuilder::with_observability(self.observability.clone())
-            .compose_source(source.clone())?;
+        let next = RuntimeGraphBuilder::with_capabilities(
+            self.capabilities.clone(),
+            self.observability.clone(),
+        )
+        .compose_source(source.clone())?;
         let was_running = self.snapshot.state == EngineState::Running;
         let next_generation = self.snapshot.generation.saturating_add(1);
 

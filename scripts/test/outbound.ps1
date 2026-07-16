@@ -42,6 +42,7 @@ $WireGuardClientPrivateKey = $null
 $WireGuardClientPublicKey = $null
 $WireGuardServerPrivateKey = $null
 $WireGuardServerPublicKey = $null
+$TargetAddress = [System.Net.IPAddress]::Loopback
 $SupportsUdp = $OutboundType -notin @("http", "naive", "shadowtls")
 $HttpTargetProcess = $null
 $SboxProcess = $null
@@ -193,6 +194,27 @@ function Assert-IndependentSingBoxPeer {
         throw "E2E peer must be independent sing-box $SboxVersion, got: $($lines -join ' ')"
     }
     Write-CiLog "verified independent peer identity: sing-box $SboxVersion"
+}
+
+function Get-NonLoopbackTargetAddress {
+    # L3 peers reject loopback destinations as martian packets. Ask the OS which
+    # local IPv4 address it would use for an external route without sending data.
+    $socket = [System.Net.Sockets.Socket]::new(
+        [System.Net.Sockets.AddressFamily]::InterNetwork,
+        [System.Net.Sockets.SocketType]::Dgram,
+        [System.Net.Sockets.ProtocolType]::Udp
+    )
+    try {
+        $socket.Connect("8.8.8.8", 53)
+        $address = ([System.Net.IPEndPoint]$socket.LocalEndPoint).Address
+        if ([System.Net.IPAddress]::IsLoopback($address) -or
+            $address.Equals([System.Net.IPAddress]::Any)) {
+            throw "OS selected an unusable target address: $address"
+        }
+        return $address
+    } finally {
+        $socket.Dispose()
+    }
 }
 
 function Get-SingBoxConfig {
@@ -560,13 +582,13 @@ function Wait-ForDatagramServer {
 }
 
 function Start-HttpTarget {
-    param([int]$Port, [string]$Body, [string]$LogsDir)
+    param([string]$Address, [int]$Port, [string]$Body, [string]$LogsDir)
 
     $params = @{
         FilePath = (Get-Process -Id $PID).Path
         ArgumentList = @(
             "-NoLogo", "-NoProfile", "-File", (Join-Path $PSScriptRoot "http_target.ps1"),
-            "-Port", $Port, "-Body", $Body
+            "-Port", $Port, "-Body", $Body, "-ListenAddress", $Address
         )
         PassThru = $true
         RedirectStandardOutput = Join-Path $LogsDir "http-target.log"
@@ -608,7 +630,7 @@ function Read-SocksEndpoint {
 }
 
 function Invoke-Socks5UdpProbe {
-    param([string]$ProxyHost, [int]$ProxyPort)
+    param([string]$ProxyHost, [int]$ProxyPort, [System.Net.IPAddress]$TargetAddress)
 
     $control = [System.Net.Sockets.TcpClient]::new()
     $echo = $null
@@ -639,7 +661,7 @@ function Invoke-Socks5UdpProbe {
         }
 
         $echo = [System.Net.Sockets.UdpClient]::new(
-            [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, 0)
+            [System.Net.IPEndPoint]::new($TargetAddress, 0)
         )
         $client = [System.Net.Sockets.UdpClient]::new(
             [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, 0)
@@ -650,7 +672,7 @@ function Invoke-Socks5UdpProbe {
         $payload = [System.Text.Encoding]::ASCII.GetBytes("ping")
         $request = [byte[]]::new(10 + $payload.Length)
         $request[3] = 1
-        [System.Net.IPAddress]::Loopback.GetAddressBytes().CopyTo($request, 4)
+        $TargetAddress.GetAddressBytes().CopyTo($request, 4)
         $request[8] = [byte]($echoEndpoint.Port -shr 8)
         $request[9] = [byte]($echoEndpoint.Port -band 0xff)
         $payload.CopyTo($request, 10)
@@ -672,7 +694,7 @@ function Invoke-Socks5UdpProbe {
         $sourceAddress = [System.Net.IPAddress]::new($response[4..7])
         $sourcePort = ([int]$response[8] -shl 8) -bor $response[9]
         $responseBody = [System.Text.Encoding]::ASCII.GetString($response[10..($response.Length - 1)])
-        if (-not $sourceAddress.Equals([System.Net.IPAddress]::Loopback) -or
+        if (-not $sourceAddress.Equals($TargetAddress) -or
             $sourcePort -ne $echoEndpoint.Port -or $responseBody -ne "pong:ping") {
             throw "unexpected SOCKS5 UDP response: source=${sourceAddress}:$sourcePort body=$responseBody"
         }
@@ -701,6 +723,8 @@ try {
         $WireGuardClientPublicKey = $clientKeys.PublicKey
         $WireGuardServerPrivateKey = $serverKeys.PrivateKey
         $WireGuardServerPublicKey = $serverKeys.PublicKey
+        $TargetAddress = Get-NonLoopbackTargetAddress
+        Write-CiLog "using non-loopback target address $TargetAddress for L3 WireGuard traffic"
     }
 
     if ($env:RUSTBOX_E2E_UDP) {
@@ -723,9 +747,9 @@ try {
     }
 
     # ---- Start HTTP target ----
-    Write-CiLog "starting HTTP target on :$HttpTargetPort"
-    $HttpTargetProcess = Start-HttpTarget -Port $HttpTargetPort -Body $Marker -LogsDir $LogsDir
-    Wait-ForTcp "127.0.0.1" $HttpTargetPort "HTTP target"
+    Write-CiLog "starting HTTP target on ${TargetAddress}:$HttpTargetPort"
+    $HttpTargetProcess = Start-HttpTarget -Address $TargetAddress.ToString() -Port $HttpTargetPort -Body $Marker -LogsDir $LogsDir
+    Wait-ForTcp $TargetAddress.ToString() $HttpTargetPort "HTTP target"
 
     # ---- Start sing-box ----
     $sboxConfig = Get-SingBoxConfig -LogsDir $LogsDir
@@ -770,7 +794,7 @@ try {
             --max-time 15 --retry 2 --retry-delay 1 --noproxy "" `
             --proxy "http://127.0.0.1:$RustboxHttpPort" `
             --output $bodyFile `
-            "http://127.0.0.1:$HttpTargetPort/marker.txt?request=$request" 2> $curlLog
+            "http://${TargetAddress}:$HttpTargetPort/marker.txt?request=$request" 2> $curlLog
 
         if ($LASTEXITCODE -ne 0) {
             throw "request $request through $OutboundType chain failed"
@@ -784,7 +808,7 @@ try {
 
     if ($SupportsUdp) {
         Write-CiLog "probing UDP: SOCKS5 UDP -> rustbox -> $OutboundType -> sing-box -> echo"
-        Invoke-Socks5UdpProbe -ProxyHost "127.0.0.1" -ProxyPort $RustboxHttpPort
+        Invoke-Socks5UdpProbe -ProxyHost "127.0.0.1" -ProxyPort $RustboxHttpPort -TargetAddress $TargetAddress
         Write-CiLog "UDP probe passed"
     } else {
         Write-CiLog "UDP probe not applicable: $OutboundType outbound is stream-only"
