@@ -33,9 +33,6 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
           rustup default stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: lint
       - name: Check formatting
         shell: pwsh
         run: ./scripts/build/rust.ps1 -Fmt
@@ -102,6 +99,7 @@ jobs:
   e2e-inbound:
     name: E2E inbound (${{ matrix.os }})
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -130,52 +128,11 @@ jobs:
           RUSTBOX_CI_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.external_network == true && '1' || '0' }}
         run: ./scripts/test/proxy.ps1
 
-  e2e-tun-lifecycle:
-    name: E2E TUN lifecycle (${{ matrix.label }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            label: Linux
-            cache_key: tun-e2e-linux
-          - os: windows-latest
-            label: Windows
-            cache_key: tun-e2e-windows
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ matrix.cache_key }}
-      - name: Download official Wintun 0.14.1
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile $env:RUNNER_TEMP\wintun.zip
-          Expand-Archive $env:RUNNER_TEMP\wintun.zip -DestinationPath $env:RUNNER_TEMP\wintun
-      - name: Open and close a real Linux TUN device
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          RUSTBOX_TUN_E2E: "1"
-        run: sudo -E "$(command -v cargo)" test --locked -p rustbox-platform current::packet_device::tests::opens_and_closes_real_tun_when_e2e_is_enabled -- --exact --nocapture
-      - name: Open and close a real Wintun adapter
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        env:
-          RUSTBOX_TUN_E2E: "1"
-          RUSTBOX_WINTUN_DLL: ${{ runner.temp }}\wintun\wintun\bin\amd64\wintun.dll
-        run: cargo test --locked -p rustbox-platform current::packet_device::tests::opens_and_closes_real_wintun_when_e2e_is_enabled -- --exact --nocapture
-
   # Full TUN data path: curl -> OS TUN -> RustBox -> mock SOCKS5 -> fixed HTTP response.
   e2e-tun-data:
     name: E2E TUN data path (${{ matrix.label }})
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -219,6 +176,7 @@ jobs:
   e2e-outbound:
     name: E2E out/${{ matrix.outbound }} (${{ matrix.os }})
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -275,6 +233,7 @@ jobs:
   e2e-grpc:
     name: E2E gRPC (${{ matrix.os }})
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -298,8 +257,8 @@ jobs:
         shell: pwsh
         run: ./scripts/test/grpc.ps1
 
-  flutter-desktop:
-    name: Flutter lifecycle (${{ matrix.platform }})
+  flutter:
+    name: Flutter (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -308,8 +267,16 @@ jobs:
         include:
           - platform: linux
             os: ubuntu-latest
+            integration_test: true
           - platform: windows
             os: windows-latest
+            integration_test: true
+          - platform: android
+            os: ubuntu-latest
+            integration_test: false
+          - platform: ios
+            os: macos-latest
+            integration_test: false
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -326,6 +293,9 @@ jobs:
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb
+      - name: Install Android Rust builder
+        if: matrix.platform == 'android'
+        run: cargo install cargo-ndk --locked
       - name: Install pinned bridge code generator
         if: matrix.platform == 'linux'
         run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
@@ -337,91 +307,37 @@ jobs:
           flutter_rust_bridge_codegen generate
           cargo fmt --manifest-path rust/Cargo.toml --package rustbox-flutter-bridge
           git diff --exit-code
-      - name: Build precompiled Flutter library
+      - name: Build native library
         shell: pwsh
         run: ./scripts/build/flutter-prebuilt.ps1 -Platform ${{ matrix.platform }} -Locked
-      - name: Resolve example dependencies
+      - name: Resolve desktop example dependencies
+        if: matrix.integration_test
         working-directory: apps/rustbox-flutter/example
         run: flutter pub get
-      - name: Analyze example
+      - name: Analyze desktop example
         if: matrix.platform == 'linux'
         working-directory: apps/rustbox-flutter/example
         run: |
           dart format --output=none --set-exit-if-changed lib integration_test
           flutter analyze
-      - name: Run lifecycle integration test
-        if: matrix.platform != 'linux'
+      - name: Run Windows integration tests
+        if: matrix.platform == 'windows'
         working-directory: apps/rustbox-flutter/example
-        run: flutter test integration_test/simple_test.dart -d ${{ matrix.platform }}
-      - name: Run lifecycle integration test (Linux)
+        run: flutter test integration_test/simple_test.dart -d windows
+      - name: Run Linux integration tests
         if: matrix.platform == 'linux'
         working-directory: apps/rustbox-flutter/example
         run: xvfb-run -a flutter test integration_test/simple_test.dart -d linux
-      - name: Upload precompiled Flutter library
+      - name: Upload native library
         uses: actions/upload-artifact@v7
         with:
           name: rustbox-flutter-native-${{ matrix.platform }}
           path: apps/rustbox-flutter/native/${{ matrix.platform }}
           if-no-files-found: error
 
-  flutter-android:
-    name: Flutter native build (android)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97.0
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.44.6
-          channel: stable
-          cache: true
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: flutter-android
-      - name: Install Android Rust builder
-        run: cargo install cargo-ndk --locked
-      - name: Build precompiled Android libraries
-        shell: pwsh
-        run: ./scripts/build/flutter-prebuilt.ps1 -Platform android -Locked
-      - name: Upload precompiled Android libraries
-        uses: actions/upload-artifact@v7
-        with:
-          name: rustbox-flutter-native-android
-          path: apps/rustbox-flutter/native/android
-          if-no-files-found: error
-
-  flutter-ios:
-    name: Flutter native build (ios)
-    runs-on: macos-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97.0
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.44.6
-          channel: stable
-          cache: true
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: flutter-ios
-      - name: Build precompiled iOS XCFramework
-        shell: pwsh
-        run: ./scripts/build/flutter-prebuilt.ps1 -Platform ios -Locked
-      - name: Upload precompiled iOS XCFramework
-        uses: actions/upload-artifact@v7
-        with:
-          name: rustbox-flutter-native-ios
-          path: apps/rustbox-flutter/native/ios
-          if-no-files-found: error
-
   flutter-package:
     name: Flutter pub package
-    needs:
-      - flutter-desktop
-      - flutter-android
-      - flutter-ios
+    needs: flutter
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

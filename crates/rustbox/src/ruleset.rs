@@ -295,7 +295,7 @@ mod tests {
             store.clone(),
         ));
         wait_for_match_in(&store, "remote", "remote.test").await;
-        let cached = tokio::fs::read_to_string(&cache).await.unwrap();
+        let cached = wait_for_file_content(&cache, "remote.test").await;
         assert!(cached.contains("remote.test"));
 
         body_tx.send_replace(b"not valid JSON".to_vec());
@@ -303,7 +303,9 @@ mod tests {
         assert!(matches_domain(&store, "remote", "remote.test"));
         assert_eq!(tokio::fs::read_to_string(&cache).await.unwrap(), cached);
         task.abort();
+        let _ = task.await;
         server.abort();
+        let _ = server.await;
     }
 
     async fn wait_for_match(store: &RuleSetStore, domain: &str) {
@@ -321,6 +323,21 @@ mod tests {
         })
         .await
         .expect("rule-set update timeout");
+    }
+
+    async fn wait_for_file_content(path: &Path, expected: &str) -> String {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(content) = tokio::fs::read_to_string(path).await
+                    && content.contains(expected)
+                {
+                    return content;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("rule-set cache persistence timeout")
     }
 
     fn matches_domain(store: &RuleSetStore, id: &str, domain: &str) -> bool {
