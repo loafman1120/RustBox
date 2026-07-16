@@ -219,7 +219,12 @@ fn set_routing_mark(_socket: &Socket, mark: u32) -> Result<(), NetError> {
 
 fn connect_in_progress(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::WouldBlock
-        || matches!(error.raw_os_error(), Some(36 | 37 | 10035 | 10036 | 10037))
+        || matches!(
+            error.raw_os_error(),
+            // EINPROGRESS/EALREADY on macOS and Linux, plus Winsock's
+            // WSAEWOULDBLOCK/WSAEINPROGRESS/WSAEALREADY.
+            Some(36 | 37 | 114 | 115 | 10035 | 10036 | 10037)
+        )
 }
 
 struct TokioTcpListener {
@@ -304,4 +309,16 @@ fn io_error(err: io::Error) -> IoError {
         _ => IoErrorKind::Other,
     };
     IoError::new(kind, err.to_string())
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_linux_nonblocking_connect_states() {
+        assert!(connect_in_progress(&io::Error::from_raw_os_error(115)));
+        assert!(connect_in_progress(&io::Error::from_raw_os_error(114)));
+        assert!(!connect_in_progress(&io::Error::from_raw_os_error(111)));
+    }
 }
