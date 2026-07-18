@@ -48,7 +48,7 @@ fn validate_graph(graph: &HashMap<Node, Vec<Node>>) -> Result<(), ComposeError> 
     let mut visited = HashSet::new();
     let mut active = Vec::new();
     for node in graph.keys() {
-        visit(node, &graph, &mut visited, &mut active)?;
+        visit(node, graph, &mut visited, &mut active)?;
     }
     Ok(())
 }

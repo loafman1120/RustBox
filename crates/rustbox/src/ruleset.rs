@@ -138,14 +138,16 @@ fn start_rule_set_lifecycles(
                 *format,
                 normalized_interval(*update_interval),
                 PathBuf::from(cache_path),
-                client.clone(),
-                store.clone(),
-                controller.registry.clone(),
-                controller
-                    .triggers
-                    .get(&rule_set.id)
-                    .cloned()
-                    .expect("remote trigger"),
+                UpdateContext {
+                    client: client.clone(),
+                    store: store.clone(),
+                    registry: controller.registry.clone(),
+                    trigger: controller
+                        .triggers
+                        .get(&rule_set.id)
+                        .cloned()
+                        .expect("remote trigger"),
+                },
             )),
         }
     }
@@ -185,16 +187,20 @@ async fn watch_local_rule_set(
     }
 }
 
+struct UpdateContext {
+    client: reqwest::Client,
+    store: RuleSetStore,
+    registry: Arc<RuleSetRegistry>,
+    trigger: Arc<tokio::sync::Notify>,
+}
+
 async fn update_remote_rule_set(
     id: String,
     url: String,
     format: RouteRuleSetFormat,
     interval: Duration,
     cache_path: PathBuf,
-    client: reqwest::Client,
-    store: RuleSetStore,
-    registry: Arc<RuleSetRegistry>,
-    trigger: Arc<tokio::sync::Notify>,
+    ctx: UpdateContext,
 ) {
     let mut timer = tokio::time::interval(interval);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -203,10 +209,10 @@ async fn update_remote_rule_set(
     loop {
         tokio::select! {
             _ = timer.tick() => {}
-            _ = trigger.notified() => {}
+            _ = ctx.trigger.notified() => {}
         }
-        registry.updating(&id);
-        let mut request = client.get(&url);
+        ctx.registry.updating(&id);
+        let mut request = ctx.client.get(&url);
         if let Some(value) = etag.as_ref() {
             request = request.header(IF_NONE_MATCH, value);
         }
@@ -216,18 +222,18 @@ async fn update_remote_rule_set(
         let response = match request.send().await {
             Ok(response) => response,
             Err(error) => {
-                registry.failed(&id, error.to_string());
+                ctx.registry.failed(&id, error.to_string());
                 continue;
             }
         };
         if response.status() == StatusCode::NOT_MODIFIED {
-            registry.succeeded(&id);
+            ctx.registry.succeeded(&id);
             continue;
         }
         let response = match response.error_for_status() {
             Ok(response) => response,
             Err(error) => {
-                registry.failed(&id, error.to_string());
+                ctx.registry.failed(&id, error.to_string());
                 continue;
             }
         };
@@ -236,19 +242,19 @@ async fn update_remote_rule_set(
         let bytes = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(error) => {
-                registry.failed(&id, error.to_string());
+                ctx.registry.failed(&id, error.to_string());
                 continue;
             }
         };
         let rule_set = match parse_rule_set(&bytes, format) {
             Ok(rule_set) => rule_set,
             Err(error) => {
-                registry.failed(&id, error);
+                ctx.registry.failed(&id, error);
                 continue;
             }
         };
-        store.replace(id.clone(), rule_set);
-        registry.succeeded(&id);
+        ctx.store.replace(id.clone(), rule_set);
+        ctx.registry.succeeded(&id);
         etag = next_etag;
         last_modified = next_last_modified;
         // Cache persistence is durability, not publication: a read-only cache
@@ -394,10 +400,12 @@ mod tests {
             RouteRuleSetFormat::Source,
             Duration::from_millis(25),
             cache.clone(),
-            reqwest::Client::new(),
-            store.clone(),
-            Arc::new(RuleSetRegistry::default()),
-            Arc::new(tokio::sync::Notify::new()),
+            UpdateContext {
+                client: reqwest::Client::new(),
+                store: store.clone(),
+                registry: Arc::new(RuleSetRegistry::default()),
+                trigger: Arc::new(tokio::sync::Notify::new()),
+            },
         ));
         wait_for_match_in(&store, "remote", "remote.test").await;
         let cached = wait_for_file_content(&cache, "remote.test").await;
