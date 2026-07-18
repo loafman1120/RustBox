@@ -1,44 +1,62 @@
-# DNS transport 调查与实现
+# DNS
 
-## 结论
+RustBox 的 DNS 子系统使用 Hickory wire model 与 Tokio provider，不自行实现
+UDP/TCP/DoT/DoH/DoQ 协议栈。
 
-不从 meow-rs 复制 transport 实现。meow-rs 的 `meow-dns`（MIT）适合参考独立 resolver、缓存、FakeIP、in-flight/reverse mapping 的模块边界，但其公开实现重点不是同时覆盖 DoH/DoQ。RustBox 已经使用 Hickory wire model，因此直接采用 `hickory-resolver 0.25.2` 的 Tokio provider，减少重复协议代码与额外抽象。
+## 支持范围
 
-Hickory feature 固定为 `tokio + tls-aws-lc-rs + https-aws-lc-rs + quic-aws-lc-rs + webpki-roots`，与 workspace 其余 rustls 使用统一的 `aws-lc-rs` provider：
+| 配置 | 协议 |
+| --- | --- |
+| `udp` | DNS over UDP |
+| `tcp` | DNS over TCP |
+| `tls` | DoT |
+| `https` | DoH，默认路径 `/dns-query` |
+| `quic` | DoQ |
 
-| RustBox 配置 | Hickory protocol | 能力 |
-|---|---|---|
-| `udp` | `Udp` | DNS/UDP |
-| `tcp` | `Tcp` | DNS/TCP |
-| `tls` | `Tls` | DoT |
-| `https` | `Https` | DoH（默认 `/dns-query`） |
-| `quic` | `Quic` | DoQ |
-
-参考：
-
-- [Hickory Resolver](https://docs.rs/hickory-resolver/0.25.2/hickory_resolver/)
-- [Hickory repository](https://github.com/hickory-dns/hickory-dns)
-- [meow-rs](https://github.com/madeye/meow-rs)
-
-## 模块结构
+查询依次经过规则选择、FakeIP 或上游 transport、共享 TTL cache 和 reverse
+recording。inspection 观察到的 DNS answer 也写入同一份 reverse map，供后续路由
+恢复域名。route `hijack-dns` 可直接终止捕获的 TCP/UDP DNS flow，并返回 wire-format
+响应。
 
 ```text
-rustbox-dns-core/src
-├── model.rs       配置、query/response、Resolver/DnsTransport 契约
-├── transport.rs   Hickory Tokio adapter 与协议映射
-├── resolver.rs    rule selection 与 StaticResolver
-├── cache.rs       RustBox TTL cache
-├── fake_ip.rs     FakeIP 分配与反查
-├── reverse.rs     IP → domain TTL 表、RecordingResolver
-└── subsystem.rs   运行图装配入口
+rules → FakeIP / upstream → cache → reverse mapping
+                                  ↑
+                         passive DNS inspection
+
+内部查询与 hijack 路径保留 Hickory 的完整 RR 数据，支持 A、AAAA、CNAME、MX、NS、
+PTR、SOA、SRV、TXT、CAA、HTTPS、SVCB、NAPTR、TLSA、DS、DNSKEY 和 ANY。地址答案
+仍额外投影到统一的 `Host` 模型，供路由解析和 reverse mapping 复用。
+
+FakeIP 可同时配置 `ipv4_pool` 与 `ipv6_pool`。设置 `state_file` 后，域名映射和两个
+地址池游标会以原子替换方式持久化；文件读取、目录创建、写入和替换均使用 Tokio
+异步文件 API，重启后保持既有映射。
 ```
 
-`DnsSubsystem` 是唯一组合入口。主动查询经过 rule → FakeIP/transport → cache → reverse recording；inspection 观察到的 DNS answer 写相同 `ReverseDns`。resolver、cache、recording 使用具体泛型组合，transport registry 直接保存 `HickoryTransport`；整个 DNS crate 不再使用 `Box`、`BoxFuture`、`Arc<dyn Resolver>` 或 `Arc<dyn DnsTransport>`。唯一保留的运行时 `Arc` 是需要跨 DNS 与 inspection 共享的 `ReverseDns`。
+## 代码位置
 
-## 已知边界
+`crates/modules/dns/rustbox-dns-core/src/`：
 
-- UDP/TCP 有本地真实 socket 单测；DoT/DoH/DoQ 复用同一 Hickory provider 和配置路径，不在单元测试中依赖公网服务。
-- 加密上游要求 domain endpoint，用它完成证书名称校验；IP endpoint 需要未来新增显式 `server_name` 字段。
-- endpoint 域名的 bootstrap 暂用系统 DNS。
-- transport socket 目前只能 direct。配置引用非 direct outbound 会在运行时构图阶段明确失败。
-- `dns.hijack` 的本地 responder 尚未实现；本轮接入的是上游 transport 和可调用的 resolver graph。
+- `model.rs`：配置和 query/response 类型；
+- `transport.rs`：Hickory adapter 与协议映射；
+- `resolver.rs`、`subsystem.rs`：规则选择和运行图装配；
+- `cache.rs`、`fake_ip.rs`、`reverse.rs`：状态组件。
+- `socket.rs`：DNS transport 消费的最小 socket capability；不依赖 router 或具体
+  outbound 实现。
+
+组合层把 DNS 与 outbound 的循环拆成两个阶段：先构造 DNS transport 和
+`LateBoundDnsSocket`，再构造全部 runtime outbound，最后一次性绑定 socket。相关代码
+分别位于 `compose/dns.rs` 与 `compose/dependency.rs`。后者把 outbound detour、outbound
+bootstrap resolver、DNS server outbound 放入同一依赖图，配置阶段就会报告完整的循环
+路径，而不是等查询超时。
+
+指定 `dns.servers[].outbound` 后，UDP 使用该 outbound 的 datagram socket；TCP、DoT 和
+DoH 使用其 stream socket。Hickory 仍负责 DNS framing、TLS、HTTP/2 和证书域名校验，
+组合层只负责 socket 能力注入。DoQ 需要 QUIC runtime 的异步 UDP binder，目前 detour
+配置会明确失败，不会回退 direct。
+
+## 边界
+
+- 加密上游使用 domain endpoint 完成证书名称校验；endpoint 域名 bootstrap
+  暂时使用系统 DNS。
+- transport socket 当前只能 direct；引用非 direct outbound 会在构图阶段失败。
+- UDP/TCP 有本地 socket 测试；加密 transport 的单元测试不依赖公网服务。

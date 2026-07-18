@@ -72,16 +72,22 @@ async fn main() {
 
     tracing::info!(message = listen, "RustBox started");
     let control_enabled = runtime.control_grpc_addr().is_some();
-    let stop_reason = tokio::select! {
-        result = tokio::signal::ctrl_c() => {
-            result.expect("wait for ctrl-c");
-            "Ctrl-C"
-        }
-        command = runtime.next_control_command(), if control_enabled => {
-            match command {
-                Some(EngineCommand::Stop) => "control API stop command",
-                Some(_) => "control API command",
-                None => "control API command channel closed",
+    let stop_reason = loop {
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result.expect("wait for ctrl-c");
+                break "Ctrl-C";
+            }
+            command = runtime.next_control_command(), if control_enabled => {
+                match command {
+                    Some(command) if command.command == EngineCommand::Stop => break "control API stop command",
+                    Some(command) => {
+                        if let Err(error) = runtime.apply_control_request(command).await {
+                            tracing::error!(?error, "control command failed");
+                        }
+                    }
+                    None => break "control API command channel closed",
+                }
             }
         }
     };

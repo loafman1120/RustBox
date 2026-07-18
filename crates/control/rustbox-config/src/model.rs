@@ -290,6 +290,9 @@ pub enum OutboundConfigKind {
         outbounds: Vec<String>,
         /// 初始选择；未设置时使用 `outbounds` 第一项。
         default: Option<String>,
+        /// 可选选择状态文件；成功切换后持久化，启动时恢复。
+        #[serde(default)]
+        cache_path: Option<String>,
     },
     /// 延迟测试出站组，对应 sing-box `urltest` outbound 的基础字段。
     #[serde(rename = "urltest")]
@@ -307,6 +310,24 @@ pub enum OutboundConfigKind {
         /// 延迟容差毫秒数。
         #[serde(default)]
         tolerance_ms: u16,
+        /// 单个探测的总超时秒数。
+        #[serde(default = "default_urltest_timeout_seconds")]
+        #[garde(range(min = 1))]
+        timeout_seconds: u64,
+        /// 同一组最多并发探测数。
+        #[serde(default = "default_urltest_concurrency")]
+        #[garde(range(min = 1))]
+        concurrency: usize,
+        /// 连续失败达到该值后立即从候选中摘除。
+        #[serde(default = "default_urltest_failure_threshold")]
+        #[garde(range(min = 1))]
+        failure_threshold: u32,
+        /// 可选自动选择状态文件。
+        #[serde(default)]
+        cache_path: Option<String>,
+        /// 选择改变时是否中断已有连接（当前平台需支持会话中断）。
+        #[serde(default)]
+        interrupt_exist_connections: bool,
     },
     /// VMess AEAD 上游代理。
     Vmess {
@@ -602,6 +623,16 @@ fn default_urltest_interval_seconds() -> u64 {
     300
 }
 
+fn default_urltest_timeout_seconds() -> u64 {
+    10
+}
+fn default_urltest_concurrency() -> usize {
+    4
+}
+fn default_urltest_failure_threshold() -> u32 {
+    2
+}
+
 fn default_tuic_heartbeat() -> Duration {
     Duration::from_secs(3)
 }
@@ -837,18 +868,24 @@ pub enum CompiledOutboundKind {
         method: String,
         password: String,
     },
-    /// 已分配内部 ID 的手动出站组。当前编译为静态初始选择。
+    /// 已分配内部 ID 的手动出站组。
     Selector {
         outbounds: Vec<OutboundId>,
         selected: RouteDecision,
+        cache_path: Option<String>,
     },
-    /// 已分配内部 ID 的延迟测试出站组。当前编译为静态首选项。
+    /// 已分配内部 ID 的自动延迟测试出站组。
     UrlTest {
         outbounds: Vec<OutboundId>,
         selected: RouteDecision,
         url: String,
         interval_seconds: u64,
         tolerance_ms: u16,
+        timeout_seconds: u64,
+        concurrency: usize,
+        failure_threshold: u32,
+        cache_path: Option<String>,
+        interrupt_exist_connections: bool,
     },
     Vmess {
         server: Endpoint,

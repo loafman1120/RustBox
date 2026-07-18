@@ -5,12 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+atomicwrites = "0.4"
 garde = { version = "0.23", features = ["derive"] }
 hickory-resolver = { version = "0.25.2", default-features = false, features = ["tokio", "tls-aws-lc-rs", "https-aws-lc-rs", "quic-aws-lc-rs", "webpki-roots"] }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
+rustbox-io = { path = "../../../foundation/rustbox-io" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_with = "3"
-tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "net", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time"] }

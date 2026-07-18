@@ -98,6 +98,7 @@ impl ConfigCompiler {
                     outbounds,
                     url,
                     interval_seconds,
+                    interrupt_exist_connections,
                     ..
                 } => {
                     validate_outbound_group(
@@ -116,6 +117,11 @@ impl ConfigCompiler {
                     if *interval_seconds == 0 {
                         return Err(ConfigError::new(format!(
                             "urltest outbound `{logical_id}` interval_seconds must be greater than zero"
+                        )));
+                    }
+                    if *interrupt_exist_connections {
+                        return Err(ConfigError::new(format!(
+                            "urltest outbound `{logical_id}` interrupt_exist_connections is not supported by the current session runtime"
                         )));
                     }
                 }
@@ -549,7 +555,11 @@ impl ConfigCompiler {
                         method: method.clone(),
                         password: password.clone(),
                     },
-                    OutboundConfigKind::Selector { outbounds, default } => {
+                    OutboundConfigKind::Selector {
+                        outbounds,
+                        default,
+                        cache_path,
+                    } => {
                         let selected = default.as_deref().unwrap_or_else(|| outbounds[0].as_str());
                         CompiledOutboundKind::Selector {
                             outbounds: compile_child_outbounds(outbounds, &source_outbound_ids)?,
@@ -558,6 +568,7 @@ impl ConfigCompiler {
                                 &source_outbound_ids,
                                 &source_outbounds,
                             )?,
+                            cache_path: cache_path.clone(),
                         }
                     }
                     OutboundConfigKind::UrlTest {
@@ -565,6 +576,11 @@ impl ConfigCompiler {
                         url,
                         interval_seconds,
                         tolerance_ms,
+                        timeout_seconds,
+                        concurrency,
+                        failure_threshold,
+                        cache_path,
+                        interrupt_exist_connections,
                     } => CompiledOutboundKind::UrlTest {
                         outbounds: compile_child_outbounds(outbounds, &source_outbound_ids)?,
                         selected: source_outbound_route_decision(
@@ -575,6 +591,11 @@ impl ConfigCompiler {
                         url: url.clone(),
                         interval_seconds: *interval_seconds,
                         tolerance_ms: *tolerance_ms,
+                        timeout_seconds: *timeout_seconds,
+                        concurrency: *concurrency,
+                        failure_threshold: *failure_threshold,
+                        cache_path: cache_path.clone(),
+                        interrupt_exist_connections: *interrupt_exist_connections,
                     },
                     OutboundConfigKind::Vmess {
                         server,

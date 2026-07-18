@@ -3,17 +3,22 @@
 //! 控制面通过命令、快照和 reload plan 观察或调整引擎，不直接持有内核可变引用。
 
 mod outbound_groups;
+mod rule_sets;
 
 pub use outbound_groups::*;
+pub use rule_sets::*;
 
-use rustbox_config::CompiledConfig;
+use rustbox_config::SourceConfig;
 use rustbox_route::RouteTable;
 use rustbox_types::OutboundId;
 
 /// 控制面可表达的引擎命令。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineCommand {
-    Reload(CompiledConfig),
+    Reload(SourceConfig),
+    CloseConnection(u64),
+    RefreshRuleSet(String),
+    TriggerUrlTest(String),
     Stop,
     ReplaceRouteTable(RouteTable),
     EnableOutbound(OutboundId),
@@ -62,12 +67,12 @@ pub enum ReloadPhase {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReloadPlan {
     pub generation: u64,
-    pub config: CompiledConfig,
+    pub config: SourceConfig,
     pub phase: ReloadPhase,
 }
 
 impl ReloadPlan {
-    pub fn prepare(next_generation: u64, config: CompiledConfig) -> Self {
+    pub fn prepare(next_generation: u64, config: SourceConfig) -> Self {
         Self {
             generation: next_generation,
             config,
@@ -128,6 +133,8 @@ impl ControlState {
             EngineCommand::Stop => {
                 self.snapshot.state = EngineState::Stopping;
             }
+            EngineCommand::CloseConnection(_) => {}
+            EngineCommand::RefreshRuleSet(_) | EngineCommand::TriggerUrlTest(_) => {}
             EngineCommand::ReplaceRouteTable(_)
             | EngineCommand::EnableOutbound(_)
             | EngineCommand::DisableOutbound(_) => {
@@ -140,19 +147,15 @@ impl ControlState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbox_config::{ConfigCompiler, SourceConfig};
+    use rustbox_config::SourceConfig;
     use rustbox_types::Endpoint;
 
     #[test]
     fn reload_command_creates_prepare_plan_without_mutating_live_generation() {
         let source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
-        let parsed = ConfigCompiler::parse(source).expect("parse");
-        let normalized = ConfigCompiler::normalize(parsed).expect("normalize");
-        let validated = ConfigCompiler::validate(normalized).expect("validate");
-        let compiled = ConfigCompiler::compile(&validated).expect("compile");
         let mut state = ControlState::new(EngineSnapshot::created());
 
-        state.apply_command(EngineCommand::Reload(compiled));
+        state.apply_command(EngineCommand::Reload(source));
 
         assert_eq!(state.snapshot().generation, 0);
         assert_eq!(

@@ -1,3 +1,13 @@
+## 0.1.4
+
+- Bundled the latest RustBox runtime, including the expanded DNS subsystem,
+  route-level DNS handling, remote rule-set refresh, URLTest controls, and
+  runtime observability improvements.
+- Kept the Dart lifecycle API source-compatible: `create`, `start`, `reload`,
+  `snapshot`, `stop`, and `close` retain their behavior and error categories.
+- Simplified package and example documentation around the supported integration
+  path and platform boundaries.
+
 ## 0.1.3
 
 - Updated the bundled Rust runtime with Hysteria2, TUIC, WireGuard, ShadowTLS,

@@ -9,6 +9,15 @@ service RustBoxControl {
   rpc GetObservabilitySnapshot(GetObservabilitySnapshotRequest) returns (ObservabilitySnapshot);
   rpc GetEngineSnapshot(GetEngineSnapshotRequest) returns (EngineSnapshot);
   rpc Stop(StopRequest) returns (EngineSnapshot);
+  rpc Reload(ReloadRequest) returns (EngineSnapshot);
+  rpc CloseConnection(CloseConnectionRequest) returns (CloseConnectionResponse);
+  rpc WatchConnections(WatchConnectionsRequest) returns (stream ConnectionUpdate);
+  rpc StreamTraffic(StreamTrafficRequest) returns (stream TrafficSnapshot);
+  rpc StreamLogs(StreamLogsRequest) returns (stream Event);
+  rpc GetRuntimeStatus(GetRuntimeStatusRequest) returns (RuntimeStatus);
+  rpc ListRuleSets(ListRuleSetsRequest) returns (ListRuleSetsResponse);
+  rpc RefreshRuleSet(RefreshRuleSetRequest) returns (OperationResponse);
+  rpc TriggerUrlTest(TriggerUrlTestRequest) returns (OperationResponse);
 }
 
 message GetMetricsRequest {}
@@ -16,6 +25,21 @@ message ListConnectionsRequest {}
 message GetObservabilitySnapshotRequest {}
 message GetEngineSnapshotRequest {}
 message StopRequest {}
+message ReloadRequest { string config_toml = 1; }
+message CloseConnectionRequest { uint64 flow_id = 1; }
+message CloseConnectionResponse { bool accepted = 1; }
+message WatchConnectionsRequest { bool include_initial = 1; }
+message StreamTrafficRequest { uint32 interval_ms = 1; }
+message StreamLogsRequest {
+  string min_level = 1;
+  string target_prefix = 2;
+  uint64 flow_id = 3;
+}
+message GetRuntimeStatusRequest {}
+message ListRuleSetsRequest {}
+message RefreshRuleSetRequest { string tag = 1; }
+message TriggerUrlTestRequest { string group_tag = 1; }
+message OperationResponse { bool accepted = 1; string message = 2; }
 
 message QueryEventsRequest {
   string min_level = 1;
@@ -51,7 +75,56 @@ message ConnectionStats {
   uint64 outbound_to_inbound_bytes = 7;
   string outcome = 8;
   string error = 9;
+  string inbound = 10;
+  string outbound = 11;
 }
+
+message ConnectionUpdate {
+  ConnectionUpdateKind kind = 1;
+  ConnectionStats connection = 2;
+  uint64 flow_id = 3;
+}
+
+enum ConnectionUpdateKind {
+  CONNECTION_UPDATE_KIND_UNSPECIFIED = 0;
+  CONNECTION_UPDATE_KIND_SNAPSHOT = 1;
+  CONNECTION_UPDATE_KIND_UPSERT = 2;
+  CONNECTION_UPDATE_KIND_REMOVE = 3;
+}
+
+message TagTraffic {
+  string tag = 1;
+  uint64 uplink_bytes = 2;
+  uint64 downlink_bytes = 3;
+}
+
+message TrafficSnapshot {
+  uint64 uplink_bytes = 1;
+  uint64 downlink_bytes = 2;
+  uint64 uplink_bytes_per_second = 3;
+  uint64 downlink_bytes_per_second = 4;
+  repeated TagTraffic inbounds = 5;
+  repeated TagTraffic outbounds = 6;
+}
+
+message RuntimeStatus {
+  EngineSnapshot engine = 1;
+  uint64 uptime_seconds = 2;
+  uint64 memory_bytes = 3;
+  uint64 active_connections = 4;
+  uint64 retained_events = 5;
+}
+
+message RuleSetStatus {
+  string tag = 1;
+  string source = 2;
+  string state = 3;
+  int64 last_attempt_time = 4;
+  int64 last_success_time = 5;
+  string last_error = 6;
+}
+
+message ListRuleSetsResponse { repeated RuleSetStatus rule_sets = 1; }
 
 enum ConnectionState {
   CONNECTION_STATE_UNSPECIFIED = 0;

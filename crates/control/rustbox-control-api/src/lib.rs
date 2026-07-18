@@ -4,8 +4,9 @@
 //! value snapshots and coarse control commands without exposing kernel internals.
 
 use rustbox_control::{
-    ControlState, EngineCommand, EngineSnapshot, EngineState, OutboundGroupRegistry,
-    OutboundGroupSnapshot, SelectOutboundError,
+    ControlState, EngineCommand, EngineSnapshot, EngineState, OutboundGroupKind,
+    OutboundGroupRegistry, OutboundGroupSnapshot, RuleSetRegistry, RuleSetState,
+    SelectOutboundError,
 };
 use rustbox_kernel::{Event, EventKind, EventLevel};
 use rustbox_observability::{
@@ -18,8 +19,9 @@ use std::fmt;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Duration};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::metadata::MetadataMap;
@@ -169,8 +171,10 @@ impl Error for ControlApiConfigError {}
 pub struct ControlApiState {
     observability: Arc<ObservabilityStore>,
     control: Arc<Mutex<ControlState>>,
-    command_tx: Option<mpsc::Sender<EngineCommand>>,
+    command_tx: Option<mpsc::Sender<ControlCommand>>,
     outbound_groups: Arc<RwLock<Arc<OutboundGroupRegistry>>>,
+    rule_sets: Arc<RwLock<Arc<RuleSetRegistry>>>,
+    started_at: Instant,
 }
 
 impl ControlApiState {
@@ -180,10 +184,12 @@ impl ControlApiState {
             control,
             command_tx: None,
             outbound_groups: Arc::new(RwLock::new(Arc::new(OutboundGroupRegistry::default()))),
+            rule_sets: Arc::new(RwLock::new(Arc::new(RuleSetRegistry::default()))),
+            started_at: Instant::now(),
         }
     }
 
-    pub fn with_command_sender(mut self, command_tx: mpsc::Sender<EngineCommand>) -> Self {
+    pub fn with_command_sender(mut self, command_tx: mpsc::Sender<ControlCommand>) -> Self {
         self.command_tx = Some(command_tx);
         self
     }
@@ -199,6 +205,24 @@ impl ControlApiState {
         }
     }
 
+    pub fn with_rule_sets(self, rule_sets: Arc<RuleSetRegistry>) -> Self {
+        self.replace_rule_sets(rule_sets);
+        self
+    }
+
+    pub fn replace_rule_sets(&self, rule_sets: Arc<RuleSetRegistry>) {
+        if let Ok(mut current) = self.rule_sets.write() {
+            *current = rule_sets;
+        }
+    }
+
+    fn rule_sets(&self) -> Result<Arc<RuleSetRegistry>, Status> {
+        self.rule_sets
+            .read()
+            .map(|rule_sets| rule_sets.clone())
+            .map_err(|_| Status::internal("rule-set state lock is poisoned"))
+    }
+
     fn outbound_groups(&self) -> Result<Arc<OutboundGroupRegistry>, Status> {
         self.outbound_groups
             .read()
@@ -212,6 +236,37 @@ impl ControlApiState {
 
     pub fn control(&self) -> Arc<Mutex<ControlState>> {
         Arc::clone(&self.control)
+    }
+}
+
+pub struct ControlCommand {
+    pub command: EngineCommand,
+    response: Option<oneshot::Sender<Result<bool, String>>>,
+}
+
+impl ControlCommand {
+    fn detached(command: EngineCommand) -> Self {
+        Self {
+            command,
+            response: None,
+        }
+    }
+
+    fn acknowledged(command: EngineCommand) -> (Self, oneshot::Receiver<Result<bool, String>>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            Self {
+                command,
+                response: Some(tx),
+            },
+            rx,
+        )
+    }
+
+    pub fn respond(mut self, result: Result<bool, String>) {
+        if let Some(response) = self.response.take() {
+            let _ = response.send(result);
+        }
     }
 }
 
@@ -303,6 +358,10 @@ impl RustBoxControlService {
 
 #[tonic::async_trait]
 impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
+    type WatchConnectionsStream = ReceiverStream<Result<pb::ConnectionUpdate, Status>>;
+    type StreamTrafficStream = ReceiverStream<Result<pb::TrafficSnapshot, Status>>;
+    type StreamLogsStream = ReceiverStream<Result<pb::Event, Status>>;
+
     async fn get_metrics(
         &self,
         request: Request<pb::GetMetricsRequest>,
@@ -323,7 +382,7 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
         let connections = self
             .state
             .observability
-            .connections()
+            .active_connections()
             .into_iter()
             .map(connection_to_proto)
             .collect();
@@ -375,7 +434,7 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
             .authorize(request.metadata(), Permission::Control)?;
         if let Some(command_tx) = &self.state.command_tx {
             command_tx
-                .try_send(EngineCommand::Stop)
+                .try_send(ControlCommand::detached(EngineCommand::Stop))
                 .map_err(|error| match error {
                     mpsc::error::TrySendError::Full(_) => {
                         Status::resource_exhausted("control command queue is full")
@@ -397,6 +456,312 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
         };
 
         Ok(Response::new(engine_to_proto(snapshot)))
+    }
+
+    async fn reload(
+        &self,
+        request: Request<pb::ReloadRequest>,
+    ) -> Result<Response<pb::EngineSnapshot>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Control)?;
+        let source = rustbox_config_file::parse_toml_source(&request.into_inner().config_toml)
+            .map_err(|error| Status::invalid_argument(error.message))?;
+        let command = EngineCommand::Reload(source);
+        self.send_command(command.clone())?;
+        let snapshot = {
+            let mut state = self
+                .state
+                .control
+                .lock()
+                .map_err(|_| Status::internal("control state lock is poisoned"))?;
+            state.apply_command(command);
+            state.snapshot().clone()
+        };
+        Ok(Response::new(engine_to_proto(snapshot)))
+    }
+
+    async fn close_connection(
+        &self,
+        request: Request<pb::CloseConnectionRequest>,
+    ) -> Result<Response<pb::CloseConnectionResponse>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Control)?;
+        let flow_id = request.into_inner().flow_id;
+        if flow_id == 0 {
+            return Err(Status::invalid_argument("flow_id must be non-zero"));
+        }
+        let accepted = self
+            .execute_command(EngineCommand::CloseConnection(flow_id))
+            .await?;
+        Ok(Response::new(pb::CloseConnectionResponse { accepted }))
+    }
+
+    async fn watch_connections(
+        &self,
+        request: Request<pb::WatchConnectionsRequest>,
+    ) -> Result<Response<Self::WatchConnectionsStream>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Observe)?;
+        let include_initial = request.into_inner().include_initial;
+        let store = self.state.observability.clone();
+        let mut events = store.subscribe();
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            if include_initial {
+                for connection in store.active_connections() {
+                    if tx
+                        .send(Ok(connection_update(
+                            pb::ConnectionUpdateKind::Snapshot,
+                            connection,
+                        )))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        let Some(flow_id) = event.flow_id.map(|id| id.get()) else {
+                            continue;
+                        };
+                        if let Some(connection) = store.connection(flow_id)
+                            && tx
+                                .send(Ok(connection_update(
+                                    pb::ConnectionUpdateKind::Upsert,
+                                    connection,
+                                )))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn stream_traffic(
+        &self,
+        request: Request<pb::StreamTrafficRequest>,
+    ) -> Result<Response<Self::StreamTrafficStream>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Observe)?;
+        let interval_ms = request.into_inner().interval_ms.clamp(100, 60_000) as u64;
+        let store = self.state.observability.clone();
+        let (tx, rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            let mut timer = time::interval(Duration::from_millis(interval_ms));
+            timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            let mut previous = store.traffic();
+            let mut previous_at = Instant::now();
+            loop {
+                timer.tick().await;
+                let current = store.traffic();
+                let now = Instant::now();
+                let elapsed_ms = now.duration_since(previous_at).as_millis().max(1) as u64;
+                let message = traffic_to_proto(
+                    &current,
+                    current
+                        .uplink_bytes
+                        .saturating_sub(previous.uplink_bytes)
+                        .saturating_mul(1000)
+                        / elapsed_ms,
+                    current
+                        .downlink_bytes
+                        .saturating_sub(previous.downlink_bytes)
+                        .saturating_mul(1000)
+                        / elapsed_ms,
+                );
+                previous = current;
+                previous_at = now;
+                if tx.send(Ok(message)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn stream_logs(
+        &self,
+        request: Request<pb::StreamLogsRequest>,
+    ) -> Result<Response<Self::StreamLogsStream>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Observe)?;
+        let request = request.into_inner();
+        let min_level = if request.min_level.is_empty() {
+            None
+        } else {
+            Some(parse_level(&request.min_level)?)
+        };
+        let target_prefix = none_if_empty(request.target_prefix);
+        let flow_id = (request.flow_id != 0).then_some(request.flow_id);
+        let mut events = self.state.observability.subscribe();
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event)
+                        if event_matches(&event, min_level, target_prefix.as_deref(), flow_id) =>
+                    {
+                        if tx.send(Ok(event_to_proto(event))).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn get_runtime_status(
+        &self,
+        request: Request<pb::GetRuntimeStatusRequest>,
+    ) -> Result<Response<pb::RuntimeStatus>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Observe)?;
+        let observability = self.state.observability.snapshot();
+        Ok(Response::new(pb::RuntimeStatus {
+            engine: Some(engine_to_proto(self.control_snapshot()?)),
+            uptime_seconds: self.state.started_at.elapsed().as_secs(),
+            memory_bytes: process_memory_bytes(),
+            active_connections: observability.metrics.flows_active,
+            retained_events: observability.recent_events.len() as u64,
+        }))
+    }
+
+    async fn list_rule_sets(
+        &self,
+        request: Request<pb::ListRuleSetsRequest>,
+    ) -> Result<Response<pb::ListRuleSetsResponse>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Observe)?;
+        let rule_sets = self
+            .state
+            .rule_sets()?
+            .list()
+            .into_iter()
+            .map(rule_set_to_proto)
+            .collect();
+        Ok(Response::new(pb::ListRuleSetsResponse { rule_sets }))
+    }
+
+    async fn refresh_rule_set(
+        &self,
+        request: Request<pb::RefreshRuleSetRequest>,
+    ) -> Result<Response<pb::OperationResponse>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Control)?;
+        let tag = request.into_inner().tag;
+        if tag.is_empty() {
+            return Err(Status::invalid_argument("tag must not be empty"));
+        }
+        if !self.state.rule_sets()?.contains(&tag) {
+            return Err(Status::not_found(format!(
+                "rule-set `{tag}` does not exist"
+            )));
+        }
+        let accepted = self
+            .execute_command(EngineCommand::RefreshRuleSet(tag))
+            .await?;
+        Ok(Response::new(pb::OperationResponse {
+            accepted,
+            message: if accepted {
+                "refresh scheduled"
+            } else {
+                "rule-set is not refreshable"
+            }
+            .into(),
+        }))
+    }
+
+    async fn trigger_url_test(
+        &self,
+        request: Request<pb::TriggerUrlTestRequest>,
+    ) -> Result<Response<pb::OperationResponse>, Status> {
+        self.auth
+            .authorize(request.metadata(), Permission::Control)?;
+        let tag = request.into_inner().group_tag;
+        if tag.is_empty() {
+            return Err(Status::invalid_argument("group_tag must not be empty"));
+        }
+        let groups = self.state.outbound_groups()?;
+        if !groups
+            .list()
+            .iter()
+            .any(|group| group.tag == tag && group.kind == OutboundGroupKind::UrlTest)
+        {
+            return Err(Status::not_found(format!(
+                "URLTest group `{tag}` does not exist"
+            )));
+        }
+        let accepted = self
+            .execute_command(EngineCommand::TriggerUrlTest(tag))
+            .await?;
+        Ok(Response::new(pb::OperationResponse {
+            accepted,
+            message: if accepted {
+                "URLTest scheduled"
+            } else {
+                "URLTest is unavailable"
+            }
+            .into(),
+        }))
+    }
+}
+
+impl RustBoxControlService {
+    fn send_command(&self, command: EngineCommand) -> Result<(), Status> {
+        let Some(command_tx) = &self.state.command_tx else {
+            return Err(Status::unavailable(
+                "control command processor is unavailable",
+            ));
+        };
+        command_tx
+            .try_send(ControlCommand::detached(command))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    Status::resource_exhausted("control command queue is full")
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    Status::unavailable("control command processor is unavailable")
+                }
+            })
+    }
+
+    async fn execute_command(&self, command: EngineCommand) -> Result<bool, Status> {
+        let Some(command_tx) = &self.state.command_tx else {
+            return Err(Status::unavailable(
+                "control command processor is unavailable",
+            ));
+        };
+        let (command, response) = ControlCommand::acknowledged(command);
+        command_tx.try_send(command).map_err(command_send_status)?;
+        time::timeout(Duration::from_secs(5), response)
+            .await
+            .map_err(|_| Status::deadline_exceeded("control command timed out"))?
+            .map_err(|_| Status::unavailable("control command processor stopped"))?
+            .map_err(Status::internal)
+    }
+}
+
+fn command_send_status(error: mpsc::error::TrySendError<ControlCommand>) -> Status {
+    match error {
+        mpsc::error::TrySendError::Full(_) => {
+            Status::resource_exhausted("control command queue is full")
+        }
+        mpsc::error::TrySendError::Closed(_) => {
+            Status::unavailable("control command processor is unavailable")
+        }
     }
 }
 
@@ -541,6 +906,89 @@ fn query_from_proto(
     })
 }
 
+fn connection_update(
+    kind: pb::ConnectionUpdateKind,
+    connection: ConnectionStats,
+) -> pb::ConnectionUpdate {
+    let flow_id = connection.flow_id;
+    pb::ConnectionUpdate {
+        kind: kind as i32,
+        connection: Some(connection_to_proto(connection)),
+        flow_id,
+    }
+}
+
+fn traffic_to_proto(
+    snapshot: &rustbox_observability::TrafficSnapshot,
+    uplink_bytes_per_second: u64,
+    downlink_bytes_per_second: u64,
+) -> pb::TrafficSnapshot {
+    let tags = |items: &HashMap<String, rustbox_observability::TagTraffic>| {
+        let mut items = items
+            .iter()
+            .map(|(tag, traffic)| pb::TagTraffic {
+                tag: tag.clone(),
+                uplink_bytes: traffic.uplink_bytes,
+                downlink_bytes: traffic.downlink_bytes,
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|a, b| a.tag.cmp(&b.tag));
+        items
+    };
+    pb::TrafficSnapshot {
+        uplink_bytes: snapshot.uplink_bytes,
+        downlink_bytes: snapshot.downlink_bytes,
+        uplink_bytes_per_second,
+        downlink_bytes_per_second,
+        inbounds: tags(&snapshot.inbounds),
+        outbounds: tags(&snapshot.outbounds),
+    }
+}
+
+fn event_matches(
+    event: &Event,
+    min_level: Option<EventLevel>,
+    target_prefix: Option<&str>,
+    flow_id: Option<u64>,
+) -> bool {
+    let rank = |level| match level {
+        EventLevel::Trace => 0,
+        EventLevel::Debug => 1,
+        EventLevel::Info => 2,
+        EventLevel::Warn => 3,
+        EventLevel::Error => 4,
+    };
+    min_level.is_none_or(|minimum| rank(event.level) >= rank(minimum))
+        && target_prefix.is_none_or(|prefix| event.target.0.starts_with(prefix))
+        && flow_id.is_none_or(|id| event.flow_id.map(|flow| flow.get()) == Some(id))
+}
+
+fn rule_set_to_proto(status: rustbox_control::RuleSetStatus) -> pb::RuleSetStatus {
+    pb::RuleSetStatus {
+        tag: status.tag,
+        source: status.source,
+        state: match status.state {
+            RuleSetState::Idle => "idle",
+            RuleSetState::Updating => "updating",
+            RuleSetState::Ready => "ready",
+            RuleSetState::Failed => "failed",
+        }
+        .into(),
+        last_attempt_time: status.last_attempt_unix_ms.unwrap_or_default(),
+        last_success_time: status.last_success_unix_ms.unwrap_or_default(),
+        last_error: status.last_error.unwrap_or_default(),
+    }
+}
+
+fn process_memory_bytes() -> u64 {
+    let Ok(pid) = sysinfo::get_current_pid() else {
+        return 0;
+    };
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).map_or(0, |process| process.memory())
+}
+
 fn parse_level(value: &str) -> Result<EventLevel, Status> {
     match value.to_ascii_lowercase().as_str() {
         "trace" => Ok(EventLevel::Trace),
@@ -574,8 +1022,11 @@ fn outbound_groups_to_daemon(groups: Vec<OutboundGroupSnapshot>) -> daemon::Grou
                     .map(|item| daemon::GroupItem {
                         tag: item.tag,
                         r#type: item.kind,
-                        url_test_time: 0,
-                        url_test_delay: 0,
+                        url_test_time: item.url_test_time,
+                        url_test_delay: item.url_test_delay.unwrap_or_default() as i32,
+                        consecutive_failures: item.consecutive_failures,
+                        last_error: item.last_error.unwrap_or_default(),
+                        last_success_time: item.last_success_time.unwrap_or_default(),
                     })
                     .collect(),
             })
@@ -627,6 +1078,8 @@ fn connection_to_proto(connection: ConnectionStats) -> pb::ConnectionStats {
         outbound_to_inbound_bytes: connection.outbound_to_inbound_bytes,
         outcome: connection.outcome.unwrap_or_default(),
         error: connection.error.unwrap_or_default(),
+        inbound: connection.inbound,
+        outbound: connection.outbound.unwrap_or_default(),
     }
 }
 
@@ -690,14 +1143,19 @@ fn event_kind_to_proto(kind: EventKind) -> (String, String, HashMap<String, Stri
             source,
             destination,
             network,
+            inbound,
         } => {
             insert("source", source);
             insert("destination", destination);
             insert("network", network);
+            insert("inbound", inbound);
             ("flow_accepted", String::new())
         }
-        EventKind::RouteSelected { decision } => {
+        EventKind::RouteSelected { decision, outbound } => {
             insert("decision", decision);
+            if let Some(outbound) = outbound {
+                insert("outbound", outbound);
+            }
             ("route_selected", String::new())
         }
         EventKind::OutboundConnecting { outbound, target } => {
@@ -857,7 +1315,7 @@ mod tests {
 
         assert_eq!(response.state, pb::EngineState::Stopping as i32);
         assert_eq!(
-            command_rx.recv().await.expect("command"),
+            command_rx.recv().await.expect("command").command,
             EngineCommand::Stop
         );
     }
@@ -925,7 +1383,7 @@ mod tests {
     async fn full_command_queue_does_not_publish_stopping_state() {
         let (command_tx, _command_rx) = mpsc::channel(1);
         command_tx
-            .try_send(EngineCommand::Stop)
+            .try_send(ControlCommand::detached(EngineCommand::Stop))
             .expect("fill command queue");
         let service = RustBoxControlService::new(
             sample_state(Some(command_tx)),
@@ -945,7 +1403,70 @@ mod tests {
         );
     }
 
-    fn sample_state(command_tx: Option<mpsc::Sender<EngineCommand>>) -> ControlApiState {
+    #[tokio::test]
+    async fn close_connection_returns_runtime_result() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let service = RustBoxControlService::new(
+            sample_state(Some(command_tx)),
+            AuthPolicy::disabled(),
+            DEFAULT_MAX_EVENTS_PER_QUERY,
+        );
+        let call = tokio::spawn(async move {
+            service
+                .close_connection(Request::new(pb::CloseConnectionRequest { flow_id: 7 }))
+                .await
+                .expect("close connection")
+                .into_inner()
+        });
+        let command = command_rx.recv().await.expect("runtime command");
+        assert_eq!(command.command, EngineCommand::CloseConnection(7));
+        command.respond(Ok(false));
+        assert!(!call.await.expect("RPC task").accepted);
+    }
+
+    #[tokio::test]
+    async fn streams_logs_and_tagged_traffic() {
+        let state = sample_state(None);
+        let store = state.observability();
+        let service =
+            RustBoxControlService::new(state, AuthPolicy::disabled(), DEFAULT_MAX_EVENTS_PER_QUERY);
+        let mut logs = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                min_level: "warn".into(),
+                target_prefix: "rustbox.control".into(),
+                flow_id: 0,
+            }))
+            .await
+            .expect("log stream")
+            .into_inner();
+        store_event(
+            &store,
+            Event::new(
+                EventLevel::Warn,
+                "rustbox.control.test",
+                None,
+                EventKind::Diagnostic("streamed".into()),
+            ),
+        );
+        let event = logs.next().await.expect("log item").expect("log event");
+        assert_eq!(event.message, "streamed");
+
+        let mut traffic = service
+            .stream_traffic(Request::new(pb::StreamTrafficRequest { interval_ms: 100 }))
+            .await
+            .expect("traffic stream")
+            .into_inner();
+        let traffic = traffic
+            .next()
+            .await
+            .expect("traffic item")
+            .expect("traffic");
+        assert_eq!(traffic.uplink_bytes, 4);
+        assert_eq!(traffic.inbounds[0].tag, "http-in");
+        assert_eq!(traffic.outbounds[0].tag, "direct");
+    }
+
+    fn sample_state(command_tx: Option<mpsc::Sender<ControlCommand>>) -> ControlApiState {
         let store = Arc::new(ObservabilityStore::default());
         let flow_id = FlowId::new(NonZeroU64::new(7).expect("non-zero"));
         store_event(
@@ -958,6 +1479,19 @@ mod tests {
                     source: "127.0.0.1:1000".to_string(),
                     destination: "example.test:443".to_string(),
                     network: "Tcp".to_string(),
+                    inbound: "http-in".to_string(),
+                },
+            ),
+        );
+        store_event(
+            &store,
+            Event::new(
+                EventLevel::Debug,
+                "rustbox.kernel.route",
+                Some(flow_id),
+                EventKind::RouteSelected {
+                    decision: "Forward(direct)".into(),
+                    outbound: Some("direct".into()),
                 },
             ),
         );

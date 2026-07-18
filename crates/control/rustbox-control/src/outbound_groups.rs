@@ -2,7 +2,9 @@ use rustbox_config::{CompiledConfig, CompiledOutboundKind};
 use rustbox_types::{OutboundId, RouteDecision};
 use std::collections::HashMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboundGroupKind {
@@ -23,6 +25,11 @@ impl OutboundGroupKind {
 pub struct OutboundGroupItem {
     pub tag: String,
     pub kind: String,
+    pub url_test_time: i64,
+    pub url_test_delay: Option<u32>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub last_success_time: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,13 +69,22 @@ struct GroupState {
     kind: OutboundGroupKind,
     items: Vec<GroupItemState>,
     selected: usize,
+    tolerance_ms: u16,
+    failure_threshold: u32,
+    cache_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
 struct GroupItemState {
+    id: OutboundId,
     tag: String,
     kind: String,
     decision: RouteDecision,
+    delay_ms: Option<u32>,
+    tested_at: i64,
+    last_success_at: Option<i64>,
+    consecutive_failures: u32,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -115,31 +131,58 @@ impl OutboundGroupRegistry {
 
         let mut state = RegistryState::default();
         for outbound in &config.outbounds {
-            let (kind, children, selected) = match &outbound.kind {
-                CompiledOutboundKind::Selector {
-                    outbounds,
-                    selected,
-                } => (OutboundGroupKind::Selector, outbounds, selected),
-                CompiledOutboundKind::UrlTest {
-                    outbounds,
-                    selected,
-                    ..
-                } => (OutboundGroupKind::UrlTest, outbounds, selected),
-                _ => continue,
-            };
+            let (kind, children, selected, tolerance_ms, failure_threshold, cache_path) =
+                match &outbound.kind {
+                    CompiledOutboundKind::Selector {
+                        outbounds,
+                        selected,
+                        cache_path,
+                    } => (
+                        OutboundGroupKind::Selector,
+                        outbounds,
+                        selected,
+                        0,
+                        1,
+                        cache_path,
+                    ),
+                    CompiledOutboundKind::UrlTest {
+                        outbounds,
+                        selected,
+                        tolerance_ms,
+                        failure_threshold,
+                        cache_path,
+                        ..
+                    } => (
+                        OutboundGroupKind::UrlTest,
+                        outbounds,
+                        selected,
+                        *tolerance_ms,
+                        *failure_threshold,
+                        cache_path,
+                    ),
+                    _ => continue,
+                };
             let items = children
                 .iter()
                 .filter_map(|id| {
                     Some(GroupItemState {
+                        id: *id,
                         tag: tags.get(id)?.clone(),
                         kind: kinds.get(id)?.clone(),
                         decision: decisions.get(id)?.clone(),
+                        delay_ms: None,
+                        tested_at: 0,
+                        last_success_at: None,
+                        consecutive_failures: 0,
+                        last_error: None,
                     })
                 })
                 .collect::<Vec<_>>();
-            let selected = items
-                .iter()
-                .position(|item| item.decision == *selected)
+            let selected = cache_path
+                .as_ref()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .and_then(|tag| items.iter().position(|item| item.tag == tag.trim()))
+                .or_else(|| items.iter().position(|item| item.decision == *selected))
                 .unwrap_or(0);
             let index = state.groups.len();
             state.by_id.insert(outbound.id, index);
@@ -150,6 +193,9 @@ impl OutboundGroupRegistry {
                 kind,
                 items,
                 selected,
+                tolerance_ms,
+                failure_threshold,
+                cache_path: cache_path.as_ref().map(PathBuf::from),
             });
         }
         Self {
@@ -211,7 +257,95 @@ impl OutboundGroupRegistry {
                 group: group_tag.to_string(),
                 outbound: outbound_tag.to_string(),
             })?;
+        persist_selection(group);
         Ok(snapshot(group))
+    }
+
+    /// Records one probe and atomically re-evaluates the automatic selection.
+    pub fn record_urltest_result(
+        &self,
+        group_id: OutboundId,
+        child_id: OutboundId,
+        result: Result<Duration, String>,
+    ) {
+        let Ok(mut state) = self.state.write() else {
+            return;
+        };
+        let Some(index) = state.by_id.get(&group_id).copied() else {
+            return;
+        };
+        let group = &mut state.groups[index];
+        if group.kind != OutboundGroupKind::UrlTest {
+            return;
+        }
+        let Some(item) = group.items.iter_mut().find(|item| item.id == child_id) else {
+            return;
+        };
+        item.tested_at = now_millis();
+        match result {
+            Ok(delay) => {
+                item.delay_ms = Some(delay.as_millis().min(u32::MAX as u128) as u32);
+                item.last_success_at = Some(item.tested_at);
+                item.consecutive_failures = 0;
+                item.last_error = None;
+            }
+            Err(error) => {
+                item.consecutive_failures = item.consecutive_failures.saturating_add(1);
+                item.last_error = Some(error);
+            }
+        }
+        let current = group.items.get(group.selected);
+        let current_healthy = current.is_some_and(|v| {
+            v.consecutive_failures < group.failure_threshold && v.delay_ms.is_some()
+        });
+        let best = group
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.consecutive_failures < group.failure_threshold)
+            .filter_map(|(i, v)| Some((i, v.delay_ms?)))
+            .min_by_key(|(_, delay)| *delay);
+        if let Some((best_index, best_delay)) = best {
+            let switch = !current_healthy
+                || current.and_then(|v| v.delay_ms).is_some_and(|delay| {
+                    best_delay.saturating_add(group.tolerance_ms as u32) < delay
+                });
+            if switch && group.selected != best_index {
+                group.selected = best_index;
+                persist_selection(group);
+            }
+        }
+    }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
+fn persist_selection(group: &GroupState) {
+    let (Some(path), Some(item)) = (&group.cache_path, group.items.get(group.selected)) else {
+        return;
+    };
+    let _ = persist_text(path, &item.tag);
+}
+
+fn persist_text(path: &Path, value: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, value)?;
+    match std::fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(_) if path.exists() => {
+            std::fs::remove_file(path)?;
+            std::fs::rename(temporary, path)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -231,6 +365,11 @@ fn snapshot(group: &GroupState) -> OutboundGroupSnapshot {
             .map(|item| OutboundGroupItem {
                 tag: item.tag.clone(),
                 kind: item.kind.clone(),
+                url_test_time: item.tested_at,
+                url_test_delay: item.delay_ms,
+                consecutive_failures: item.consecutive_failures,
+                last_error: item.last_error.clone(),
+                last_success_time: item.last_success_at,
             })
             .collect(),
     }
@@ -291,6 +430,7 @@ mod tests {
                     kind: CompiledOutboundKind::Selector {
                         outbounds: vec![direct, block],
                         selected: RouteDecision::Forward(direct),
+                        cache_path: None,
                     },
                 },
             ],
@@ -334,6 +474,11 @@ mod tests {
                         url: "https://www.gstatic.com/generate_204".into(),
                         interval_seconds: 300,
                         tolerance_ms: 50,
+                        timeout_seconds: 10,
+                        concurrency: 4,
+                        failure_threshold: 2,
+                        cache_path: None,
+                        interrupt_exist_connections: false,
                     },
                 },
             ],
@@ -346,6 +491,17 @@ mod tests {
         assert_eq!(
             registry.select("auto", "direct"),
             Err(SelectOutboundError::NotSelectable("auto".into()))
+        );
+        registry.record_urltest_result(automatic, direct, Ok(Duration::from_millis(42)));
+        let snapshot = registry.list().remove(0);
+        assert_eq!(snapshot.items[0].url_test_delay, Some(42));
+        assert!(snapshot.items[0].last_success_time.is_some());
+        registry.record_urltest_result(automatic, direct, Err("connection refused".into()));
+        let snapshot = registry.list().remove(0);
+        assert_eq!(snapshot.items[0].consecutive_failures, 1);
+        assert_eq!(
+            snapshot.items[0].last_error.as_deref(),
+            Some("connection refused")
         );
     }
 

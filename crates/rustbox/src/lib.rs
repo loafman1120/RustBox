@@ -12,6 +12,7 @@ mod error;
 mod routing;
 mod ruleset;
 mod runtime;
+mod urltest;
 
 pub(crate) use compose::RuntimeGraphBuilder;
 

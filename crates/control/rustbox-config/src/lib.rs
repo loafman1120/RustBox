@@ -182,6 +182,11 @@ mod tests {
                         url: "https://www.gstatic.com/generate_204".to_string(),
                         interval_seconds: 300,
                         tolerance_ms: 50,
+                        timeout_seconds: 10,
+                        concurrency: 4,
+                        failure_threshold: 2,
+                        cache_path: None,
+                        interrupt_exist_connections: false,
                     },
                 },
                 OutboundConfig {
@@ -190,6 +195,7 @@ mod tests {
                     kind: OutboundConfigKind::Selector {
                         outbounds: vec!["auto".to_string()],
                         default: None,
+                        cache_path: None,
                     },
                 },
             ],

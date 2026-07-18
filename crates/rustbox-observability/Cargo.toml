@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 rustbox-kernel = { path = "../kernel/rustbox-kernel" }
+tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 rustbox-types = { path = "../foundation/rustbox-types" }

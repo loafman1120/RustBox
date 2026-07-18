@@ -2,6 +2,7 @@ use garde::Validate;
 use rustbox_types::{Endpoint, Host, IpCidr, Network};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
+use std::path::PathBuf;
 
 pub trait Resolver: Send + Sync {
     fn resolve(
@@ -52,17 +53,37 @@ pub struct DnsQuery {
 pub enum DnsRecordType {
     A,
     Aaaa,
+    Cname,
+    Mx,
+    Ns,
+    Ptr,
+    Soa,
+    Srv,
+    Txt,
+    Caa,
+    Https,
+    Svcb,
+    Naptr,
+    Tlsa,
+    Ds,
+    Dnskey,
+    Any,
+    /// An RR type not yet assigned a named configuration spelling.
+    Other(u16),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DnsResponse {
     pub answers: Vec<DnsAnswer>,
+    /// Complete upstream records, including non-address RDATA.
+    pub records: Vec<hickory_resolver::proto::rr::Record>,
 }
 
 impl DnsResponse {
     pub fn empty() -> Self {
         Self {
             answers: Vec::new(),
+            records: Vec::new(),
         }
     }
 }
@@ -253,6 +274,11 @@ pub struct FakeIpConfig {
     pub enabled: bool,
     #[serde_as(as = "DisplayFromStr")]
     pub ipv4_pool: IpCidr,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    pub ipv6_pool: Option<IpCidr>,
+    #[serde(default)]
+    pub state_file: Option<PathBuf>,
     #[serde(default = "default_fake_ip_ttl_seconds")]
     #[garde(range(min = 1))]
     pub ttl_seconds: u32,

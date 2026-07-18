@@ -1,17 +1,14 @@
-# rustbox_flutter_example
+# rustbox_flutter example
 
-Demonstrates how to use the rustbox_flutter package.
+A minimal Flutter application that creates a RustBox engine, starts it, reads a
+snapshot, and closes it when the widget is disposed.
 
-## Getting Started
+Run it from this directory:
 
-This project is a starting point for a Flutter application.
+```powershell
+flutter pub get
+flutter run -d windows
+```
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+The embedded configuration starts an HTTP CONNECT proxy on `127.0.0.1:18080`.
+Use the package [README](../README.md) for installation and lifecycle details.

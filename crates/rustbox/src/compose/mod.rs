@@ -1,4 +1,6 @@
 mod builder;
+mod dependency;
+mod dns;
 mod inbound;
 mod outbound;
 
