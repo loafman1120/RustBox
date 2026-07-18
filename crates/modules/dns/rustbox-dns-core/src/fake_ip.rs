@@ -155,7 +155,7 @@ impl AddressPool {
             IpAddress::V6(value) => (u128::from_be_bytes(value), 128, 6),
         };
         let host_bits = bits - u32::from(cidr.prefix_len);
-        if host_bits < 2 || host_bits >= 128 {
+        if !(2..128).contains(&host_bits) {
             return Err(DnsError::new(
                 "FakeIP pool must contain at least two usable addresses",
             ));
