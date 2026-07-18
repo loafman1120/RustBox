@@ -466,7 +466,7 @@ impl pb::rust_box_control_server::RustBoxControl for RustBoxControlService {
             .authorize(request.metadata(), Permission::Control)?;
         let source = rustbox_config_file::parse_toml_source(&request.into_inner().config_toml)
             .map_err(|error| Status::invalid_argument(error.message))?;
-        let command = EngineCommand::Reload(source);
+        let command = EngineCommand::Reload(Box::new(source));
         self.send_command(command.clone())?;
         let snapshot = {
             let mut state = self

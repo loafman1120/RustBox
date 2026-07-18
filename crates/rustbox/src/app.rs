@@ -272,7 +272,7 @@ impl RustBox {
     ) -> Result<bool, RustBoxError> {
         match command {
             EngineCommand::Reload(source) => {
-                self.reload(source).await?;
+                self.reload(*source).await?;
                 Ok(true)
             }
             EngineCommand::CloseConnection(flow_id) => Ok(self.close_connection(flow_id)),

@@ -15,7 +15,7 @@ use rustbox_types::OutboundId;
 /// 控制面可表达的引擎命令。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineCommand {
-    Reload(SourceConfig),
+    Reload(Box<SourceConfig>),
     CloseConnection(u64),
     RefreshRuleSet(String),
     TriggerUrlTest(String),
@@ -128,7 +128,7 @@ impl ControlState {
         match command {
             EngineCommand::Reload(config) => {
                 self.pending_reload =
-                    Some(ReloadPlan::prepare(self.snapshot.generation + 1, config));
+                    Some(ReloadPlan::prepare(self.snapshot.generation + 1, *config));
             }
             EngineCommand::Stop => {
                 self.snapshot.state = EngineState::Stopping;
@@ -155,7 +155,7 @@ mod tests {
         let source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
         let mut state = ControlState::new(EngineSnapshot::created());
 
-        state.apply_command(EngineCommand::Reload(source));
+        state.apply_command(EngineCommand::Reload(Box::new(source)));
 
         assert_eq!(state.snapshot().generation, 0);
         assert_eq!(
