@@ -1,98 +1,122 @@
 # RustBox
 
-Modular proxy engine in Rust, built on Tokio.
+RustBox is a modular proxy engine written in Rust and built on Tokio. The same
+engine powers the command-line app and the Flutter bridge.
+
+> RustBox is under active development. Protocol support and configuration may
+> change before the first stable release.
 
 ## Architecture
 
-The repository is organized around one composition root and one async runtime:
-
 ```text
-apps (CLI / Flutter)
-    -> rustbox lifecycle and composition
-        -> control + protocol modules + platform adapters
-            -> kernel host ports
-                -> foundation types and Tokio I/O contracts
+CLI / Flutter
+    -> rustbox (composition and lifecycle)
+        -> config + control + protocol modules + platform adapters
+            -> kernel (flows, routing, relay, host capability ports)
+                -> foundation (shared types and Tokio I/O contracts)
 ```
 
-Tokio is the only production executor. Accept and session tasks are owned by
-generation-scoped `TaskScope`s (`CancellationToken` + `TaskTracker`), so reload
-can stop accepting new flows while existing sessions drain for a bounded time.
-The project does not expose a synchronous runtime facade or create a second
-runtime for Flutter.
+- Tokio is the only production executor.
+- `RustBox` owns the `start`, `reload`, `snapshot`, and `stop` lifecycle.
+- Configuration follows `TOML -> normalize -> validate -> compile -> runtime`.
+- TCP and UDP enter the kernel as explicit `Flow` payloads, then pass through
+  inspection, routing, outbound selection, and relay.
+- Operating-system behavior stays behind platform and host capability
+  boundaries.
 
-Dynamic allocation is kept at heterogeneous runtime boundaries: `Service`,
-`Outbound`, byte/datagram I/O, observability sinks, and operating-system
-capability providers. Routing and protocol inspection use concrete types where
-runtime substitution is unnecessary. The workspace forbids handwritten
-`unsafe` Rust; the Flutter bridge's generated native export is the only FFI
-boundary.
+See [Architecture](docs/architecture.md) for ownership, data flow, and the
+workspace map.
 
-The shared `rustbox-transport` layer is used by VMess, VLESS, Trojan,
-ShadowTLS, NaiveProxy and Mux.Cool instead of repeating carrier/TLS code in
-every inbound/outbound pair. The SOCKS5 UDP association uses an
-atomic waker with a post-registration close check, and VMess framing runs in the
-generation's session task scope with symmetric direction termination.
-UDP session limits and idle eviction are not yet implemented. See
-[architecture](docs/architecture.md) and
-[code structure](docs/code-structure.md) for the stable boundaries and current
-roadmap.
+## Workspace
 
-## Website design
+| Path | Purpose |
+| --- | --- |
+| `apps/rustbox-cli` | CLI binary (`rustbox-app`) |
+| `apps/rustbox-flutter` | Flutter package, Rust bridge, and example app |
+| `crates/rustbox` | Public engine facade and composition root |
+| `crates/foundation` | Shared types and async I/O contracts |
+| `crates/kernel` | Flow engine, routing, relay, and host ports |
+| `crates/control` | Semantic configuration and gRPC control plane |
+| `crates/modules` | DNS, inspection, transports, inbounds, and outbounds |
+| `crates/platform` | Linux, macOS, Windows, and Android adapters |
+| `examples` | Runnable TOML configurations |
+| `scripts` | Build and smoke/E2E helpers |
+| `website` | Dependency-free project website |
 
-`website/` is a dependency-free, static project showcase. It is designed as an
-interactive technical whitepaper rather than a conventional product landing
-page: the narrative follows a flow from request ingress, through routing and
-runtime composition, to protocols and a runnable local setup.
+## Quick start
 
-```text
-Hero / shared lifecycle
-        ↓
-Data plane / inbound → enrich → route → outbound → relay
-        ↓
-Composition boundaries / application → kernel → foundation
-        ↓
-Connection surfaces / inbound and outbound protocols
-        ↓
-Control plane / TOML → normalize → validate → compile → RustBox
-        ↓
-Getting started / build → run → verify
-```
-
-Its visual language is **engineering editorial × network debugger**:
-
-- graphite background and fine technical rules keep the page close to a tool,
-  not a SaaS dashboard;
-- icy cyan denotes the data plane, while amber denotes configuration and
-  control-plane signals;
-- a transparent system box in the hero visualizes the shared RustBox
-  lifecycle, with a moving packet path as the primary motion cue;
-- architecture is shown with open diagrams, rails, and layers instead of
-  marketing cards or unverified performance claims.
-
-The page intentionally uses only HTML, CSS, and small native JavaScript
-interactions (scroll progress, reveal transitions, packet motion, and command
-copying). It can be hosted on GitHub Pages or any static file server without a
-frontend build tool. Its technical copy is derived from `README.md` and
-`docs/architecture.md`; update those facts alongside the page when protocol or
-lifecycle support changes.
-
-Preview it locally with a static server rooted at `website/`; see
-[`website/README.md`](website/README.md) for an example.
-
-## Build
+Requires the Rust toolchain declared by the project. Build the workspace:
 
 ```powershell
 cargo build --workspace
 ```
 
-## Flutter app
+Run the example configuration (HTTP CONNECT on `127.0.0.1:18080`, SOCKS5 on
+`127.0.0.1:1080`, and a mixed listener on `127.0.0.1:2080`):
 
-`apps/rustbox-flutter` sits beside `apps/rustbox-cli` as the supported
-Dart/Flutter product entry. It
-uses `flutter_rust_bridge` 2.13.0-beta.5 and Flutter Native Assets to compile
-and bundle `rustbox-flutter-bridge` for Android, iOS, Windows, macOS, and Linux.
-Web and OHOS are not supported because RustBox depends on native Tokio, socket,
-TUN, and platform-control capabilities.
+```powershell
+cargo run -p rustbox-app -- run --config examples/rustbox.toml
+
+# Validate without starting
+cargo run -p rustbox-app -- check-config --config examples/rustbox.toml
+```
+
+Verify the local listeners:
+
+```powershell
+curl.exe -x http://127.0.0.1:18080 https://example.com -I
+curl.exe --socks5-hostname 127.0.0.1:1080 https://example.com -I
+```
+
+Set `RUSTBOX_LOG` to a `tracing-subscriber` filter such as `debug` or
+`rustbox_app=info,rustbox_anytls=debug`.
+
+## Capabilities
+
+Inbound types:
+
+`http-connect`, `socks5`, `mixed`, `tun`, `transparent`, `anytls`
+
+Outbound types:
+
+`direct`, `block`, `socks5`, `http`, `shadowsocks`, `vmess`, `vless`,
+`trojan`, `anytls`, `hysteria2`, `tuic`, `naive`, `shadow-tls`, `wireguard`,
+`selector`, `urltest`
+
+The routing layer supports inline, local, remote, sing-box source, and SRS rule
+sets. Shared transports include TCP, WebSocket, HTTP/2, gRPC, HTTPUpgrade,
+ShadowTLS, and Mux.Cool. DNS supports UDP, TCP, DoT, DoH, DoQ, caching, FakeIP,
+reverse mapping, and route-level DNS hijacking.
+
+Configuration examples and platform notes are in:
+
+- [Routing, transports, and modern protocols](docs/p1-routing-transport.md)
+- [DNS](docs/dns-transports.md)
+- [`examples/rustbox.toml`](examples/rustbox.toml)
+- [`examples/tun-transparent.toml`](examples/tun-transparent.toml)
+
+Browser-style TLS fingerprinting is optional because its BoringSSL backend
+requires NASM:
+
+```powershell
+cargo build -p rustbox --features fingerprint
+```
+
+## TUN and transparent proxy
+
+Windows TUN requires an architecture-matched `wintun.dll` beside the binary,
+or an absolute path in `RUSTBOX_WINTUN_DLL`. Linux uses `/dev/net/tun`; macOS
+uses utun. Route and redirect changes require elevated privileges.
+
+Start with `auto_route = false` while another VPN is active. See
+[`examples/tun-transparent.toml`](examples/tun-transparent.toml) before
+enabling route capture.
+
+## Flutter
+
+`apps/rustbox-flutter` exposes the shared async lifecycle through
+`flutter_rust_bridge` and bundled native libraries. Android, iOS, Windows, and
+Linux are supported; macOS, Web, and OHOS are not.
 
 ```powershell
 cd apps/rustbox-flutter
@@ -102,156 +126,37 @@ cd example
 flutter run
 ```
 
-Applications initialize the bridge once, create an engine from TOML, then
-await lifecycle completion directly:
+Generated bridge files are committed and must be regenerated when the bridge
+API changes. See the [Flutter package README](apps/rustbox-flutter/README.md).
 
-```dart
-await RustBox.initialize();
-final engine = await RustBoxEngine.create(configToml: config);
-await engine.start();
-final snapshot = await engine.snapshot();
-await engine.close();
-```
+## Control API
 
-Native Assets builds from Rust source, so consumers need the pinned Rust 1.97.0
-toolchain. Generated Rust and Dart bridge files are committed; regenerate them
-after changing the bridge API and include the output in the same change.
-
-## Run
+Start the sing-box-compatible gRPC control service with:
 
 ```powershell
-# show help
-cargo run -p rustbox-app
-
-# default HTTP CONNECT proxy (127.0.0.1:18080)
-cargo run -p rustbox-app -- http-proxy
-
-# default SOCKS5 proxy (127.0.0.1:1080)
-cargo run -p rustbox-app -- socks5-proxy
-
-# from a TOML config
-cargo run -p rustbox-app -- run --config examples/rustbox.toml
-
-# validate a config without starting
-cargo run -p rustbox-app -- check-config --config examples/rustbox.toml
-
-# print platform capabilities
-cargo run -p rustbox-app -- platform-capabilities
+cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 `
+  run --config examples/rustbox.toml
 ```
 
-Stop with `Ctrl+C`.
+Add `--control-token <token>` for bearer authentication. `daemon.StartedService`
+keeps the sing-box-compatible selector/group wire contract. The native
+`rustbox.control.v1.RustBoxControl` service additionally provides active connection
+listing and cancellation, connection/log/traffic server streams, per-inbound and
+per-outbound counters, process memory and engine status, rule-set status/manual
+refresh, manual URLTest triggering, reload, and stop. URLTest probes use the real
+outbound paths and can persist the selected child with `cache_path`.
 
-## Logging
-
-RustBox uses `tracing` for structured application and protocol logs. Set
-`RUSTBOX_LOG` to a level or a `tracing-subscriber` filter directive:
-
-```powershell
-$env:RUSTBOX_LOG = "debug"
-cargo run -p rustbox-app -- http-proxy
-```
-
-Levels: `trace`, `debug`, `info`, `warn`, `error`, `off`.
-
-Crate-specific filters are also supported, for example
-`RUSTBOX_LOG=rustbox_anytls=debug,rustbox_app=info`.
-
-## Control gRPC
+## Development
 
 ```powershell
-cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 http-proxy
-# with auth:
-cargo run -p rustbox-app -- --control-grpc 0.0.0.0:19090 --control-token secret http-proxy
-```
-
-The API can inspect outbound groups and switch a `selector` without reloading:
-
-```powershell
-grpcurl -plaintext -import-path crates/control/rustbox-control-api/proto `
-  -proto started_service.proto 127.0.0.1:19090 `
-  daemon.StartedService/SubscribeGroups
-
-grpcurl -plaintext -import-path crates/control/rustbox-control-api/proto `
-  -proto started_service.proto `
-  -d '{"groupTag":"select","outboundTag":"ss-out"}' `
-  127.0.0.1:19090 daemon.StartedService/SelectOutbound
-```
-
-Add `-H 'authorization: Bearer secret'` when a control token is configured.
-The outbound-group API uses sing-box's `daemon.StartedService` wire contract;
-`SubscribeGroups` stays open and publishes the initial state and later changes.
-Only `selector` groups are manually selectable; `urltest` groups are reported
-but remain read-only until active latency probing is implemented. See the
-[sing-box behavior investigation](docs/sing-box-outbound-selection.md).
-
-## Config
-
-See `examples/rustbox.toml`. Inbound types: `http-connect`, `socks5`, `mixed`,
-`tun`, `transparent`, `anytls`.
-
-The configuration frontend uses Figment and Serde for typed TOML loading,
-Garde for field-local validation, and Miette-compatible diagnostics. Existing
-`load_toml_file` callers are file-only and deterministic. Applications that
-need environment overrides can use `ConfigLoader::with_env_prefix("RUSTBOX_")`;
-nested keys are separated with `__` (for example,
-`RUSTBOX_OBSERVABILITY__LEVEL=debug`). Cross-reference and protocol checks are
-performed later by `rustbox-config`, after the document has been normalized.
-Outbound types: `direct`, `block`, `socks5`, `http`, `shadowsocks`, `vmess`,
-`vless`, `trojan`, `anytls`, `hysteria2`, `tuic`, `naive`, `shadow-tls`,
-`wireguard`, `selector`, `urltest`. WireGuard may also be declared under
-`[[endpoints]]`; the file frontend lowers it into the same route-addressable
-runtime graph without duplicating its implementation.
-
-VMess/VLESS/Trojan share typed WebSocket, HTTP/2, gRPC and HTTPUpgrade
-transports. Their TLS layer supports custom roots, mTLS, SPKI pinning, ECH and
-Reality; VLESS supports `xtls-rprx-vision`. Browser-style TLS fingerprinting is
-an explicit `fingerprint` Cargo feature because its BoringSSL backend requires
-NASM at build time. Mux.Cool uses a bounded multi-carrier Tokio actor pool for
-TCP and XUDP, and UoT address/framing code is shared by protocol adapters. See
-the [P1 routing and transport guide](docs/p1-routing-transport.md) for the full
-configuration surface and platform notes.
-
-The `anytls` outbound uses the pinned, protocol-compatible `anytls 0.2.3`
-client and is continuously tested against a sing-box AnyTLS server. See the
-[architecture](docs/architecture.md#anytls).
-
-The DNS subsystem supports rule-based UDP, TCP, DoT, DoH, and DoQ upstreams,
-one bounded cache, FakeIP allocation, and TTL-based reverse domain recovery for
-later routing. Route `hijack-dns` terminates captured TCP/UDP DNS flows in the
-in-process resolver and returns wire-format responses. See
-[DNS transports](docs/dns-transports.md).
-
-## Verify
-
-```powershell
-curl.exe -x http://127.0.0.1:18080 https://example.com -I
-curl.exe --socks5-hostname 127.0.0.1:1080 https://example.com -I
-```
-
-## TUN
-
-Windows TUN requires Administrator privileges and the official architecture-
-matched `wintun.dll` from [wintun.net](https://www.wintun.net/). Put it beside
-`rustbox-app.exe` or set `RUSTBOX_WINTUN_DLL` to its absolute path. Linux uses
-`/dev/net/tun`; macOS uses utun.
-
-Start with `auto_route = false` while another VPN is active. For a full tunnel,
-stop the competing VPN, enable `auto_route`, and run with elevated privileges.
-`strict_route` installs split `/1` routes, `route_excludes` preserve the current
-best route, `dns_hijack` configures the TUN interface DNS servers, and
-`platform_http_proxy` uses the first mixed/HTTP inbound in the same config.
-`auto_redirect` is an alias for TUN route capture; WFP/nft redirect belongs to a
-transparent inbound and is intentionally not stacked on a layer-3 TUN.
-
-## Test
-
-```powershell
-cargo test --workspace
 cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
-cd apps/rustbox-flutter/example
-flutter analyze
-flutter test integration_test/simple_test.dart -d windows
-$env:RUSTBOX_SBOX_OUTBOUND = "anytls"
-./scripts/test/outbound.ps1
 ```
+
+Protocol, proxy, gRPC, and TUN smoke scripts live in `scripts/test/`.
+
+## License
+
+MIT OR Apache-2.0.

@@ -45,6 +45,7 @@ impl<R: Resolver> Resolver for CachingResolver<R> {
             .answers
             .iter()
             .map(|answer| answer.ttl_seconds)
+            .chain(response.records.iter().map(|record| record.ttl()))
             .min()
             .unwrap_or(0)
             .clamp(self.min_ttl_seconds, self.max_ttl_seconds);

@@ -7,12 +7,14 @@ license.workspace = true
 [dependencies]
 prost = "0.14.4"
 rustbox-control = { path = "../rustbox-control" }
+rustbox-config-file = { path = "../../rustbox-config-file" }
 rustbox-kernel = { path = "../../kernel/rustbox-kernel" }
 rustbox-observability = { path = "../../rustbox-observability" }
 tokio = { version = "1", features = ["net", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.14.6", features = ["transport"] }
 tonic-prost = "0.14.6"
+sysinfo = "0.37"
 
 [build-dependencies]
 prost-build = "0.14.4"

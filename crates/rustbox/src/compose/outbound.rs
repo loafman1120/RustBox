@@ -49,6 +49,7 @@ type ComposedEngine = (
     Arc<Engine<FlowEnricher>>,
     Arc<OutboundGroupRegistry>,
     rustbox_route::RuleSetStore,
+    HashMap<rustbox_types::OutboundId, Arc<dyn Outbound>>,
 );
 
 pub(crate) fn compose_engine(
@@ -68,7 +69,20 @@ pub(crate) fn compose_engine(
     });
     let enricher = FlowEnricher::new(sniffer, capabilities.process_lookup.clone())
         .with_network_lookup(capabilities.network_metadata.clone());
-    let mut base_builder = Engine::builder(Box::new(router)).observability(observability.clone());
+    let inbound_labels = compiled
+        .inbounds
+        .iter()
+        .map(|inbound| (inbound.id, inbound.logical_id.clone()))
+        .collect();
+    let outbound_labels = compiled
+        .outbounds
+        .iter()
+        .map(|outbound| (outbound.id, outbound.logical_id.clone()))
+        .collect();
+    let mut base_builder = Engine::builder(Box::new(router))
+        .observability(observability.clone())
+        .inbound_labels(inbound_labels)
+        .outbound_labels(outbound_labels);
     if let Some(dns) = &dns {
         base_builder = base_builder.route_resolver(Arc::new(RouteDnsResolver { dns: dns.clone() }));
         base_builder = base_builder
@@ -506,7 +520,7 @@ pub(crate) fn compose_engine(
     }
 
     let engine = Arc::new(builder.build().map_err(ComposeError::Engine)?);
-    Ok((engine, groups, rule_sets))
+    Ok((engine, groups, rule_sets, runtime_outbounds))
 }
 
 fn apply_multiplex(

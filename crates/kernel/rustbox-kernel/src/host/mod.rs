@@ -452,9 +452,11 @@ pub enum EventKind {
         source: String,
         destination: String,
         network: String,
+        inbound: String,
     },
     RouteSelected {
         decision: String,
+        outbound: Option<String>,
     },
     OutboundConnecting {
         outbound: String,

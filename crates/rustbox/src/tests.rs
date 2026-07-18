@@ -139,6 +139,8 @@ async fn composes_dns_rules_cache_fake_ip_and_resolver_api() {
         fake_ip: Some(FakeIpConfig {
             enabled: true,
             ipv4_pool: IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 24).expect("pool"),
+            ipv6_pool: None,
+            state_file: None,
             ttl_seconds: 60,
         }),
         hijack: Vec::new(),
@@ -155,6 +157,34 @@ async fn composes_dns_rules_cache_fake_ip_and_resolver_api() {
         response.answers[0].host,
         Host::Ip(IpAddress::V4(_))
     ));
+}
+
+#[test]
+fn composes_dns_socket_through_proxy_outbound() {
+    let mut source = SourceConfig::default_http_proxy(Endpoint::localhost_v4(0));
+    source.outbounds.push(OutboundConfig {
+        id: "dns-proxy".into(),
+        dial: Default::default(),
+        kind: OutboundConfigKind::Socks5 {
+            server: Endpoint::localhost_v4(1080),
+            username: None,
+            password: None,
+        },
+    });
+    source.dns = Some(DnsConfig {
+        servers: vec![DnsServerConfig {
+            id: "proxied".into(),
+            protocol: DnsServerProtocol::Tcp,
+            endpoint: Endpoint::new(Host::domain("dns.example"), 53),
+            outbound: Some("dns-proxy".into()),
+        }],
+        rules: Vec::new(),
+        final_server: Some("proxied".into()),
+        cache: DnsCacheConfig::default(),
+        fake_ip: None,
+        hijack: Vec::new(),
+    });
+    RustBox::new(source).expect("late-bind proxied DNS socket");
 }
 
 #[test]
@@ -251,6 +281,7 @@ async fn control_grpc_lists_and_switches_selector_outbound() {
                 kind: OutboundConfigKind::Selector {
                     outbounds: vec!["direct-a".to_string(), "direct-b".to_string()],
                     default: Some("direct-a".to_string()),
+                    cache_path: None,
                 },
             },
         ],
@@ -434,6 +465,7 @@ fn composes_selector_runtime_route() {
                 kind: OutboundConfigKind::Selector {
                     outbounds: vec!["direct".to_string()],
                     default: Some("direct".to_string()),
+                    cache_path: None,
                 },
             },
         ],

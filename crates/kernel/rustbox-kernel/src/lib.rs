@@ -13,13 +13,15 @@ use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind};
 use rustbox_route::{ResolveStrategy, RouteAction, RouteOptions, Router};
 use rustbox_types::{
-    Endpoint, FlowId, FlowMeta, Host, IpAddress, Network, OutboundId, RejectReason, RouteDecision,
-    ServiceId,
+    Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network, OutboundId, RejectReason,
+    RouteDecision, ServiceId,
 };
 use std::collections::HashMap;
 use std::future::{Future, poll_fn};
-use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio_util::sync::CancellationToken;
 
 /// 数据面进入内核后的基本工作单元。
 pub struct Flow {
@@ -145,6 +147,9 @@ pub struct Engine<E = NoopEnricher> {
     observability: Arc<dyn ObservabilitySink>,
     route_resolver: Option<Arc<dyn RouteResolver>>,
     hijackers: HashMap<ServiceId, Arc<dyn Outbound>>,
+    active_flows: Mutex<HashMap<u64, CancellationToken>>,
+    inbound_labels: HashMap<InboundId, String>,
+    outbound_labels: HashMap<OutboundId, String>,
 }
 
 impl Engine<NoopEnricher> {
@@ -156,6 +161,8 @@ impl Engine<NoopEnricher> {
             observability: Arc::new(NoopObservabilitySink),
             route_resolver: None,
             hijackers: HashMap::new(),
+            inbound_labels: HashMap::new(),
+            outbound_labels: HashMap::new(),
         }
     }
 }
@@ -169,26 +176,37 @@ impl<E: MetadataEnricher> Engine<E> {
         self.outbounds.len()
     }
 
+    /// Cancel one active flow without disturbing its generation or sibling sessions.
+    pub fn cancel_flow(&self, flow_id: u64) -> bool {
+        let token = self
+            .active_flows
+            .lock()
+            .ok()
+            .and_then(|flows| flows.get(&flow_id).cloned());
+        if let Some(token) = token {
+            token.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
     async fn execute_flow(&self, flow: Flow) -> Result<FlowOutcome, FlowError> {
         let flow_id = flow.meta.id;
-        let result = self.execute_flow_inner(flow).await;
+        let cancellation = CancellationToken::new();
+        if let Ok(mut flows) = self.active_flows.lock() {
+            flows.insert(flow_id.get(), cancellation.clone());
+        }
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(FlowError::Cancelled),
+            result = self.execute_flow_inner(flow) => result,
+        };
+        if let Ok(mut flows) = self.active_flows.lock() {
+            flows.remove(&flow_id.get());
+        }
         match &result {
             Ok(outcome) => {
-                if let FlowOutcome::Forwarded {
-                    relay: Some(relay), ..
-                } = outcome
-                {
-                    self.emit(
-                        EventLevel::Debug,
-                        "rustbox.kernel.traffic",
-                        Some(flow_id),
-                        EventKind::TrafficRecorded {
-                            inbound_to_outbound_bytes: relay.inbound_to_outbound_bytes,
-                            outbound_to_inbound_bytes: relay.outbound_to_inbound_bytes,
-                        },
-                    )
-                    .await;
-                }
                 self.emit(
                     EventLevel::Info,
                     "rustbox.kernel.flow",
@@ -224,6 +242,11 @@ impl<E: MetadataEnricher> Engine<E> {
                 source: flow.meta.source.to_string(),
                 destination: flow.meta.destination.to_string(),
                 network: format!("{:?}", flow.meta.network),
+                inbound: self
+                    .inbound_labels
+                    .get(&flow.meta.inbound)
+                    .cloned()
+                    .unwrap_or_else(|| flow.meta.inbound.to_string()),
             },
         )
         .await;
@@ -274,6 +297,15 @@ impl<E: MetadataEnricher> Engine<E> {
             Some(meta.id),
             EventKind::RouteSelected {
                 decision: format!("{decision:?}"),
+                outbound: match decision {
+                    RouteDecision::Forward(id) => Some(
+                        self.outbound_labels
+                            .get(&id)
+                            .cloned()
+                            .unwrap_or_else(|| id.to_string()),
+                    ),
+                    _ => None,
+                },
             },
         )
         .await;
@@ -293,7 +325,8 @@ impl<E: MetadataEnricher> Engine<E> {
                             .open_stream(ctx, target)
                             .await
                             .map_err(FlowError::Outbound)?;
-                        let relay = relay_stream(inbound_stream, outbound_stream)
+                        let relay = self
+                            .relay_stream_observed(inbound_stream, outbound_stream, meta.id)
                             .await
                             .map_err(FlowError::Relay)?;
                         Ok(FlowOutcome::Forwarded {
@@ -310,13 +343,17 @@ impl<E: MetadataEnricher> Engine<E> {
                         let relay = if let Some(timeout) = route_options.udp_timeout {
                             tokio::time::timeout(
                                 timeout,
-                                relay_datagram(inbound_socket, outbound_socket),
+                                self.relay_datagram_observed(
+                                    inbound_socket,
+                                    outbound_socket,
+                                    meta.id,
+                                ),
                             )
                             .await
                             .map_err(|_| FlowError::Route("UDP route timeout elapsed".into()))?
                             .map_err(FlowError::Relay)?
                         } else {
-                            relay_datagram(inbound_socket, outbound_socket)
+                            self.relay_datagram_observed(inbound_socket, outbound_socket, meta.id)
                                 .await
                                 .map_err(FlowError::Relay)?
                         };
@@ -374,6 +411,187 @@ impl<E: MetadataEnricher> Engine<E> {
         self.observability
             .emit(Event::new(level, target, flow_id, kind))
             .await;
+    }
+
+    async fn relay_stream_observed(
+        &self,
+        inbound: Box<dyn ByteStream>,
+        outbound: Box<dyn ByteStream>,
+        flow_id: FlowId,
+    ) -> Result<RelayStats, RelayError> {
+        // Some kernel unit tests poll an immediately-ready in-memory relay
+        // without entering a Tokio runtime. Production composition always has
+        // a runtime; keep the portable relay usable in that narrow test mode.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return relay_stream(inbound, outbound).await;
+        }
+        let uplink = Arc::new(AtomicU64::new(0));
+        let downlink = Arc::new(AtomicU64::new(0));
+        let inbound: Box<dyn ByteStream> = Box::new(ReadMeter::new(inbound, uplink.clone()));
+        let outbound: Box<dyn ByteStream> = Box::new(ReadMeter::new(outbound, downlink.clone()));
+        let mut relay = Box::pin(relay_stream(inbound, outbound));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        let mut previous_up = 0;
+        let mut previous_down = 0;
+        loop {
+            tokio::select! {
+                result = &mut relay => {
+                    let result = result?;
+                    let up = uplink.load(Ordering::Relaxed);
+                    let down = downlink.load(Ordering::Relaxed);
+                    self.emit_traffic_delta(flow_id, up - previous_up, down - previous_down).await;
+                    return Ok(result);
+                }
+                _ = interval.tick() => {
+                    let up = uplink.load(Ordering::Relaxed);
+                    let down = downlink.load(Ordering::Relaxed);
+                    self.emit_traffic_delta(flow_id, up - previous_up, down - previous_down).await;
+                    previous_up = up;
+                    previous_down = down;
+                }
+            }
+        }
+    }
+
+    async fn emit_traffic_delta(&self, flow_id: FlowId, uplink: u64, downlink: u64) {
+        if uplink != 0 || downlink != 0 {
+            self.emit(
+                EventLevel::Debug,
+                "rustbox.kernel.traffic",
+                Some(flow_id),
+                EventKind::TrafficRecorded {
+                    inbound_to_outbound_bytes: uplink,
+                    outbound_to_inbound_bytes: downlink,
+                },
+            )
+            .await;
+        }
+    }
+
+    async fn relay_datagram_observed(
+        &self,
+        inbound: Box<dyn DatagramSocket>,
+        outbound: Box<dyn DatagramSocket>,
+        flow_id: FlowId,
+    ) -> Result<RelayStats, RelayError> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return relay_datagram(inbound, outbound).await;
+        }
+        let uplink = Arc::new(AtomicU64::new(0));
+        let downlink = Arc::new(AtomicU64::new(0));
+        let inbound: Box<dyn DatagramSocket> =
+            Box::new(DatagramReadMeter::new(inbound, uplink.clone()));
+        let outbound: Box<dyn DatagramSocket> =
+            Box::new(DatagramReadMeter::new(outbound, downlink.clone()));
+        let mut relay = Box::pin(relay_datagram(inbound, outbound));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        let mut previous_up = 0;
+        let mut previous_down = 0;
+        loop {
+            tokio::select! {
+                result = &mut relay => {
+                    let result = result?;
+                    let up = uplink.load(Ordering::Relaxed);
+                    let down = downlink.load(Ordering::Relaxed);
+                    self.emit_traffic_delta(flow_id, up - previous_up, down - previous_down).await;
+                    return Ok(result);
+                }
+                _ = interval.tick() => {
+                    let up = uplink.load(Ordering::Relaxed);
+                    let down = downlink.load(Ordering::Relaxed);
+                    self.emit_traffic_delta(flow_id, up - previous_up, down - previous_down).await;
+                    previous_up = up;
+                    previous_down = down;
+                }
+            }
+        }
+    }
+}
+
+struct ReadMeter {
+    inner: Box<dyn ByteStream>,
+    bytes: Arc<AtomicU64>,
+}
+
+impl ReadMeter {
+    fn new(inner: Box<dyn ByteStream>, bytes: Arc<AtomicU64>) -> Self {
+        Self { inner, bytes }
+    }
+}
+
+impl AsyncRead for ReadMeter {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let result = Pin::new(&mut *self.inner).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            self.bytes
+                .fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+impl AsyncWrite for ReadMeter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut *self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.inner).poll_shutdown(cx)
+    }
+}
+
+struct DatagramReadMeter {
+    inner: Box<dyn DatagramSocket>,
+    bytes: Arc<AtomicU64>,
+}
+
+impl DatagramReadMeter {
+    fn new(inner: Box<dyn DatagramSocket>, bytes: Arc<AtomicU64>) -> Self {
+        Self { inner, bytes }
+    }
+}
+
+impl DatagramSocket for DatagramReadMeter {
+    fn local_endpoint(&self) -> Option<Endpoint> {
+        self.inner.local_endpoint()
+    }
+
+    fn poll_recv_from(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<(usize, Endpoint), rustbox_io::IoError>> {
+        let result = Pin::new(&mut *self.inner).poll_recv_from(cx, buf);
+        if let Poll::Ready(Ok((length, _))) = &result {
+            self.bytes.fetch_add(*length as u64, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn poll_send_to(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        target: &Endpoint,
+    ) -> Poll<Result<usize, rustbox_io::IoError>> {
+        Pin::new(&mut *self.inner).poll_send_to(cx, buf, target)
     }
 }
 
@@ -505,6 +723,8 @@ pub struct EngineBuilder<E = NoopEnricher> {
     observability: Arc<dyn ObservabilitySink>,
     route_resolver: Option<Arc<dyn RouteResolver>>,
     hijackers: HashMap<ServiceId, Arc<dyn Outbound>>,
+    inbound_labels: HashMap<InboundId, String>,
+    outbound_labels: HashMap<OutboundId, String>,
 }
 
 impl<E> EngineBuilder<E> {
@@ -526,6 +746,8 @@ impl<E> EngineBuilder<E> {
             observability: self.observability,
             route_resolver: self.route_resolver,
             hijackers: self.hijackers,
+            inbound_labels: self.inbound_labels,
+            outbound_labels: self.outbound_labels,
         }
     }
 
@@ -556,6 +778,16 @@ impl<E> EngineBuilder<E> {
         Ok(self)
     }
 
+    pub fn inbound_labels(mut self, labels: HashMap<InboundId, String>) -> Self {
+        self.inbound_labels = labels;
+        self
+    }
+
+    pub fn outbound_labels(mut self, labels: HashMap<OutboundId, String>) -> Self {
+        self.outbound_labels = labels;
+        self
+    }
+
     pub fn build(self) -> Result<Engine<E>, EngineError> {
         Ok(Engine {
             router: self.router,
@@ -564,6 +796,9 @@ impl<E> EngineBuilder<E> {
             observability: self.observability,
             route_resolver: self.route_resolver,
             hijackers: self.hijackers,
+            active_flows: Mutex::new(HashMap::new()),
+            inbound_labels: self.inbound_labels,
+            outbound_labels: self.outbound_labels,
         })
     }
 }
@@ -588,6 +823,7 @@ pub enum FlowError {
     Outbound(OutboundError),
     Relay(RelayError),
     Route(String),
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

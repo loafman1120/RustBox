@@ -1,7 +1,8 @@
 use crate::{ComposeError, ControlGrpcOptions};
-use rustbox_control::OutboundGroupRegistry;
-use rustbox_control::{ControlState, EngineCommand, EngineSnapshot};
+use rustbox_control::{ControlState, EngineSnapshot};
+use rustbox_control::{OutboundGroupRegistry, RuleSetRegistry};
 use rustbox_control_api::ControlApiState;
+use rustbox_control_api::ControlCommand;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
@@ -13,7 +14,7 @@ pub(crate) struct ControlGrpcService {
     config: rustbox_control_api::ControlApiConfig,
     listen: SocketAddr,
     api_state: ControlApiState,
-    command_rx: mpsc::Receiver<EngineCommand>,
+    command_rx: mpsc::Receiver<ControlCommand>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), rustbox_control_api::ControlApiError>>>,
 }
@@ -23,12 +24,14 @@ impl ControlGrpcService {
         options: ControlGrpcOptions,
         snapshot: EngineSnapshot,
         outbound_groups: Arc<OutboundGroupRegistry>,
+        rule_sets: Arc<RuleSetRegistry>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(CONTROL_COMMAND_CAPACITY);
         let control = Arc::new(Mutex::new(ControlState::new(snapshot)));
         let api_state = ControlApiState::new(options.observability, control)
             .with_command_sender(command_tx.clone())
-            .with_outbound_groups(outbound_groups);
+            .with_outbound_groups(outbound_groups)
+            .with_rule_sets(rule_sets);
         Self {
             listen: options.config.listen,
             config: options.config,
@@ -51,6 +54,10 @@ impl ControlGrpcService {
 
     pub(crate) fn replace_outbound_groups(&self, groups: Arc<OutboundGroupRegistry>) {
         self.api_state.replace_outbound_groups(groups);
+    }
+
+    pub(crate) fn replace_rule_sets(&self, rule_sets: Arc<RuleSetRegistry>) {
+        self.api_state.replace_rule_sets(rule_sets);
     }
 
     pub(crate) async fn start(&mut self) -> Result<(), ComposeError> {
@@ -94,7 +101,7 @@ impl ControlGrpcService {
         }
     }
 
-    pub(crate) async fn next_command(&mut self) -> Option<EngineCommand> {
+    pub(crate) async fn next_command(&mut self) -> Option<ControlCommand> {
         self.command_rx.recv().await
     }
 }

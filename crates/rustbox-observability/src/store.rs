@@ -7,14 +7,17 @@ pub struct ObservabilityStore {
     inner: Mutex<ObservabilityStoreInner>,
     event_limit: usize,
     connection_limit: usize,
+    event_tx: tokio::sync::broadcast::Sender<Event>,
 }
 
 impl ObservabilityStore {
     pub fn new(event_limit: usize) -> Self {
+        let (event_tx, _) = tokio::sync::broadcast::channel(event_limit.max(1));
         Self {
             inner: Mutex::new(ObservabilityStoreInner::default()),
             event_limit,
             connection_limit: event_limit,
+            event_tx,
         }
     }
 
@@ -45,6 +48,22 @@ impl ObservabilityStore {
             .collect()
     }
 
+    pub fn active_connections(&self) -> Vec<ConnectionStats> {
+        self.connections()
+            .into_iter()
+            .filter(|connection| connection.state == ConnectionState::Active)
+            .collect()
+    }
+
+    pub fn connection(&self, flow_id: u64) -> Option<ConnectionStats> {
+        self.inner
+            .lock()
+            .expect("observability store lock")
+            .connections
+            .get(&flow_id)
+            .cloned()
+    }
+
     pub fn query_events(&self, query: &ObservabilityQuery) -> Vec<Event> {
         let inner = self.inner.lock().expect("observability store lock");
         let mut events = inner
@@ -59,6 +78,21 @@ impl ObservabilityStore {
             events.drain(0..events.len() - limit);
         }
         events
+    }
+
+    /// Subscribe to new structured events without polling the retained ring buffer.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Event> {
+        self.event_tx.subscribe()
+    }
+
+    pub fn traffic(&self) -> TrafficSnapshot {
+        let inner = self.inner.lock().expect("observability store lock");
+        TrafficSnapshot {
+            uplink_bytes: inner.metrics.inbound_to_outbound_bytes,
+            downlink_bytes: inner.metrics.outbound_to_inbound_bytes,
+            inbounds: inner.inbound_traffic.clone(),
+            outbounds: inner.outbound_traffic.clone(),
+        }
     }
 
     fn record(&self, event: Event) {
@@ -78,10 +112,12 @@ impl ObservabilityStore {
                 inner.connections.remove(&flow_id);
             }
         }
-        inner.events.push_back(event);
+        inner.events.push_back(event.clone());
         if inner.events.len() > self.event_limit {
             inner.events.pop_front();
         }
+        drop(inner);
+        let _ = self.event_tx.send(event);
     }
 }
 
@@ -124,6 +160,20 @@ pub struct MetricsSnapshot {
     pub diagnostics: u64,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TrafficSnapshot {
+    pub uplink_bytes: u64,
+    pub downlink_bytes: u64,
+    pub inbounds: HashMap<String, TagTraffic>,
+    pub outbounds: HashMap<String, TagTraffic>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TagTraffic {
+    pub uplink_bytes: u64,
+    pub downlink_bytes: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionStats {
     pub flow_id: u64,
@@ -135,6 +185,8 @@ pub struct ConnectionStats {
     pub outbound_to_inbound_bytes: u64,
     pub outcome: Option<String>,
     pub error: Option<String>,
+    pub inbound: String,
+    pub outbound: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,6 +231,8 @@ struct ObservabilityStoreInner {
     connections: HashMap<u64, ConnectionStats>,
     events: std::collections::VecDeque<Event>,
     completed_connections: std::collections::VecDeque<u64>,
+    inbound_traffic: HashMap<String, TagTraffic>,
+    outbound_traffic: HashMap<String, TagTraffic>,
 }
 
 impl ObservabilityStoreInner {
@@ -198,6 +252,7 @@ impl ObservabilityStoreInner {
                 source,
                 destination,
                 network,
+                inbound,
             } => {
                 self.metrics.flows_accepted = self.metrics.flows_accepted.saturating_add(1);
                 self.metrics.flows_active = self.metrics.flows_active.saturating_add(1);
@@ -214,12 +269,21 @@ impl ObservabilityStoreInner {
                             outbound_to_inbound_bytes: 0,
                             outcome: None,
                             error: None,
+                            inbound: inbound.clone(),
+                            outbound: None,
                         },
                     );
                 }
             }
-            EventKind::RouteSelected { .. } => {
+            EventKind::RouteSelected { outbound, .. } => {
                 self.metrics.routes_selected = self.metrics.routes_selected.saturating_add(1);
+                if let Some(connection) = event
+                    .flow_id
+                    .map(|id| id.get())
+                    .and_then(|flow_id| self.connections.get_mut(&flow_id))
+                {
+                    connection.outbound = outbound.clone();
+                }
             }
             EventKind::OutboundConnecting { .. } => {
                 self.metrics.outbound_connect_attempts =
@@ -256,6 +320,28 @@ impl ObservabilityStoreInner {
                     connection.outbound_to_inbound_bytes = connection
                         .outbound_to_inbound_bytes
                         .saturating_add(*outbound_to_inbound_bytes);
+                    let inbound = self
+                        .inbound_traffic
+                        .entry(connection.inbound.clone())
+                        .or_default();
+                    inbound.uplink_bytes = inbound
+                        .uplink_bytes
+                        .saturating_add(*inbound_to_outbound_bytes);
+                    inbound.downlink_bytes = inbound
+                        .downlink_bytes
+                        .saturating_add(*outbound_to_inbound_bytes);
+                    if let Some(outbound_tag) = &connection.outbound {
+                        let outbound = self
+                            .outbound_traffic
+                            .entry(outbound_tag.clone())
+                            .or_default();
+                        outbound.uplink_bytes = outbound
+                            .uplink_bytes
+                            .saturating_add(*inbound_to_outbound_bytes);
+                        outbound.downlink_bytes = outbound
+                            .downlink_bytes
+                            .saturating_add(*outbound_to_inbound_bytes);
+                    }
                 }
             }
             EventKind::FlowCompleted { outcome } => {

@@ -44,11 +44,13 @@ impl Resolver for RuleBasedResolver {
                     .exchange(query)
                     .await
             }
-            DnsRuleAction::FakeIp => self
-                .fake_ip
-                .as_ref()
-                .ok_or_else(|| DnsError::new("DNS rule selected fake-ip but it is disabled"))?
-                .resolve(query),
+            DnsRuleAction::FakeIp => {
+                self.fake_ip
+                    .as_ref()
+                    .ok_or_else(|| DnsError::new("DNS rule selected fake-ip but it is disabled"))?
+                    .resolve(query)
+                    .await
+            }
             DnsRuleAction::Reject => Ok(DnsResponse::empty()),
         }
     }
@@ -95,7 +97,10 @@ impl Resolver for StaticResolver {
                 )
             })
             .collect();
-        Ok(DnsResponse { answers })
+        Ok(DnsResponse {
+            answers,
+            records: Vec::new(),
+        })
     }
 }
 

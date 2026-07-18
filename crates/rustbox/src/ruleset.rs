@@ -8,27 +8,81 @@ use rustbox_config::{
 use rustbox_config_file::{
     parse_rule_set_rustbox_toml, parse_rule_set_source_json, parse_rule_set_srs,
 };
+use rustbox_control::RuleSetRegistry;
 use rustbox_kernel::{BoxFuture, Service, ServiceContext, ServiceError, TaskScope};
 use rustbox_route::{RouteRuleSet, RuleSetStore};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 pub(crate) struct RuleSetService {
     configured: Vec<CompiledRouteRuleSet>,
     store: RuleSetStore,
+    controller: RuleSetController,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct RuleSetController {
+    registry: Arc<RuleSetRegistry>,
+    triggers: Arc<std::collections::HashMap<String, Arc<tokio::sync::Notify>>>,
+}
+
+impl RuleSetController {
+    pub(crate) fn registry(&self) -> Arc<RuleSetRegistry> {
+        self.registry.clone()
+    }
+
+    pub(crate) fn refresh(&self, tag: &str) -> bool {
+        self.triggers.get(tag).is_some_and(|trigger| {
+            trigger.notify_one();
+            true
+        })
+    }
 }
 
 impl RuleSetService {
     pub(crate) fn new(configured: Vec<CompiledRouteRuleSet>, store: RuleSetStore) -> Self {
-        Self { configured, store }
+        let registry = Arc::new(RuleSetRegistry::default());
+        let mut triggers = std::collections::HashMap::new();
+        for rule_set in &configured {
+            let source = match &rule_set.source {
+                RouteRuleSetSourceConfig::Inline => "inline",
+                RouteRuleSetSourceConfig::Local { .. } => "local",
+                RouteRuleSetSourceConfig::Remote { .. } => "remote",
+            };
+            registry.configure(rule_set.id.clone(), source);
+            if matches!(rule_set.source, RouteRuleSetSourceConfig::Inline) {
+                registry.succeeded(&rule_set.id);
+            }
+            if !matches!(rule_set.source, RouteRuleSetSourceConfig::Inline) {
+                triggers.insert(rule_set.id.clone(), Arc::new(tokio::sync::Notify::new()));
+            }
+        }
+        Self {
+            configured,
+            store,
+            controller: RuleSetController {
+                registry,
+                triggers: Arc::new(triggers),
+            },
+        }
+    }
+
+    pub(crate) fn controller(&self) -> RuleSetController {
+        self.controller.clone()
     }
 }
 
 impl Service for RuleSetService {
     fn start(&mut self, context: ServiceContext) -> BoxFuture<'_, Result<(), ServiceError>> {
         Box::pin(async move {
-            start_rule_set_lifecycles(&self.configured, self.store.clone(), &context.session_tasks)
-                .map_err(|error| ServiceError::new(format!("rule-set lifecycle: {error:?}")))
+            start_rule_set_lifecycles(
+                &self.configured,
+                self.store.clone(),
+                &context.session_tasks,
+                &self.controller,
+            )
+            .map_err(|error| ServiceError::new(format!("rule-set lifecycle: {error:?}")))
         })
     }
 
@@ -41,6 +95,7 @@ fn start_rule_set_lifecycles(
     configured: &[CompiledRouteRuleSet],
     store: RuleSetStore,
     tasks: &TaskScope,
+    controller: &RuleSetController,
 ) -> Result<(), ComposeError> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
@@ -65,6 +120,12 @@ fn start_rule_set_lifecycles(
                 *format,
                 normalized_interval(*reload_interval),
                 store.clone(),
+                controller.registry.clone(),
+                controller
+                    .triggers
+                    .get(&rule_set.id)
+                    .cloned()
+                    .expect("local trigger"),
             )),
             RouteRuleSetSourceConfig::Remote {
                 url,
@@ -79,6 +140,12 @@ fn start_rule_set_lifecycles(
                 PathBuf::from(cache_path),
                 client.clone(),
                 store.clone(),
+                controller.registry.clone(),
+                controller
+                    .triggers
+                    .get(&rule_set.id)
+                    .cloned()
+                    .expect("remote trigger"),
             )),
         }
     }
@@ -91,19 +158,29 @@ async fn watch_local_rule_set(
     format: RouteRuleSetFormat,
     interval: Duration,
     store: RuleSetStore,
+    registry: Arc<RuleSetRegistry>,
+    trigger: Arc<tokio::sync::Notify>,
 ) {
     let mut timer = tokio::time::interval(interval);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut loaded_signature = None;
     loop {
-        timer.tick().await;
+        let forced = tokio::select! {
+            _ = timer.tick() => false,
+            _ = trigger.notified() => true,
+        };
         let signature = file_signature(&path).await;
-        if signature == loaded_signature {
+        if !forced && signature == loaded_signature {
             continue;
         }
-        if let Ok(rule_set) = load_file(&path, format).await {
-            store.replace(id.clone(), rule_set);
-            loaded_signature = signature;
+        registry.updating(&id);
+        match load_file(&path, format).await {
+            Ok(rule_set) => {
+                store.replace(id.clone(), rule_set);
+                loaded_signature = signature;
+                registry.succeeded(&id);
+            }
+            Err(error) => registry.failed(&id, error),
         }
     }
 }
@@ -116,13 +193,19 @@ async fn update_remote_rule_set(
     cache_path: PathBuf,
     client: reqwest::Client,
     store: RuleSetStore,
+    registry: Arc<RuleSetRegistry>,
+    trigger: Arc<tokio::sync::Notify>,
 ) {
     let mut timer = tokio::time::interval(interval);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut etag = None;
     let mut last_modified = None;
     loop {
-        timer.tick().await;
+        tokio::select! {
+            _ = timer.tick() => {}
+            _ = trigger.notified() => {}
+        }
+        registry.updating(&id);
         let mut request = client.get(&url);
         if let Some(value) = etag.as_ref() {
             request = request.header(IF_NONE_MATCH, value);
@@ -130,24 +213,42 @@ async fn update_remote_rule_set(
         if let Some(value) = last_modified.as_ref() {
             request = request.header(IF_MODIFIED_SINCE, value);
         }
-        let Ok(response) = request.send().await else {
-            continue;
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                registry.failed(&id, error.to_string());
+                continue;
+            }
         };
         if response.status() == StatusCode::NOT_MODIFIED {
+            registry.succeeded(&id);
             continue;
         }
-        let Ok(response) = response.error_for_status() else {
-            continue;
+        let response = match response.error_for_status() {
+            Ok(response) => response,
+            Err(error) => {
+                registry.failed(&id, error.to_string());
+                continue;
+            }
         };
         let next_etag = response.headers().get(ETAG).cloned();
         let next_last_modified = response.headers().get(LAST_MODIFIED).cloned();
-        let Ok(bytes) = response.bytes().await else {
-            continue;
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                registry.failed(&id, error.to_string());
+                continue;
+            }
         };
-        let Ok(rule_set) = parse_rule_set(&bytes, format) else {
-            continue;
+        let rule_set = match parse_rule_set(&bytes, format) {
+            Ok(rule_set) => rule_set,
+            Err(error) => {
+                registry.failed(&id, error);
+                continue;
+            }
         };
         store.replace(id.clone(), rule_set);
+        registry.succeeded(&id);
         etag = next_etag;
         last_modified = next_last_modified;
         // Cache persistence is durability, not publication: a read-only cache
@@ -242,6 +343,8 @@ mod tests {
             RouteRuleSetFormat::Source,
             Duration::from_millis(20),
             store.clone(),
+            Arc::new(RuleSetRegistry::default()),
+            Arc::new(tokio::sync::Notify::new()),
         ));
         wait_for_match(&store, "first.test").await;
 
@@ -293,6 +396,8 @@ mod tests {
             cache.clone(),
             reqwest::Client::new(),
             store.clone(),
+            Arc::new(RuleSetRegistry::default()),
+            Arc::new(tokio::sync::Notify::new()),
         ));
         wait_for_match_in(&store, "remote", "remote.test").await;
         let cached = wait_for_file_content(&cache, "remote.test").await;

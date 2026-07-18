@@ -29,6 +29,9 @@ message GroupItem {
   string type = 2;
   int64 urlTestTime = 3;
   int32 urlTestDelay = 4;
+  uint32 consecutiveFailures = 5;
+  string lastError = 6;
+  int64 lastSuccessTime = 7;
 }
 
 message SelectOutboundRequest {

@@ -1,3 +1,4 @@
+use crate::DnsSocketProvider;
 use crate::{
     CachingResolver, DnsConfig, DnsError, DnsName, DnsQuery, DnsRecordType, DnsResponse,
     DnsTransport, FakeIpAllocator, HickoryTransport, RecordingResolver, Resolver, ReverseDns,
@@ -19,6 +20,13 @@ pub struct DnsSubsystem {
 
 impl DnsSubsystem {
     pub fn from_config(config: DnsConfig) -> Result<Self, DnsError> {
+        Self::from_config_with_sockets(config, HashMap::new())
+    }
+
+    pub fn from_config_with_sockets(
+        config: DnsConfig,
+        sockets: HashMap<String, Arc<dyn DnsSocketProvider>>,
+    ) -> Result<Self, DnsError> {
         let final_server = config
             .final_server
             .clone()
@@ -26,7 +34,12 @@ impl DnsSubsystem {
             .ok_or_else(|| DnsError::new("DNS needs at least one server or final_server"))?;
         let mut transports: HashMap<String, Arc<HickoryTransport>> = HashMap::new();
         for server in config.servers {
-            transports.insert(server.id.clone(), Arc::new(HickoryTransport::new(server)?));
+            let id = server.id.clone();
+            let mut transport = HickoryTransport::new(server)?;
+            if let Some(provider) = sockets.get(&id) {
+                transport = transport.with_socket_provider(provider.clone());
+            }
+            transports.insert(id, Arc::new(transport));
         }
         if !transports.contains_key(&final_server) {
             return Err(DnsError::new(format!(
@@ -94,7 +107,22 @@ impl DnsSubsystem {
             let record_type = match query.query_type() {
                 RecordType::A => Some(DnsRecordType::A),
                 RecordType::AAAA => Some(DnsRecordType::Aaaa),
-                _ => None,
+                RecordType::CNAME => Some(DnsRecordType::Cname),
+                RecordType::MX => Some(DnsRecordType::Mx),
+                RecordType::NS => Some(DnsRecordType::Ns),
+                RecordType::PTR => Some(DnsRecordType::Ptr),
+                RecordType::SOA => Some(DnsRecordType::Soa),
+                RecordType::SRV => Some(DnsRecordType::Srv),
+                RecordType::TXT => Some(DnsRecordType::Txt),
+                RecordType::CAA => Some(DnsRecordType::Caa),
+                RecordType::HTTPS => Some(DnsRecordType::Https),
+                RecordType::SVCB => Some(DnsRecordType::Svcb),
+                RecordType::NAPTR => Some(DnsRecordType::Naptr),
+                RecordType::TLSA => Some(DnsRecordType::Tlsa),
+                RecordType::DS => Some(DnsRecordType::Ds),
+                RecordType::DNSKEY => Some(DnsRecordType::Dnskey),
+                RecordType::ANY => Some(DnsRecordType::Any),
+                other => Some(DnsRecordType::Other(other.into())),
             };
             if let Some(record_type) = record_type {
                 let dns_query = DnsQuery {
@@ -103,7 +131,14 @@ impl DnsSubsystem {
                 };
                 match self.resolve(dns_query).await {
                     Ok(answer) => {
-                        for answer in answer.answers {
+                        for record in &answer.records {
+                            response.add_answer(record.clone());
+                        }
+                        for answer in answer
+                            .answers
+                            .into_iter()
+                            .filter(|_| answer.records.is_empty())
+                        {
                             let data = match answer.host {
                                 Host::Ip(IpAddress::V4(value)) => {
                                     Some(RData::A(A(std::net::Ipv4Addr::from(value))))

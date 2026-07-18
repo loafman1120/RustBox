@@ -80,6 +80,11 @@ password = "test-password"
 # url = "https://www.gstatic.com/generate_204"
 # interval_seconds = 300
 # tolerance_ms = 50
+# timeout_seconds = 10
+# concurrency = 4
+# failure_threshold = 2
+# cache_path = "state/auto-selected"
+# interrupt_exist_connections = false
 
 # VMess requires AEAD (alter_id = 0). VMess/VLESS/Trojan accept typed
 # websocket/http2/grpc/http-upgrade transports. VLESS supports
@@ -130,6 +135,8 @@ password = "test-password"
 # max_ttl_seconds = 3600
 #
 # [dns.fake_ip]
+# ipv6_pool = "fd00::/96"
+# state_file = "./state/fake-ip.json"
 # enabled = true
 # ipv4_pool = "198.18.0.0/15"
 # ttl_seconds = 60

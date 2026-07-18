@@ -1,20 +1,11 @@
 # RustBox Flutter
 
-Flutter FFI bindings for the RustBox proxy runtime. The package exposes a
-small, typed lifecycle API while the proxy engine, protocol implementations,
-routing, DNS, and platform integration run in Rust.
+Flutter FFI bindings for the RustBox proxy runtime. The Dart surface is a
+small lifecycle API; proxy protocols, routing, DNS, and platform integration
+remain in Rust.
 
 Native libraries are precompiled and bundled with the package. Applications
 using RustBox do not need Rust, Cargo, or a C toolchain to build.
-
-## Features
-
-- HTTP, SOCKS5, mixed, TUN, transparent, and AnyTLS inbounds
-- Direct, block, HTTP, SOCKS5, Shadowsocks, VMess, VLESS, Trojan, AnyTLS,
-  selector, and URL-test outbounds
-- Typed start, reload, stop, close, and runtime snapshot operations
-- Serialized calls per engine with support for multiple engine instances
-- Stable error categories suitable for application UI and recovery logic
 
 ## Supported platforms
 
@@ -23,15 +14,14 @@ using RustBox do not need Rust, Cargo, or a C toolchain to build.
 - Windows
 - Linux
 
-macOS support is temporarily disabled while its precompiled bridge
-packaging is stabilized. Web and OHOS are not supported. Consumers need
-Flutter 3.44 or newer and Dart 3.12 or newer.
+macOS, Web, and OHOS are not supported. Consumers need Flutter 3.44+ and Dart
+3.12+.
 
 ## Installation
 
 ```yaml
 dependencies:
-  rustbox_flutter: ^0.1.3
+  rustbox_flutter: ^0.1.4
 ```
 
 ## Usage
@@ -55,8 +45,10 @@ try {
 }
 ```
 
-`configToml` uses the same typed RustBox configuration accepted by the CLI.
-A minimal configuration looks like this:
+`configToml` is the same TOML configuration accepted by the RustBox CLI. For
+supported inbound, outbound, routing, and DNS options, use the repository
+[configuration examples](https://github.com/loafman1120/RustBox/tree/main/examples).
+A minimal configuration is:
 
 ```toml
 schema_version = 1
@@ -75,20 +67,20 @@ type = "default"
 outbound = "direct"
 ```
 
-Calls for one engine are serialized. Different engine objects may run
-concurrently. Always call `close` when an engine is no longer needed; repeated
-calls to `close` are safe.
+Calls for one engine are serialized; separate engines may run concurrently.
+Always call `close` when an engine is no longer needed. It is idempotent.
 
 ## Errors
 
-Native failures are translated to `RustBoxException`. Use `kind` to distinguish
-invalid configuration, invalid lifecycle state, temporarily unavailable
-resources, runtime failures, and unexpected bridge failures.
+Native failures become `RustBoxException`. Inspect `kind` to distinguish invalid
+configuration or lifecycle state from unavailable resources, runtime failures,
+and unexpected bridge failures.
 
 ## Development
 
-The Rust API is under `rust/src/api`; generated glue is under
-`rust/src/frb_generated.rs` and `lib/src/rust`. After changing the Rust API:
+The Rust API is in `rust/src/api`; generated glue is in `rust/src/frb_generated.rs`
+and `lib/src/rust`. After changing the bridge API, regenerate bindings and
+rebuild the native artifact for every supported platform:
 
 ```powershell
 flutter_rust_bridge_codegen generate
@@ -99,6 +91,5 @@ flutter analyze
 flutter test integration_test/simple_test.dart -d windows
 ```
 
-The Rust runtime, Dart runtime, and code generator use stable
-`flutter_rust_bridge` 2.12.0. Upgrade them together, regenerate the bindings,
-rebuild every native artifact, and validate every supported platform.
+`flutter_rust_bridge` is pinned to the 2.12 release line. Upgrade the Rust and
+Dart runtimes together, then regenerate and validate all artifacts.

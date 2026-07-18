@@ -8,6 +8,7 @@ mod fake_ip;
 mod model;
 mod resolver;
 mod reverse;
+mod socket;
 mod subsystem;
 mod transport;
 
@@ -16,6 +17,7 @@ pub use fake_ip::FakeIpAllocator;
 pub use model::*;
 pub use resolver::{RuleBasedResolver, StaticResolver};
 pub use reverse::{RecordingResolver, ReverseDns};
+pub use socket::{DnsSocketProvider, SocketFuture};
 pub use subsystem::DnsSubsystem;
 pub use transport::HickoryTransport;
 
@@ -34,11 +36,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fake_ip_allocates_stable_answers_and_reverse_mapping() {
+    #[tokio::test]
+    async fn fake_ip_allocates_stable_answers_and_reverse_mapping() {
         let allocator = FakeIpAllocator::new(FakeIpConfig {
             enabled: true,
             ipv4_pool: IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 30).expect("cidr"),
+            ipv6_pool: None,
+            state_file: None,
             ttl_seconds: 60,
         })
         .expect("allocator");
@@ -46,12 +50,63 @@ mod tests {
             name: DnsName::new("example.test").expect("name"),
             record_type: DnsRecordType::A,
         };
-        let first = allocator.resolve(query.clone()).expect("first");
-        assert_eq!(first, allocator.resolve(query).expect("second"));
+        let first = allocator.resolve(query.clone()).await.expect("first");
+        assert_eq!(first, allocator.resolve(query).await.expect("second"));
         let Host::Ip(address) = first.answers[0].host else {
             panic!("fake ip answer")
         };
-        assert_eq!(allocator.lookup(address).as_deref(), Some("example.test"));
+        assert_eq!(
+            allocator.lookup(address).await.as_deref(),
+            Some("example.test")
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_ip_restores_ipv4_and_ipv6_mappings() {
+        let path = std::env::temp_dir().join(format!(
+            "rustbox-fake-ip-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let config = FakeIpConfig {
+            enabled: true,
+            ipv4_pool: IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 24).expect("v4"),
+            ipv6_pool: Some(
+                IpCidr::new(
+                    IpAddress::V6([0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                    120,
+                )
+                .expect("v6"),
+            ),
+            state_file: Some(path.clone()),
+            ttl_seconds: 60,
+        };
+        let query = |record_type| DnsQuery {
+            name: DnsName::new("persistent.example").expect("name"),
+            record_type,
+        };
+        let first = FakeIpAllocator::new(config.clone()).expect("first allocator");
+        let v4 = first.resolve(query(DnsRecordType::A)).await.expect("v4");
+        let v6 = first.resolve(query(DnsRecordType::Aaaa)).await.expect("v6");
+        let restored = FakeIpAllocator::new(config).expect("restored allocator");
+        assert_eq!(
+            v4,
+            restored
+                .resolve(query(DnsRecordType::A))
+                .await
+                .expect("restored v4")
+        );
+        assert_eq!(
+            v6,
+            restored
+                .resolve(query(DnsRecordType::Aaaa))
+                .await
+                .expect("restored v6")
+        );
+        tokio::fs::remove_file(path).await.expect("cleanup");
     }
 
     #[test]
@@ -109,6 +164,7 @@ mod tests {
                     host: Host::Ip(IpAddress::V4([203, 0, 113, 1])),
                     ttl_seconds: 30,
                 }],
+                records: Vec::new(),
             })
         }
     }

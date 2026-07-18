@@ -115,7 +115,12 @@ impl RustBox {
             outbound_count: runtime.outbound_count(),
         };
         let control_grpc = options.control_grpc.map(|options| {
-            ControlGrpcService::new(options, snapshot.clone(), runtime.outbound_groups())
+            ControlGrpcService::new(
+                options,
+                snapshot.clone(),
+                runtime.outbound_groups(),
+                runtime.rule_sets(),
+            )
         });
         Ok(Self {
             source,
@@ -152,7 +157,7 @@ impl RustBox {
     }
 
     /// Wait for the next coarse control command issued through the configured API.
-    pub async fn next_control_command(&mut self) -> Option<EngineCommand> {
+    pub async fn next_control_command(&mut self) -> Option<rustbox_control_api::ControlCommand> {
         match &mut self.control_grpc {
             Some(service) => service.next_command().await,
             None => None,
@@ -176,6 +181,7 @@ impl RustBox {
             .compose_source(self.source.clone())?;
             if let Some(control) = &self.control_grpc {
                 control.replace_outbound_groups(runtime.outbound_groups());
+                control.replace_rule_sets(runtime.rule_sets());
             }
             self.runtime = RuntimeSupervisor::new(runtime);
             self.snapshot.inbound_count = self.runtime.service_count();
@@ -245,12 +251,53 @@ impl RustBox {
         self.source = source;
         if let Some(control) = &self.control_grpc {
             control.replace_outbound_groups(self.runtime.outbound_groups());
+            control.replace_rule_sets(self.runtime.rule_sets());
         }
         self.snapshot.generation = next_generation;
         self.snapshot.inbound_count = self.runtime.service_count();
         self.snapshot.outbound_count = self.runtime.outbound_count();
         self.sync_control_snapshot();
         Ok(())
+    }
+
+    /// Cancel a single active flow through the kernel's Tokio cancellation token.
+    pub fn close_connection(&self, flow_id: u64) -> bool {
+        self.runtime.close_connection(flow_id)
+    }
+
+    /// Execute a command received from any control transport.
+    pub async fn apply_control_command(
+        &mut self,
+        command: EngineCommand,
+    ) -> Result<bool, RustBoxError> {
+        match command {
+            EngineCommand::Reload(source) => {
+                self.reload(source).await?;
+                Ok(true)
+            }
+            EngineCommand::CloseConnection(flow_id) => Ok(self.close_connection(flow_id)),
+            EngineCommand::RefreshRuleSet(tag) => Ok(self.runtime.refresh_rule_set(&tag)),
+            EngineCommand::TriggerUrlTest(tag) => Ok(self.runtime.trigger_urltest(&tag)),
+            EngineCommand::Stop => {
+                self.stop().await?;
+                Ok(true)
+            }
+            EngineCommand::ReplaceRouteTable(_)
+            | EngineCommand::EnableOutbound(_)
+            | EngineCommand::DisableOutbound(_) => Ok(false),
+        }
+    }
+
+    pub async fn apply_control_request(
+        &mut self,
+        request: rustbox_control_api::ControlCommand,
+    ) -> Result<bool, RustBoxError> {
+        let result = self.apply_control_command(request.command.clone()).await;
+        match &result {
+            Ok(accepted) => request.respond(Ok(*accepted)),
+            Err(error) => request.respond(Err(format!("{error:?}"))),
+        }
+        result
     }
 
     fn sync_control_snapshot(&self) {

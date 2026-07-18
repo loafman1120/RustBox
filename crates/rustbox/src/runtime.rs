@@ -1,5 +1,5 @@
 use crate::ComposeError;
-use rustbox_control::OutboundGroupRegistry;
+use rustbox_control::{OutboundGroupRegistry, RuleSetRegistry};
 use rustbox_dns_core::{DnsQuery, DnsResponse, DnsSubsystem};
 use rustbox_inspect::FlowEnricher;
 use rustbox_kernel::{Engine, Service, ServiceContext, ServiceError, TaskScope};
@@ -19,6 +19,8 @@ pub(crate) struct ComposedRuntime {
     services: Vec<Box<dyn Service>>,
     accept_tasks: TaskScope,
     session_tasks: TaskScope,
+    urltest: crate::urltest::UrlTestController,
+    rule_sets: crate::ruleset::RuleSetController,
 }
 
 impl ComposedRuntime {
@@ -28,6 +30,8 @@ impl ComposedRuntime {
         outbound_groups: Arc<OutboundGroupRegistry>,
         dns: Option<Arc<DnsSubsystem>>,
         session_tasks: TaskScope,
+        urltest: crate::urltest::UrlTestController,
+        rule_sets: crate::ruleset::RuleSetController,
     ) -> Self {
         Self {
             generation: 0,
@@ -37,6 +41,8 @@ impl ComposedRuntime {
             services,
             accept_tasks: TaskScope::new(),
             session_tasks,
+            urltest,
+            rule_sets,
         }
     }
 
@@ -50,6 +56,22 @@ impl ComposedRuntime {
 
     pub(crate) fn outbound_groups(&self) -> Arc<OutboundGroupRegistry> {
         self.outbound_groups.clone()
+    }
+
+    pub(crate) fn close_connection(&self, flow_id: u64) -> bool {
+        self.engine.cancel_flow(flow_id)
+    }
+
+    pub(crate) fn trigger_urltest(&self, tag: &str) -> bool {
+        self.urltest.trigger(tag)
+    }
+
+    pub(crate) fn refresh_rule_set(&self, tag: &str) -> bool {
+        self.rule_sets.refresh(tag)
+    }
+
+    pub(crate) fn rule_sets(&self) -> Arc<RuleSetRegistry> {
+        self.rule_sets.registry()
     }
 
     pub(crate) fn service_count(&self) -> usize {
@@ -123,8 +145,13 @@ impl ComposedRuntime {
 /// 管理 active generation 和后台排空的旧 generation。
 pub(crate) struct RuntimeSupervisor {
     active: Option<ComposedRuntime>,
-    retired: Vec<JoinHandle<Result<(), ComposeError>>>,
+    retired: Vec<RetiredRuntime>,
     retired_errors: Vec<String>,
+}
+
+struct RetiredRuntime {
+    engine: Arc<Engine<FlowEnricher>>,
+    task: JoinHandle<Result<(), ComposeError>>,
 }
 
 impl RuntimeSupervisor {
@@ -152,6 +179,35 @@ impl RuntimeSupervisor {
         self.active
             .as_ref()
             .map(ComposedRuntime::outbound_groups)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn close_connection(&self, flow_id: u64) -> bool {
+        let active = self
+            .active
+            .as_ref()
+            .is_some_and(|runtime| runtime.close_connection(flow_id));
+        self.retired.iter().fold(active, |found, retired| {
+            retired.engine.cancel_flow(flow_id) || found
+        })
+    }
+
+    pub(crate) fn trigger_urltest(&self, tag: &str) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|runtime| runtime.trigger_urltest(tag))
+    }
+
+    pub(crate) fn refresh_rule_set(&self, tag: &str) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|runtime| runtime.refresh_rule_set(tag))
+    }
+
+    pub(crate) fn rule_sets(&self) -> Arc<RuleSetRegistry> {
+        self.active
+            .as_ref()
+            .map(ComposedRuntime::rule_sets)
             .unwrap_or_default()
     }
 
@@ -184,7 +240,11 @@ impl RuntimeSupervisor {
     ) -> Result<(), ComposeError> {
         if let Some(mut current) = self.active.take() {
             current.retire().await;
-            self.retired.push(tokio::spawn(current.finish()));
+            let engine = current.engine.clone();
+            self.retired.push(RetiredRuntime {
+                engine,
+                task: tokio::spawn(current.finish()),
+            });
         }
         next.set_generation(generation);
         if let Err(error) = next.start().await {
@@ -205,8 +265,8 @@ impl RuntimeSupervisor {
                 errors.push(format!("{error:?}"));
             }
         }
-        for task in self.retired.drain(..) {
-            match task.await {
+        for retired in self.retired.drain(..) {
+            match retired.task.await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => errors.push(format!("{error:?}")),
                 Err(error) => errors.push(format!("retired generation task failed: {error}")),
@@ -221,9 +281,9 @@ impl RuntimeSupervisor {
 
     async fn reap_finished(&mut self) {
         let mut pending = Vec::new();
-        for task in self.retired.drain(..) {
-            if task.is_finished() {
-                match task.await {
+        for retired in self.retired.drain(..) {
+            if retired.task.is_finished() {
+                match retired.task.await {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => self.retired_errors.push(format!("{error:?}")),
                     Err(error) => self
@@ -231,7 +291,7 @@ impl RuntimeSupervisor {
                         .push(format!("retired generation task failed: {error}")),
                 }
             } else {
-                pending.push(task);
+                pending.push(retired);
             }
         }
         self.retired = pending;

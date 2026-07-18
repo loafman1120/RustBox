@@ -66,6 +66,7 @@ mod tests {
                 source: "127.0.0.1:1000".to_string(),
                 destination: "example.test:443".to_string(),
                 network: "Tcp".to_string(),
+                inbound: "http-in".to_string(),
             },
         )));
         block_on_ready(store.emit(Event::new(
@@ -137,6 +138,7 @@ mod tests {
                     source: "127.0.0.1:1000".to_string(),
                     destination: "example.test:443".to_string(),
                     network: "Tcp".to_string(),
+                    inbound: "http-in".to_string(),
                 },
             )));
             block_on_ready(store.emit(Event::new(
