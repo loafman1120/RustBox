@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 prost = "0.14.4"
 rustbox-control = { path = "../rustbox-control" }
+rustbox-control-service = { path = "../rustbox-control-service" }
 rustbox-config-file = { path = "../../rustbox-config-file" }
 rustbox-kernel = { path = "../../kernel/rustbox-kernel" }
 rustbox-observability = { path = "../../rustbox-observability" }
@@ -14,6 +15,7 @@ tokio = { version = "1", features = ["net", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.14.6", features = ["transport"] }
 tonic-prost = "0.14.6"
+tonic-reflection = "0.14.0"
 sysinfo = "0.37"
 
 [build-dependencies]
@@ -22,6 +24,7 @@ protoc-bin-vendored = "3.2.0"
 tonic-prost-build = "0.14.6"
 
 [dev-dependencies]
+prost-types = "0.14.4"
 rustbox-types = { path = "../../foundation/rustbox-types" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

@@ -3,6 +3,7 @@ mod observability;
 
 use observability::ObservabilityArgs;
 use rustbox::{RustBox, RustBoxOptions};
+use rustbox_clash_api::ClashApiConfig;
 use rustbox_config_file::{load_toml_file, load_toml_source};
 use rustbox_control::EngineCommand;
 use rustbox_control_api::{AuthPolicy, ControlApiConfig};
@@ -14,12 +15,14 @@ use std::path::PathBuf;
 async fn main() {
     init_tracing();
     let cli = Cli::parse();
+    let control_token = cli
+        .control
+        .control_token
+        .clone()
+        .or_else(|| std::env::var("RUSTBOX_CONTROL_TOKEN").ok());
     let control_api_config = cli.control.control_grpc.map(|listen| {
-        let auth = cli
-            .control
-            .control_token
+        let auth = control_token
             .clone()
-            .or_else(|| std::env::var("RUSTBOX_CONTROL_TOKEN").ok())
             .map_or_else(AuthPolicy::disabled, AuthPolicy::bearer_token);
         ControlApiConfig {
             listen,
@@ -27,6 +30,19 @@ async fn main() {
             ..ControlApiConfig::default()
         }
     });
+    let clash_api_config = cli.control.clash_api.map(|listen| ClashApiConfig {
+        listen,
+        secret: control_token.clone(),
+        cors_allowed_origins: cli.control.clash_cors_origin.clone(),
+    });
+    if control_token.is_some() && control_api_config.is_none() && clash_api_config.is_none() {
+        Cli::command()
+            .error(
+                ErrorKind::ArgumentConflict,
+                "--control-token requires --control-grpc or --clash-api",
+            )
+            .exit();
+    }
     let (mut runtime, listen) = match cli.command {
         CliCommand::PlatformCapabilities => {
             print_platform_capabilities();
@@ -56,7 +72,10 @@ async fn main() {
                 .unwrap_or_else(|err| Cli::command().error(ErrorKind::ValueValidation, err).exit());
             let mut options = RustBoxOptions::default().with_observability(observability.sink);
             if let Some(config) = control_api_config {
-                options = options.with_control_grpc(config, observability.store);
+                options = options.with_control_grpc(config, observability.store.clone());
+            }
+            if let Some(config) = clash_api_config {
+                options = options.with_clash_api(config, observability.store);
             }
             (
                 RustBox::with_options(file_config.source, options).expect("compose config file"),
@@ -69,9 +88,13 @@ async fn main() {
     if let Some(listen) = runtime.control_grpc_addr() {
         tracing::info!(%listen, "RustBox control gRPC listening");
     }
+    if let Some(listen) = runtime.clash_api_addr() {
+        tracing::info!(%listen, "RustBox Clash API listening");
+    }
 
     tracing::info!(message = listen, "RustBox started");
-    let control_enabled = runtime.control_grpc_addr().is_some();
+    let control_enabled =
+        runtime.control_grpc_addr().is_some() || runtime.clash_api_addr().is_some();
     let stop_reason = loop {
         tokio::select! {
             result = tokio::signal::ctrl_c() => {
@@ -129,8 +152,14 @@ struct ControlArgs {
     #[arg(long, value_name = "ADDR", global = true)]
     control_grpc: Option<SocketAddr>,
 
-    #[arg(long, value_name = "TOKEN", global = true, requires = "control_grpc")]
+    #[arg(long, value_name = "ADDR", global = true)]
+    clash_api: Option<SocketAddr>,
+
+    #[arg(long, value_name = "TOKEN", global = true)]
     control_token: Option<String>,
+
+    #[arg(long, value_name = "ORIGIN", global = true, requires = "clash_api")]
+    clash_cors_origin: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]

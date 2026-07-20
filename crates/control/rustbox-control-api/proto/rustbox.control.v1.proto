@@ -2,21 +2,41 @@ syntax = "proto3";
 
 package rustbox.control.v1;
 
+// Native RustBox control and observability service.
+//
+// Observe methods require the observe bearer token when authentication is enabled.
+// Mutating methods require the control bearer token. Tokens are sent as gRPC metadata
+// using `authorization: Bearer <token>`.
 service RustBoxControl {
+  // Return cumulative engine and traffic counters.
   rpc GetMetrics(GetMetricsRequest) returns (MetricsSnapshot);
+  // Return retained active and recently completed connection snapshots.
   rpc ListConnections(ListConnectionsRequest) returns (ListConnectionsResponse);
+  // Query retained structured events using optional filters.
   rpc QueryEvents(QueryEventsRequest) returns (QueryEventsResponse);
+  // Return metrics, connections, and recent events in one snapshot.
   rpc GetObservabilitySnapshot(GetObservabilitySnapshotRequest) returns (ObservabilitySnapshot);
+  // Return the current engine lifecycle snapshot.
   rpc GetEngineSnapshot(GetEngineSnapshotRequest) returns (EngineSnapshot);
+  // Request an orderly engine shutdown.
   rpc Stop(StopRequest) returns (EngineSnapshot);
+  // Parse and atomically reload a RustBox TOML configuration.
   rpc Reload(ReloadRequest) returns (EngineSnapshot);
+  // Cancel one connection by flow identifier.
   rpc CloseConnection(CloseConnectionRequest) returns (CloseConnectionResponse);
+  // Stream initial connection state followed by updates.
   rpc WatchConnections(WatchConnectionsRequest) returns (stream ConnectionUpdate);
+  // Stream total and per-tag traffic rates at the requested interval.
   rpc StreamTraffic(StreamTrafficRequest) returns (stream TrafficSnapshot);
+  // Stream structured runtime events matching the requested filters.
   rpc StreamLogs(StreamLogsRequest) returns (stream Event);
+  // Return engine status, uptime, memory, and store occupancy.
   rpc GetRuntimeStatus(GetRuntimeStatusRequest) returns (RuntimeStatus);
+  // List runtime rule-set refresh state.
   rpc ListRuleSets(ListRuleSetsRequest) returns (ListRuleSetsResponse);
+  // Refresh one configured rule set.
   rpc RefreshRuleSet(RefreshRuleSetRequest) returns (OperationResponse);
+  // Trigger a real outbound URL test for one URLTest group.
   rpc TriggerUrlTest(TriggerUrlTestRequest) returns (OperationResponse);
 }
 

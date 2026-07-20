@@ -1,5 +1,6 @@
 use crate::ComposeError;
 use rustbox_control::{OutboundGroupRegistry, RuleSetRegistry};
+use rustbox_control_service::OutboundProbe;
 use rustbox_dns_core::{DnsQuery, DnsResponse, DnsSubsystem};
 use rustbox_inspect::FlowEnricher;
 use rustbox_kernel::{Engine, Service, ServiceContext, ServiceError, TaskScope};
@@ -62,8 +63,16 @@ impl ComposedRuntime {
         self.engine.cancel_flow(flow_id)
     }
 
+    pub(crate) fn close_all_connections(&self) -> usize {
+        self.engine.cancel_all_flows()
+    }
+
     pub(crate) fn trigger_urltest(&self, tag: &str) -> bool {
         self.urltest.trigger(tag)
+    }
+
+    pub(crate) fn outbound_probe(&self) -> Arc<dyn OutboundProbe> {
+        Arc::new(self.urltest.clone())
     }
 
     pub(crate) fn refresh_rule_set(&self, tag: &str) -> bool {
@@ -192,10 +201,27 @@ impl RuntimeSupervisor {
         })
     }
 
+    pub(crate) fn close_all_connections(&self) -> usize {
+        let active = self
+            .active
+            .as_ref()
+            .map_or(0, ComposedRuntime::close_all_connections);
+        self.retired.iter().fold(active, |count, retired| {
+            count.saturating_add(retired.engine.cancel_all_flows())
+        })
+    }
+
     pub(crate) fn trigger_urltest(&self, tag: &str) -> bool {
         self.active
             .as_ref()
             .is_some_and(|runtime| runtime.trigger_urltest(tag))
+    }
+
+    pub(crate) fn outbound_probe(&self) -> Arc<dyn OutboundProbe> {
+        self.active
+            .as_ref()
+            .map(ComposedRuntime::outbound_probe)
+            .unwrap_or_else(|| Arc::new(crate::urltest::UrlTestController::default()))
     }
 
     pub(crate) fn refresh_rule_set(&self, tag: &str) -> bool {

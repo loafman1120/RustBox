@@ -12,6 +12,8 @@ rustbox-config = { path = "../control/rustbox-config" }
 rustbox-config-file = { path = "../rustbox-config-file" }
 rustbox-control = { path = "../control/rustbox-control" }
 rustbox-control-api = { path = "../control/rustbox-control-api" }
+rustbox-control-service = { path = "../control/rustbox-control-service" }
+rustbox-clash-api = { path = "../control/rustbox-clash-api" }
 rustbox-dns-core = { path = "../modules/dns/rustbox-dns-core" }
 rustbox-inbound-http = { path = "../modules/inbound/rustbox-inbound-http" }
 rustbox-inbound-anytls = { path = "../modules/inbound/rustbox-inbound-anytls" }

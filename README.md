@@ -80,7 +80,7 @@ Inbound types:
 Outbound types:
 
 `direct`, `block`, `socks5`, `http`, `shadowsocks`, `vmess`, `vless`,
-`trojan`, `anytls`, `hysteria2`, `tuic`, `naive`, `shadow-tls`, `wireguard`,
+`trojan`, `anytls`, `hysteria2`, `tuic`, `naive`, `shadowtls`, `wireguard`,
 `selector`, `urltest`
 
 The routing layer supports inline, local, remote, sing-box source, and SRS rule
@@ -131,20 +131,52 @@ API changes. See the [Flutter package README](apps/rustbox-flutter/README.md).
 
 ## Control API
 
-Start the sing-box-compatible gRPC control service with:
+Start the native/sing-box-compatible gRPC service and the Clash/Mihomo-compatible
+HTTP/WebSocket service with:
 
 ```powershell
-cargo run -p rustbox-app -- --control-grpc 127.0.0.1:19090 `
+cargo run -p rustbox-app -- `
+  --control-grpc 127.0.0.1:19090 `
+  --clash-api 127.0.0.1:9090 `
   run --config examples/rustbox.toml
 ```
 
-Add `--control-token <token>` for bearer authentication. `daemon.StartedService`
+Add `--control-token <token>` for bearer authentication on both transports.
+Use repeated `--clash-cors-origin <origin>` arguments when a browser dashboard
+is hosted on another origin. Non-loopback listeners require a token.
+
+The Clash listener serves code-generated OpenAPI 3.1 documentation at
+`/docs/openapi.json` and a vendored, offline-capable Swagger UI at `/docs`.
+The gRPC listener enables the standard v1 reflection service, so tools can discover
+both RPC contracts without a separate schema path:
+
+```powershell
+grpcurl -plaintext 127.0.0.1:19090 list
+grpcurl -plaintext 127.0.0.1:19090 describe rustbox.control.v1.RustBoxControl
+```
+
+When authentication is enabled, pass
+`-H "authorization: Bearer <token>"` for RPC calls. Reflection and the generated
+HTTP documentation expose schemas only; runtime API operations retain their normal
+authorization policy.
+
+The Clash API provides Mihomo-shaped version/config, traffic, memory, log,
+connection, proxy/group, rule, and provider endpoints. Streaming endpoints work
+over both newline-delimited HTTP and WebSocket; selector changes, connection
+cancellation, rule-set refresh, TOML payload reload, and real outbound latency
+tests are connected to the same runtime command/state graph as gRPC.
+
+`daemon.StartedService`
 keeps the sing-box-compatible selector/group wire contract. The native
 `rustbox.control.v1.RustBoxControl` service additionally provides active connection
 listing and cancellation, connection/log/traffic server streams, per-inbound and
 per-outbound counters, process memory and engine status, rule-set status/manual
 refresh, manual URLTest triggering, reload, and stop. URLTest probes use the real
 outbound paths and can persist the selected child with `cache_path`.
+
+The detailed compatibility contract and intentionally unsupported Mihomo host
+management endpoints are documented in
+[`docs/clash-api-compat.md`](docs/clash-api-compat.md).
 
 ## Development
 

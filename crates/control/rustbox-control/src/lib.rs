@@ -17,6 +17,7 @@ use rustbox_types::OutboundId;
 pub enum EngineCommand {
     Reload(Box<SourceConfig>),
     CloseConnection(u64),
+    CloseAllConnections,
     RefreshRuleSet(String),
     TriggerUrlTest(String),
     Stop,
@@ -133,7 +134,7 @@ impl ControlState {
             EngineCommand::Stop => {
                 self.snapshot.state = EngineState::Stopping;
             }
-            EngineCommand::CloseConnection(_) => {}
+            EngineCommand::CloseConnection(_) | EngineCommand::CloseAllConnections => {}
             EngineCommand::RefreshRuleSet(_) | EngineCommand::TriggerUrlTest(_) => {}
             EngineCommand::ReplaceRouteTable(_)
             | EngineCommand::EnableOutbound(_)

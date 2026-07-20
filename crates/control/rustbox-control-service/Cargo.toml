@@ -1,0 +1,14 @@
+[package]
+name = "rustbox-control-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustbox-config = { path = "../rustbox-config" }
+rustbox-control = { path = "../rustbox-control" }
+rustbox-observability = { path = "../../rustbox-observability" }
+tokio = { version = "1", features = ["sync"] }
+
+[lints]
+workspace = true

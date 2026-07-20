@@ -187,6 +187,18 @@ pub struct ConnectionStats {
     pub error: Option<String>,
     pub inbound: String,
     pub outbound: Option<String>,
+    pub source_host: String,
+    pub source_port: u16,
+    pub destination_host: String,
+    pub destination_port: u16,
+    pub domain: Option<String>,
+    pub protocol: Option<String>,
+    pub process: Option<String>,
+    pub process_path: Option<String>,
+    pub user_id: Option<u32>,
+    pub started_at_unix_ms: i64,
+    pub outbound_chain: Vec<String>,
+    pub rule_index: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,6 +247,14 @@ struct ObservabilityStoreInner {
     outbound_traffic: HashMap<String, TagTraffic>,
 }
 
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
 impl ObservabilityStoreInner {
     fn apply_event(&mut self, event: &Event) {
         match &event.kind {
@@ -251,6 +271,15 @@ impl ObservabilityStoreInner {
             EventKind::FlowAccepted {
                 source,
                 destination,
+                source_host,
+                source_port,
+                destination_host,
+                destination_port,
+                domain,
+                protocol,
+                process,
+                process_path,
+                user_id,
                 network,
                 inbound,
             } => {
@@ -271,11 +300,28 @@ impl ObservabilityStoreInner {
                             error: None,
                             inbound: inbound.clone(),
                             outbound: None,
+                            source_host: source_host.clone(),
+                            source_port: *source_port,
+                            destination_host: destination_host.clone(),
+                            destination_port: *destination_port,
+                            domain: domain.clone(),
+                            protocol: protocol.clone(),
+                            process: process.clone(),
+                            process_path: process_path.clone(),
+                            user_id: *user_id,
+                            started_at_unix_ms: now_unix_ms(),
+                            outbound_chain: Vec::new(),
+                            rule_index: None,
                         },
                     );
                 }
             }
-            EventKind::RouteSelected { outbound, .. } => {
+            EventKind::RouteSelected {
+                outbound,
+                outbound_chain,
+                rule_index,
+                ..
+            } => {
                 self.metrics.routes_selected = self.metrics.routes_selected.saturating_add(1);
                 if let Some(connection) = event
                     .flow_id
@@ -283,6 +329,8 @@ impl ObservabilityStoreInner {
                     .and_then(|flow_id| self.connections.get_mut(&flow_id))
                 {
                     connection.outbound = outbound.clone();
+                    connection.outbound_chain = outbound_chain.clone();
+                    connection.rule_index = *rule_index;
                 }
             }
             EventKind::OutboundConnecting { .. } => {

@@ -30,7 +30,9 @@ impl Router for RuntimeRouter {
     fn route_step(&self, flow: &FlowMeta, start_rule: usize) -> RouteStep {
         let mut step = self.table.route_step(flow, start_rule);
         if let RouteAction::Final(decision) = &mut step.action {
-            *decision = self.groups.resolve(decision.clone());
+            let (resolved, chain) = self.groups.resolve_with_chain(decision.clone());
+            *decision = resolved;
+            step.outbound_chain = chain;
         }
         step
     }

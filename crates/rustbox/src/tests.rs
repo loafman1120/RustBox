@@ -1,4 +1,5 @@
 use super::*;
+use rustbox_clash_api::ClashApiConfig;
 use rustbox_config::{
     ConfigError, DnsCacheConfig, DnsConfig, DnsRuleConfig, DnsRuleMatcher, DnsServerConfig,
     DnsServerProtocol, FakeIpConfig, InboundConfig, InboundConfigKind, OutboundConfig,
@@ -237,6 +238,38 @@ async fn owns_control_grpc_lifecycle() {
         "Tokio listener should expose the OS-assigned port"
     );
     runtime.stop().await.expect("stop runtime and control gRPC");
+    assert_eq!(runtime.snapshot().state, EngineState::Stopped);
+}
+
+#[tokio::test]
+async fn owns_clash_api_lifecycle_and_serves_version() {
+    let config = ClashApiConfig {
+        listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+        ..ClashApiConfig::default()
+    };
+    let expected_listen = config.listen;
+    let options =
+        RustBoxOptions::default().with_clash_api(config, Arc::new(ObservabilityStore::default()));
+    let mut runtime = RustBox::with_options(
+        SourceConfig::default_http_proxy(Endpoint::localhost_v4(0)),
+        options,
+    )
+    .expect("compose with Clash API");
+
+    assert_eq!(runtime.clash_api_addr(), Some(expected_listen));
+    runtime.start().await.expect("start runtime and Clash API");
+    let address = runtime.clash_api_addr().expect("Clash API address");
+    assert_ne!(address.port(), 0);
+    let response = reqwest::get(format!("http://{address}/version"))
+        .await
+        .expect("request Clash version")
+        .text()
+        .await
+        .expect("read Clash version");
+    assert!(response.contains("\"meta\":true"));
+    assert!(response.contains("\"version\":\"RustBox "));
+
+    runtime.stop().await.expect("stop runtime and Clash API");
     assert_eq!(runtime.snapshot().state, EngineState::Stopped);
 }
 

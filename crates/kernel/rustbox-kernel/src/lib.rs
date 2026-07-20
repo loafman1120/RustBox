@@ -191,6 +191,15 @@ impl<E: MetadataEnricher> Engine<E> {
         }
     }
 
+    /// Cancel every flow currently owned by this engine generation.
+    pub fn cancel_all_flows(&self) -> usize {
+        let flows = self.active_flows.lock().expect("active flow registry");
+        for token in flows.values() {
+            token.cancel();
+        }
+        flows.len()
+    }
+
     async fn execute_flow(&self, flow: Flow) -> Result<FlowOutcome, FlowError> {
         let flow_id = flow.meta.id;
         let cancellation = CancellationToken::new();
@@ -234,23 +243,6 @@ impl<E: MetadataEnricher> Engine<E> {
 
     async fn execute_flow_inner(&self, flow: Flow) -> Result<FlowOutcome, FlowError> {
         // 关键数据面路径：接收 Flow -> 增强元数据 -> 路由 -> 打开 outbound -> relay。
-        self.emit(
-            EventLevel::Info,
-            "rustbox.kernel.flow",
-            Some(flow.meta.id),
-            EventKind::FlowAccepted {
-                source: flow.meta.source.to_string(),
-                destination: flow.meta.destination.to_string(),
-                network: format!("{:?}", flow.meta.network),
-                inbound: self
-                    .inbound_labels
-                    .get(&flow.meta.inbound)
-                    .cloned()
-                    .unwrap_or_else(|| flow.meta.inbound.to_string()),
-            },
-        )
-        .await;
-
         let flow = resolve_datagram_destination(flow).await?;
         let flow = self
             .enrichment
@@ -258,13 +250,55 @@ impl<E: MetadataEnricher> Engine<E> {
             .await
             .map_err(FlowError::Inspect)?;
         let mut meta = flow.meta;
+        self.emit(
+            EventLevel::Info,
+            "rustbox.kernel.flow",
+            Some(meta.id),
+            EventKind::FlowAccepted {
+                source: meta.source.to_string(),
+                destination: meta.destination.to_string(),
+                source_host: meta.source.host.to_string(),
+                source_port: meta.source.port,
+                destination_host: meta.destination.host.to_string(),
+                destination_port: meta.destination.port,
+                domain: meta.domain.as_ref().map(ToString::to_string),
+                protocol: meta.protocol_hint.map(|value| format!("{value:?}")),
+                process: meta
+                    .platform
+                    .process
+                    .as_ref()
+                    .and_then(|value| value.name.clone()),
+                process_path: meta
+                    .platform
+                    .process
+                    .as_ref()
+                    .and_then(|value| value.path.clone()),
+                user_id: meta
+                    .platform
+                    .process
+                    .as_ref()
+                    .and_then(|value| value.user_id),
+                network: format!("{:?}", meta.network),
+                inbound: self
+                    .inbound_labels
+                    .get(&meta.inbound)
+                    .cloned()
+                    .unwrap_or_else(|| meta.inbound.to_string()),
+            },
+        )
+        .await;
+
         let mut route_options = RouteOptions::default();
         let mut next_rule = 0;
-        let decision = loop {
+        let (decision, matched_rule_index, outbound_chain) = loop {
             let step = self.router.route_step(&meta, next_rule);
             next_rule = step.next_rule;
+            let matched_rule_index = step.matched_rule_index;
+            let outbound_chain = step.outbound_chain;
             match step.action {
-                RouteAction::Final(decision) => break decision,
+                RouteAction::Final(decision) => {
+                    break (decision, matched_rule_index, outbound_chain);
+                }
                 RouteAction::Options(options) => {
                     apply_route_options(&mut meta, &mut route_options, options);
                 }
@@ -306,6 +340,16 @@ impl<E: MetadataEnricher> Engine<E> {
                     ),
                     _ => None,
                 },
+                outbound_chain: outbound_chain
+                    .iter()
+                    .map(|id| {
+                        self.outbound_labels
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| id.to_string())
+                    })
+                    .collect(),
+                rule_index: matched_rule_index,
             },
         )
         .await;

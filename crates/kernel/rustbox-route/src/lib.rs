@@ -51,6 +51,10 @@ pub enum ResolveStrategy {
 pub struct RouteStep {
     pub action: RouteAction,
     pub next_rule: usize,
+    /// Index of the rule that produced this step. `None` means the table default.
+    pub matched_rule_index: Option<usize>,
+    /// Resolved outbound chain in Clash order: leaf first, outer group last.
+    pub outbound_chain: Vec<OutboundId>,
 }
 
 /// 纯路由决策接口。
@@ -61,6 +65,8 @@ pub trait Router: Send + Sync {
         RouteStep {
             action: RouteAction::Final(self.route(flow)),
             next_rule: usize::MAX,
+            matched_rule_index: None,
+            outbound_chain: Vec::new(),
         }
     }
 }
@@ -501,6 +507,8 @@ impl Router for RouteTable {
                 return RouteStep {
                     action: rule.action.clone(),
                     next_rule: index.saturating_add(1),
+                    matched_rule_index: Some(index),
+                    outbound_chain: Vec::new(),
                 };
             }
         }
@@ -511,6 +519,8 @@ impl Router for RouteTable {
                     .unwrap_or(RouteDecision::Reject(RejectReason::NoRoute)),
             ),
             next_rule: usize::MAX,
+            matched_rule_index: None,
+            outbound_chain: Vec::new(),
         }
     }
 }

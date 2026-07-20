@@ -204,24 +204,34 @@ impl OutboundGroupRegistry {
     }
 
     pub fn resolve(&self, decision: RouteDecision) -> RouteDecision {
+        self.resolve_with_chain(decision).0
+    }
+
+    pub fn resolve_with_chain(&self, decision: RouteDecision) -> (RouteDecision, Vec<OutboundId>) {
         let RouteDecision::Forward(id) = decision else {
-            return decision;
+            return (decision, Vec::new());
         };
         let Ok(state) = self.state.read() else {
-            return RouteDecision::Forward(id);
+            return (RouteDecision::Forward(id), vec![id]);
         };
         let Some(group) = state
             .by_id
             .get(&id)
             .and_then(|index| state.groups.get(*index))
         else {
-            return RouteDecision::Forward(id);
+            return (RouteDecision::Forward(id), vec![id]);
         };
-        group
+        let resolved = group
             .items
             .get(group.selected)
             .map(|item| item.decision.clone())
-            .unwrap_or(RouteDecision::Forward(group.id))
+            .unwrap_or(RouteDecision::Forward(group.id));
+        let mut chain = match resolved {
+            RouteDecision::Forward(child) => vec![child],
+            _ => Vec::new(),
+        };
+        chain.push(group.id);
+        (resolved, chain)
     }
 
     pub fn list(&self) -> Vec<OutboundGroupSnapshot> {

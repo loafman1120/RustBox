@@ -1,7 +1,7 @@
 //! ShadowTLS v3 client transport.
 //!
 //! The record authentication logic is adapted from the permissively licensed
-//! `ihciah/shadow-tls` reference implementation, but uses ordinary Tokio I/O
+//! `ihciah/shadowtls` reference implementation, but uses ordinary Tokio I/O
 //! and current rustls instead of its Monoio/rustls fork.
 
 use crate::{

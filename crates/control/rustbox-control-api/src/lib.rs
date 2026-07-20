@@ -8,6 +8,8 @@ use rustbox_control::{
     OutboundGroupRegistry, OutboundGroupSnapshot, RuleSetRegistry, RuleSetState,
     SelectOutboundError,
 };
+pub use rustbox_control_service::ControlCommand;
+use rustbox_control_service::ControlPlaneHandle;
 use rustbox_kernel::{Event, EventKind, EventLevel};
 use rustbox_observability::{
     ConnectionState, ConnectionStats, MetricsSnapshot, ObservabilityQuery, ObservabilitySnapshot,
@@ -18,10 +20,10 @@ use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::metadata::MetadataMap;
@@ -35,6 +37,9 @@ pub mod rustbox_control_v1 {
 pub mod daemon {
     tonic::include_proto!("daemon");
 }
+
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    tonic::include_file_descriptor_set!("rustbox_control_descriptor");
 
 use rustbox_control_v1 as pb;
 
@@ -169,27 +174,37 @@ impl Error for ControlApiConfigError {}
 
 #[derive(Clone)]
 pub struct ControlApiState {
+    plane: ControlPlaneHandle,
     observability: Arc<ObservabilityStore>,
     control: Arc<Mutex<ControlState>>,
     command_tx: Option<mpsc::Sender<ControlCommand>>,
-    outbound_groups: Arc<RwLock<Arc<OutboundGroupRegistry>>>,
-    rule_sets: Arc<RwLock<Arc<RuleSetRegistry>>>,
     started_at: Instant,
 }
 
 impl ControlApiState {
     pub fn new(observability: Arc<ObservabilityStore>, control: Arc<Mutex<ControlState>>) -> Self {
+        let plane = ControlPlaneHandle::new(observability.clone(), control.clone());
         Self {
+            plane,
             observability,
             control,
             command_tx: None,
-            outbound_groups: Arc::new(RwLock::new(Arc::new(OutboundGroupRegistry::default()))),
-            rule_sets: Arc::new(RwLock::new(Arc::new(RuleSetRegistry::default()))),
+            started_at: Instant::now(),
+        }
+    }
+
+    pub fn from_plane(plane: ControlPlaneHandle) -> Self {
+        Self {
+            observability: plane.observability(),
+            control: plane.control(),
+            command_tx: plane.command_sender(),
+            plane,
             started_at: Instant::now(),
         }
     }
 
     pub fn with_command_sender(mut self, command_tx: mpsc::Sender<ControlCommand>) -> Self {
+        self.plane = self.plane.with_command_sender(command_tx.clone());
         self.command_tx = Some(command_tx);
         self
     }
@@ -200,9 +215,7 @@ impl ControlApiState {
     }
 
     pub fn replace_outbound_groups(&self, groups: Arc<OutboundGroupRegistry>) {
-        if let Ok(mut current) = self.outbound_groups.write() {
-            *current = groups;
-        }
+        self.plane.replace_outbound_groups(groups);
     }
 
     pub fn with_rule_sets(self, rule_sets: Arc<RuleSetRegistry>) -> Self {
@@ -211,23 +224,15 @@ impl ControlApiState {
     }
 
     pub fn replace_rule_sets(&self, rule_sets: Arc<RuleSetRegistry>) {
-        if let Ok(mut current) = self.rule_sets.write() {
-            *current = rule_sets;
-        }
+        self.plane.replace_rule_sets(rule_sets);
     }
 
     fn rule_sets(&self) -> Result<Arc<RuleSetRegistry>, Status> {
-        self.rule_sets
-            .read()
-            .map(|rule_sets| rule_sets.clone())
-            .map_err(|_| Status::internal("rule-set state lock is poisoned"))
+        self.plane.rule_sets().map_err(Status::internal)
     }
 
     fn outbound_groups(&self) -> Result<Arc<OutboundGroupRegistry>, Status> {
-        self.outbound_groups
-            .read()
-            .map(|groups| groups.clone())
-            .map_err(|_| Status::internal("outbound group state lock is poisoned"))
+        self.plane.outbound_groups().map_err(Status::internal)
     }
 
     pub fn observability(&self) -> Arc<ObservabilityStore> {
@@ -237,36 +242,9 @@ impl ControlApiState {
     pub fn control(&self) -> Arc<Mutex<ControlState>> {
         Arc::clone(&self.control)
     }
-}
 
-pub struct ControlCommand {
-    pub command: EngineCommand,
-    response: Option<oneshot::Sender<Result<bool, String>>>,
-}
-
-impl ControlCommand {
-    fn detached(command: EngineCommand) -> Self {
-        Self {
-            command,
-            response: None,
-        }
-    }
-
-    fn acknowledged(command: EngineCommand) -> (Self, oneshot::Receiver<Result<bool, String>>) {
-        let (tx, rx) = oneshot::channel();
-        (
-            Self {
-                command,
-                response: Some(tx),
-            },
-            rx,
-        )
-    }
-
-    pub fn respond(mut self, result: Result<bool, String>) {
-        if let Some(response) = self.response.take() {
-            let _ = response.send(result);
-        }
+    pub fn plane(&self) -> ControlPlaneHandle {
+        self.plane.clone()
     }
 }
 
@@ -274,6 +252,7 @@ impl ControlCommand {
 pub enum ControlApiError {
     Config(ControlApiConfigError),
     Bind(std::io::Error),
+    Reflection(String),
     Transport(tonic::transport::Error),
 }
 
@@ -282,6 +261,7 @@ impl fmt::Display for ControlApiError {
         match self {
             Self::Config(err) => write!(f, "invalid control API config: {err}"),
             Self::Bind(err) => write!(f, "failed to bind control API: {err}"),
+            Self::Reflection(err) => write!(f, "failed to build gRPC reflection service: {err}"),
             Self::Transport(err) => write!(f, "control API transport failed: {err}"),
         }
     }
@@ -319,7 +299,12 @@ pub async fn serve_grpc_with_listener(
         config.max_events_per_query,
     );
     let sing_box = SingBoxStartedService::new(state, config.auth);
+    let reflection = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .map_err(|error| ControlApiError::Reflection(error.to_string()))?;
     Server::builder()
+        .add_service(reflection)
         .add_service(pb::rust_box_control_server::RustBoxControlServer::new(
             native,
         ))
@@ -1144,6 +1129,7 @@ fn event_kind_to_proto(kind: EventKind) -> (String, String, HashMap<String, Stri
             destination,
             network,
             inbound,
+            ..
         } => {
             insert("source", source);
             insert("destination", destination);
@@ -1151,7 +1137,9 @@ fn event_kind_to_proto(kind: EventKind) -> (String, String, HashMap<String, Stri
             insert("inbound", inbound);
             ("flow_accepted", String::new())
         }
-        EventKind::RouteSelected { decision, outbound } => {
+        EventKind::RouteSelected {
+            decision, outbound, ..
+        } => {
             insert("decision", decision);
             if let Some(outbound) = outbound {
                 insert("outbound", outbound);
@@ -1233,11 +1221,37 @@ mod tests {
     use super::*;
     use daemon::started_service_server::StartedService;
     use pb::rust_box_control_server::RustBoxControl;
+    use prost::Message;
     use rustbox_kernel::{Event, ObservabilitySink};
     use rustbox_types::FlowId;
     use std::num::NonZeroU64;
     use tokio_stream::StreamExt;
     use tonic::Code;
+
+    #[test]
+    fn descriptor_set_exposes_native_and_compatible_rpc_services() {
+        let descriptor = prost_types::FileDescriptorSet::decode(FILE_DESCRIPTOR_SET)
+            .expect("generated descriptor set must decode");
+        let services = descriptor
+            .file
+            .iter()
+            .flat_map(|file| {
+                let package = file.package.as_deref().unwrap_or_default();
+                file.service.iter().filter_map(move |service| {
+                    service
+                        .name
+                        .as_deref()
+                        .map(|name| format!("{package}.{name}"))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            services
+                .iter()
+                .any(|name| name == "rustbox.control.v1.RustBoxControl")
+        );
+        assert!(services.iter().any(|name| name == "daemon.StartedService"));
+    }
 
     #[test]
     fn rejects_public_listen_without_token() {
@@ -1478,6 +1492,15 @@ mod tests {
                 EventKind::FlowAccepted {
                     source: "127.0.0.1:1000".to_string(),
                     destination: "example.test:443".to_string(),
+                    source_host: "127.0.0.1".to_string(),
+                    source_port: 1000,
+                    destination_host: "example.test".to_string(),
+                    destination_port: 443,
+                    domain: Some("example.test".to_string()),
+                    protocol: None,
+                    process: None,
+                    process_path: None,
+                    user_id: None,
                     network: "Tcp".to_string(),
                     inbound: "http-in".to_string(),
                 },
@@ -1492,6 +1515,8 @@ mod tests {
                 EventKind::RouteSelected {
                     decision: "Forward(direct)".into(),
                     outbound: Some("direct".into()),
+                    outbound_chain: vec!["direct".into()],
+                    rule_index: Some(0),
                 },
             ),
         );

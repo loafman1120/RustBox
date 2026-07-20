@@ -451,12 +451,23 @@ pub enum EventKind {
     FlowAccepted {
         source: String,
         destination: String,
+        source_host: String,
+        source_port: u16,
+        destination_host: String,
+        destination_port: u16,
+        domain: Option<String>,
+        protocol: Option<String>,
+        process: Option<String>,
+        process_path: Option<String>,
+        user_id: Option<u32>,
         network: String,
         inbound: String,
     },
     RouteSelected {
         decision: String,
         outbound: Option<String>,
+        outbound_chain: Vec<String>,
+        rule_index: Option<usize>,
     },
     OutboundConnecting {
         outbound: String,

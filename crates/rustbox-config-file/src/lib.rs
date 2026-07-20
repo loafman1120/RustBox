@@ -706,7 +706,7 @@ peers = [{ server = "192.0.2.1:51820", public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 [[outbounds]]
 id = "shadow"
-type = "shadow-tls"
+type = "shadowtls"
 server = "shadow.example.test:443"
 version = 3
 password = "secret"

@@ -16,7 +16,6 @@ mod urltest;
 
 pub(crate) use compose::RuntimeGraphBuilder;
 
-pub(crate) use app::ControlGrpcOptions;
 pub use app::{RustBox, RustBoxError, RustBoxOptions};
 pub use capabilities::RuntimeCapabilities;
 pub use error::ComposeError;

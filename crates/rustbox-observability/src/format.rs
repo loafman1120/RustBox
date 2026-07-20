@@ -52,12 +52,15 @@ fn format_kind(kind: &EventKind) -> String {
             destination,
             network,
             inbound,
+            ..
         } => {
             format!(
                 "flow_accepted source={source} destination={destination} network={network} inbound={inbound}"
             )
         }
-        EventKind::RouteSelected { decision, outbound } => {
+        EventKind::RouteSelected {
+            decision, outbound, ..
+        } => {
             format!(
                 "route_selected decision={decision} outbound={}",
                 outbound.as_deref().unwrap_or("-")

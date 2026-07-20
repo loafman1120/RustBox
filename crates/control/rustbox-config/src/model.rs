@@ -412,6 +412,7 @@ pub enum OutboundConfigKind {
     },
     /// ShadowTLS v3 camouflage transport. Other protocol outbounds can use it
     /// through `dial.detour`.
+    #[serde(rename = "shadowtls")]
     ShadowTls {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,

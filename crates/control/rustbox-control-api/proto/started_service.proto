@@ -7,7 +7,9 @@ import "google/protobuf/empty.proto";
 
 // The outbound-group surface is copied from sing-box daemon/started_service.proto.
 service StartedService {
+  // Stream the current selector and URLTest group snapshots followed by changes.
   rpc SubscribeGroups(google.protobuf.Empty) returns(stream Groups) {}
+  // Change the selected child of a selector group.
   rpc SelectOutbound(SelectOutboundRequest) returns (google.protobuf.Empty) {}
 }
 

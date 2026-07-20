@@ -1,10 +1,13 @@
 use crate::{
-    ComposeError, RuntimeCapabilities, RuntimeGraphBuilder, control::ControlGrpcService,
+    ComposeError, RuntimeCapabilities, RuntimeGraphBuilder,
+    control::{ControlPlaneResources, ControlServices},
     runtime::RuntimeSupervisor,
 };
+use rustbox_clash_api::ClashApiConfig;
 use rustbox_config::SourceConfig;
 use rustbox_control::{EngineCommand, EngineSnapshot, EngineState};
 use rustbox_control_api::ControlApiConfig;
+use rustbox_control_service::{ControlCatalog, ControlCommand};
 use rustbox_dns_core::{DnsQuery, DnsResponse};
 use rustbox_kernel::{NoopObservabilitySink, ObservabilitySink};
 use rustbox_observability::ObservabilityStore;
@@ -16,10 +19,16 @@ pub struct RustBoxOptions {
     observability: Arc<dyn ObservabilitySink>,
     capabilities: RuntimeCapabilities,
     control_grpc: Option<ControlGrpcOptions>,
+    clash_api: Option<ClashApiOptions>,
 }
 
 pub(crate) struct ControlGrpcOptions {
     pub(crate) config: ControlApiConfig,
+    pub(crate) observability: Arc<ObservabilityStore>,
+}
+
+pub(crate) struct ClashApiOptions {
+    pub(crate) config: ClashApiConfig,
     pub(crate) observability: Arc<ObservabilityStore>,
 }
 
@@ -50,6 +59,19 @@ impl RustBoxOptions {
         });
         self
     }
+
+    /// Enable the Clash/Mihomo-compatible HTTP and WebSocket control service.
+    pub fn with_clash_api(
+        mut self,
+        config: ClashApiConfig,
+        observability: Arc<ObservabilityStore>,
+    ) -> Self {
+        self.clash_api = Some(ClashApiOptions {
+            config,
+            observability,
+        });
+        self
+    }
 }
 
 impl Default for RustBoxOptions {
@@ -58,6 +80,7 @@ impl Default for RustBoxOptions {
             observability: Arc::new(NoopObservabilitySink),
             capabilities: RuntimeCapabilities::default(),
             control_grpc: None,
+            clash_api: None,
         }
     }
 }
@@ -72,7 +95,7 @@ pub struct RustBox {
     capabilities: RuntimeCapabilities,
     runtime: RuntimeSupervisor,
     snapshot: EngineSnapshot,
-    control_grpc: Option<ControlGrpcService>,
+    control: Option<ControlServices>,
 }
 
 /// 共享 RustBox 生命周期接口返回的错误。
@@ -103,6 +126,12 @@ impl RustBox {
                 .validate()
                 .map_err(|error| ComposeError::Control(error.message))?;
         }
+        if let Some(control) = &options.clash_api {
+            control
+                .config
+                .validate()
+                .map_err(|error| ComposeError::Control(error.message))?;
+        }
         let observability = options.observability;
         let capabilities = options.capabilities;
         let runtime =
@@ -114,12 +143,33 @@ impl RustBox {
             inbound_count: runtime.service_count(),
             outbound_count: runtime.outbound_count(),
         };
-        let control_grpc = options.control_grpc.map(|options| {
-            ControlGrpcService::new(
-                options,
-                snapshot.clone(),
-                runtime.outbound_groups(),
-                runtime.rule_sets(),
+        let grpc_config = options
+            .control_grpc
+            .as_ref()
+            .map(|value| value.config.clone());
+        let clash_config = options.clash_api.as_ref().map(|value| value.config.clone());
+        let control_observability = options
+            .control_grpc
+            .as_ref()
+            .map(|value| value.observability.clone())
+            .or_else(|| {
+                options
+                    .clash_api
+                    .as_ref()
+                    .map(|value| value.observability.clone())
+            });
+        let control = control_observability.map(|observability| {
+            ControlServices::new(
+                grpc_config,
+                clash_config,
+                ControlPlaneResources {
+                    observability,
+                    snapshot: snapshot.clone(),
+                    outbound_groups: runtime.outbound_groups(),
+                    rule_sets: runtime.rule_sets(),
+                    catalog: Arc::new(ControlCatalog::from_source(&source)),
+                    outbound_probe: runtime.outbound_probe(),
+                },
             )
         });
         Ok(Self {
@@ -128,7 +178,7 @@ impl RustBox {
             capabilities,
             runtime: RuntimeSupervisor::new(runtime),
             snapshot,
-            control_grpc,
+            control,
         })
     }
 
@@ -153,12 +203,18 @@ impl RustBox {
     }
 
     pub fn control_grpc_addr(&self) -> Option<SocketAddr> {
-        self.control_grpc.as_ref().map(ControlGrpcService::listen)
+        self.control.as_ref().and_then(ControlServices::grpc_listen)
+    }
+
+    pub fn clash_api_addr(&self) -> Option<SocketAddr> {
+        self.control
+            .as_ref()
+            .and_then(ControlServices::clash_listen)
     }
 
     /// Wait for the next coarse control command issued through the configured API.
-    pub async fn next_control_command(&mut self) -> Option<rustbox_control_api::ControlCommand> {
-        match &mut self.control_grpc {
+    pub async fn next_control_command(&mut self) -> Option<ControlCommand> {
+        match &mut self.control {
             Some(service) => service.next_command().await,
             None => None,
         }
@@ -179,9 +235,10 @@ impl RustBox {
                 self.observability.clone(),
             )
             .compose_source(self.source.clone())?;
-            if let Some(control) = &self.control_grpc {
+            if let Some(control) = &self.control {
                 control.replace_outbound_groups(runtime.outbound_groups());
                 control.replace_rule_sets(runtime.rule_sets());
+                control.replace_outbound_probe(runtime.outbound_probe());
             }
             self.runtime = RuntimeSupervisor::new(runtime);
             self.snapshot.inbound_count = self.runtime.service_count();
@@ -195,7 +252,7 @@ impl RustBox {
         }
         self.snapshot.state = EngineState::Running;
         self.sync_control_snapshot();
-        if let Some(control) = &mut self.control_grpc
+        if let Some(control) = &mut self.control
             && let Err(error) = control.start().await
         {
             let _ = self.runtime.stop().await;
@@ -219,7 +276,7 @@ impl RustBox {
             EngineState::Failed
         };
         self.sync_control_snapshot();
-        let control_result = match &mut self.control_grpc {
+        let control_result = match &mut self.control {
             Some(control) => control.stop().await,
             None => Ok(()),
         };
@@ -248,10 +305,13 @@ impl RustBox {
             self.runtime.replace(next, next_generation);
             self.snapshot.state = EngineState::Prepared;
         }
+        let catalog = Arc::new(ControlCatalog::from_source(&source));
         self.source = source;
-        if let Some(control) = &self.control_grpc {
+        if let Some(control) = &self.control {
             control.replace_outbound_groups(self.runtime.outbound_groups());
             control.replace_rule_sets(self.runtime.rule_sets());
+            control.replace_catalog(catalog);
+            control.replace_outbound_probe(self.runtime.outbound_probe());
         }
         self.snapshot.generation = next_generation;
         self.snapshot.inbound_count = self.runtime.service_count();
@@ -265,6 +325,10 @@ impl RustBox {
         self.runtime.close_connection(flow_id)
     }
 
+    pub fn close_all_connections(&self) -> usize {
+        self.runtime.close_all_connections()
+    }
+
     /// Execute a command received from any control transport.
     pub async fn apply_control_command(
         &mut self,
@@ -276,6 +340,10 @@ impl RustBox {
                 Ok(true)
             }
             EngineCommand::CloseConnection(flow_id) => Ok(self.close_connection(flow_id)),
+            EngineCommand::CloseAllConnections => {
+                self.close_all_connections();
+                Ok(true)
+            }
             EngineCommand::RefreshRuleSet(tag) => Ok(self.runtime.refresh_rule_set(&tag)),
             EngineCommand::TriggerUrlTest(tag) => Ok(self.runtime.trigger_urltest(&tag)),
             EngineCommand::Stop => {
@@ -290,7 +358,7 @@ impl RustBox {
 
     pub async fn apply_control_request(
         &mut self,
-        request: rustbox_control_api::ControlCommand,
+        request: ControlCommand,
     ) -> Result<bool, RustBoxError> {
         let result = self.apply_control_command(request.command.clone()).await;
         match &result {
@@ -301,7 +369,7 @@ impl RustBox {
     }
 
     fn sync_control_snapshot(&self) {
-        if let Some(control) = &self.control_grpc {
+        if let Some(control) = &self.control {
             control.replace_snapshot(self.snapshot.clone());
         }
     }

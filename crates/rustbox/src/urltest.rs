@@ -12,10 +12,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio_rustls::{TlsConnector, rustls::pki_types::ServerName};
 
+#[derive(Clone)]
 struct GroupProbe {
     id: OutboundId,
     tag: String,
-    children: Vec<(OutboundId, Arc<dyn Outbound>)>,
+    children: Vec<(OutboundId, String, Arc<dyn Outbound>)>,
     url: String,
     interval: Duration,
     timeout: Duration,
@@ -31,6 +32,9 @@ pub(crate) struct UrlTestService {
 #[derive(Clone, Default)]
 pub(crate) struct UrlTestController {
     triggers: Arc<HashMap<String, Arc<tokio::sync::Notify>>>,
+    groups: Arc<HashMap<String, GroupProbe>>,
+    outbounds: Arc<HashMap<String, Arc<dyn Outbound>>>,
+    registry: Arc<OutboundGroupRegistry>,
 }
 
 impl UrlTestController {
@@ -40,6 +44,41 @@ impl UrlTestController {
             true
         })
     }
+
+    pub(crate) async fn probe(
+        &self,
+        tag: &str,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<u32, String> {
+        let outbound = self
+            .outbounds
+            .get(tag)
+            .cloned()
+            .ok_or_else(|| format!("outbound `{tag}` not found"))?;
+        let delay = tokio::time::timeout(timeout, probe(outbound, url))
+            .await
+            .map_err(|_| format!("probe timed out after {} ms", timeout.as_millis()))??;
+        Ok(delay.as_millis().min(u32::MAX as u128) as u32)
+    }
+
+    pub(crate) async fn probe_group(
+        &self,
+        tag: &str,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<std::collections::BTreeMap<String, u32>, String> {
+        let mut group = self
+            .groups
+            .get(tag)
+            .cloned()
+            .ok_or_else(|| format!("URLTest group `{tag}` not found"))?;
+        if !url.is_empty() {
+            group.url = url.to_string();
+        }
+        group.timeout = timeout;
+        Ok(run_group(&group, &self.registry).await)
+    }
 }
 
 impl UrlTestService {
@@ -48,6 +87,11 @@ impl UrlTestService {
         outbounds: HashMap<OutboundId, Arc<dyn Outbound>>,
         registry: Arc<OutboundGroupRegistry>,
     ) -> Self {
+        let tags = config
+            .outbounds
+            .iter()
+            .map(|outbound| (outbound.id, outbound.logical_id.clone()))
+            .collect::<HashMap<_, _>>();
         let groups = config
             .outbounds
             .iter()
@@ -68,7 +112,9 @@ impl UrlTestService {
                     tag: outbound.logical_id.clone(),
                     children: children
                         .iter()
-                        .filter_map(|id| Some((*id, outbounds.get(id)?.clone())))
+                        .filter_map(|id| {
+                            Some((*id, tags.get(id)?.clone(), outbounds.get(id)?.clone()))
+                        })
                         .collect(),
                     url: url.clone(),
                     interval: Duration::from_secs(*interval_seconds),
@@ -77,15 +123,59 @@ impl UrlTestService {
                 })
             })
             .collect::<Vec<_>>();
+        let outbound_by_tag = config
+            .outbounds
+            .iter()
+            .filter_map(|outbound| {
+                Some((
+                    outbound.logical_id.clone(),
+                    outbounds.get(&outbound.id)?.clone(),
+                ))
+            })
+            .collect::<HashMap<_, _>>();
         let triggers = groups
             .iter()
             .map(|group| (group.tag.clone(), Arc::new(tokio::sync::Notify::new())))
             .collect();
+        let mut controller_groups = groups
+            .iter()
+            .cloned()
+            .map(|group| (group.tag.clone(), group))
+            .collect::<HashMap<_, _>>();
+        for outbound in &config.outbounds {
+            let CompiledOutboundKind::Selector {
+                outbounds: children,
+                ..
+            } = &outbound.kind
+            else {
+                continue;
+            };
+            controller_groups.insert(
+                outbound.logical_id.clone(),
+                GroupProbe {
+                    id: outbound.id,
+                    tag: outbound.logical_id.clone(),
+                    children: children
+                        .iter()
+                        .filter_map(|id| {
+                            Some((*id, tags.get(id)?.clone(), outbounds.get(id)?.clone()))
+                        })
+                        .collect(),
+                    url: "http://www.gstatic.com/generate_204".to_string(),
+                    interval: Duration::from_secs(300),
+                    timeout: Duration::from_secs(5),
+                    concurrency: 4,
+                },
+            );
+        }
         Self {
             groups,
-            registry,
+            registry: registry.clone(),
             controller: UrlTestController {
                 triggers: Arc::new(triggers),
+                groups: Arc::new(controller_groups),
+                outbounds: Arc::new(outbound_by_tag),
+                registry: registry.clone(),
             },
         }
     }
@@ -126,12 +216,16 @@ impl Service for UrlTestService {
     }
 }
 
-async fn run_group(group: &GroupProbe, registry: &OutboundGroupRegistry) {
+async fn run_group(
+    group: &GroupProbe,
+    registry: &OutboundGroupRegistry,
+) -> std::collections::BTreeMap<String, u32> {
     let semaphore = Arc::new(Semaphore::new(group.concurrency));
     let mut tasks = tokio::task::JoinSet::new();
-    for (id, outbound) in &group.children {
-        let (id, outbound, url, timeout, semaphore) = (
+    for (id, tag, outbound) in &group.children {
+        let (id, tag, outbound, url, timeout, semaphore) = (
             *id,
+            tag.clone(),
             outbound.clone(),
             group.url.clone(),
             group.timeout,
@@ -143,11 +237,58 @@ async fn run_group(group: &GroupProbe, registry: &OutboundGroupRegistry) {
                 .await
                 .map_err(|_| format!("probe timed out after {} ms", timeout.as_millis()))
                 .and_then(|value| value);
-            (id, result)
+            (id, tag, result)
         });
     }
-    while let Some(Ok((id, result))) = tasks.join_next().await {
+    let mut delays = std::collections::BTreeMap::new();
+    while let Some(Ok((id, tag, result))) = tasks.join_next().await {
+        if let Ok(delay) = &result {
+            delays.insert(tag, delay.as_millis().min(u32::MAX as u128) as u32);
+        }
         registry.record_urltest_result(group.id, id, result);
+    }
+    // Registry snapshots contain the user-facing tags, unlike internal IDs.
+    if let Some(snapshot) = registry
+        .list()
+        .into_iter()
+        .find(|value| value.tag == group.tag)
+    {
+        let registry_delays = snapshot
+            .items
+            .into_iter()
+            .filter_map(|item| item.url_test_delay.map(|delay| (item.tag, delay)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if !registry_delays.is_empty() {
+            delays = registry_delays;
+        }
+    }
+    delays
+}
+
+impl rustbox_control_service::OutboundProbe for UrlTestController {
+    fn probe<'a>(
+        &'a self,
+        tag: &'a str,
+        url: &'a str,
+        timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + 'a>> {
+        Box::pin(async move { UrlTestController::probe(self, tag, url, timeout).await })
+    }
+
+    fn probe_group<'a>(
+        &'a self,
+        tag: &'a str,
+        url: &'a str,
+        timeout: Duration,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<std::collections::BTreeMap<String, u32>, String>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { UrlTestController::probe_group(self, tag, url, timeout).await })
     }
 }
 
