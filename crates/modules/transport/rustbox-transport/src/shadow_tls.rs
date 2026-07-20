@@ -1,22 +1,24 @@
 //! ShadowTLS v3 client transport.
 //!
 //! The record authentication logic is adapted from the permissively licensed
-//! `ihciah/shadowtls` reference implementation, but uses ordinary Tokio I/O
-//! and current rustls instead of its Monoio/rustls fork.
+//! `ihciah/shadowtls` reference implementation. It uses ordinary Tokio I/O
+//! with the reference implementation's rustls Session ID hook.
 
-use crate::{
-    StreamTransport, TlsLayerConfig, TransportContext, TransportError, rustls_client_config,
-};
+use crate::{StreamTransport, TlsLayerConfig, TransportContext, TransportError};
 use hmac::{Hmac as HmacImpl, Mac};
 use rustbox_io::ByteStream;
 use rustbox_kernel::{BoxFuture, TaskScope};
 use rustbox_types::Endpoint;
-use rustls::ClientConnection;
-use rustls::pki_types::ServerName;
+use rustls_fork_shadow_tls::{
+    Certificate, ClientConfig as ShadowClientConfig, ClientConnection, OwnedTrustAnchor,
+    PrivateKey, RootCertStore, ServerName,
+    client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier},
+};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const TLS_HEADER: usize = 5;
@@ -123,11 +125,16 @@ async fn shadow_handshake(
         .server_name
         .clone()
         .ok_or_else(|| TransportError::new("ShadowTLS TLS server_name is required"))?;
-    let name = ServerName::try_from(server_name)
+    let name = ServerName::try_from(server_name.as_str())
         .map_err(|error| TransportError::new(format!("ShadowTLS server name: {error}")))?;
-    let config = rustls_client_config(tls)?;
-    let mut connection = ClientConnection::new(Arc::new(config), name)
-        .map_err(|error| TransportError::new(format!("ShadowTLS TLS client: {error}")))?;
+    let config = shadow_rustls_client_config(tls)?;
+    let signing_password = password.to_owned();
+    let mut connection = ClientConnection::new_with_session_id_generator(
+        Arc::new(config),
+        name,
+        move |client_hello| signed_session_id(client_hello, &signing_password),
+    )
+    .map_err(|error| TransportError::new(format!("ShadowTLS TLS client: {error}")))?;
     let mut server_random = None;
     let mut handshake_hmac = None;
     let mut authorized = false;
@@ -138,7 +145,6 @@ async fn shadow_handshake(
             connection
                 .write_tls(&mut record)
                 .map_err(|error| TransportError::new(format!("ShadowTLS ClientHello: {error}")))?;
-            sign_client_hello(&mut record, password)?;
             raw.write_all(&record).await.map_err(|error| {
                 TransportError::new(format!("ShadowTLS handshake write: {error}"))
             })?;
@@ -170,7 +176,7 @@ async fn shadow_handshake(
             .await
             .map_err(|error| TransportError::new(format!("ShadowTLS finish write: {error}")))?;
     }
-    if connection.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_3) {
+    if connection.protocol_version() != Some(rustls_fork_shadow_tls::ProtocolVersion::TLSv1_3) {
         return Err(TransportError::new(
             "ShadowTLS v3 strict mode requires TLS 1.3",
         ));
@@ -187,33 +193,121 @@ async fn shadow_handshake(
     ))
 }
 
-fn sign_client_hello(records: &mut [u8], password: &str) -> Result<(), TransportError> {
-    let mut offset = 0;
-    while offset + TLS_HEADER <= records.len() {
-        let length = usize::from(u16::from_be_bytes([
-            records[offset + 3],
-            records[offset + 4],
-        ]));
-        let end = offset + TLS_HEADER + length;
-        if end > records.len() {
-            return Err(TransportError::new("truncated TLS ClientHello"));
-        }
-        let content_type = records[offset];
-        let body = &mut records[offset + TLS_HEADER..end];
-        const SESSION_ID: usize = 1 + 3 + 2 + 32 + 1;
-        if content_type == HANDSHAKE && body.first() == Some(&1) && body.len() >= SESSION_ID + 32 {
-            let mut session = [0_u8; 32];
-            rand::fill(&mut session[..28]);
-            body[SESSION_ID..SESSION_ID + 32].copy_from_slice(&session);
-            let mut hmac = ShadowHmac::new(password, &[], &[]);
-            hmac.update(body);
-            session[28..].copy_from_slice(&hmac.finalize4());
-            body[SESSION_ID..SESSION_ID + 32].copy_from_slice(&session);
-            return Ok(());
-        }
-        offset = end;
+fn signed_session_id(client_hello: &[u8], password: &str) -> [u8; 32] {
+    const SESSION_ID: usize = 1 + 3 + 2 + 32 + 1;
+    let mut session = [0_u8; 32];
+    rand::fill(&mut session[..28]);
+    if client_hello.len() < SESSION_ID + session.len() {
+        return session;
     }
-    Ok(())
+    let mut hmac = ShadowHmac::new(password, &[], &[]);
+    hmac.update(&client_hello[..SESSION_ID]);
+    hmac.update(&session);
+    hmac.update(&client_hello[SESSION_ID + session.len()..]);
+    session[28..].copy_from_slice(&hmac.finalize4());
+    session
+}
+
+fn shadow_rustls_client_config(
+    config: &TlsLayerConfig,
+) -> Result<ShadowClientConfig, TransportError> {
+    let mut roots = RootCertStore::empty();
+    roots.add_server_trust_anchors(webpki_roots_old::TLS_SERVER_ROOTS.0.iter().map(|anchor| {
+        OwnedTrustAnchor::from_subject_spki_name_constraints(
+            anchor.subject,
+            anchor.spki,
+            anchor.name_constraints,
+        )
+    }));
+    for certificate in &config.certificate_authorities_der {
+        roots
+            .add(&Certificate(certificate.clone()))
+            .map_err(|error| TransportError::new(format!("ShadowTLS TLS CA: {error}")))?;
+    }
+    let web_pki = WebPkiVerifier::new(roots.clone(), None);
+    let builder = ShadowClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(roots);
+    let mut client = match (
+        &config.client_certificate_pem,
+        &config.client_private_key_pem,
+    ) {
+        (Some(certificate), Some(private_key)) => {
+            let certificates = rustls_pemfile::certs(&mut certificate.as_slice())
+                .map(|result| result.map(|der| Certificate(der.as_ref().to_vec())))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| {
+                    TransportError::new(format!("ShadowTLS TLS client certificate: {error}"))
+                })?;
+            let private_key = rustls_pemfile::private_key(&mut private_key.as_slice())
+                .map_err(|error| TransportError::new(format!("ShadowTLS TLS client key: {error}")))?
+                .ok_or_else(|| {
+                    TransportError::new("ShadowTLS TLS client private key PEM is empty")
+                })?;
+            builder
+                .with_single_cert(certificates, PrivateKey(private_key.secret_der().to_vec()))
+                .map_err(|error| {
+                    TransportError::new(format!("ShadowTLS TLS client identity: {error}"))
+                })?
+        }
+        (None, None) => builder.with_no_client_auth(),
+        _ => {
+            return Err(TransportError::new(
+                "ShadowTLS TLS client certificate and key must be paired",
+            ));
+        }
+    };
+    client.alpn_protocols = config
+        .alpn
+        .iter()
+        .map(|value| value.as_bytes().to_vec())
+        .collect();
+    if config.insecure || !config.public_key_pins.is_empty() {
+        client
+            .dangerous()
+            .set_certificate_verifier(Arc::new(ShadowServerVerifier {
+                web_pki: (!config.insecure).then_some(web_pki),
+                pins: config.public_key_pins.clone(),
+            }));
+    }
+    Ok(client)
+}
+
+struct ShadowServerVerifier {
+    web_pki: Option<WebPkiVerifier>,
+    pins: Vec<[u8; 32]>,
+}
+
+impl ServerCertVerifier for ShadowServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &Certificate,
+        intermediates: &[Certificate],
+        server_name: &ServerName,
+        scts: &mut dyn Iterator<Item = &[u8]>,
+        ocsp_response: &[u8],
+        now: SystemTime,
+    ) -> Result<ServerCertVerified, rustls_fork_shadow_tls::Error> {
+        if let Some(web_pki) = &self.web_pki {
+            web_pki.verify_server_cert(
+                end_entity,
+                intermediates,
+                server_name,
+                scts,
+                ocsp_response,
+                now,
+            )?;
+        }
+        let (_, certificate) = x509_parser::parse_x509_certificate(&end_entity.0)
+            .map_err(|_| rustls_fork_shadow_tls::Error::InvalidCertificateEncoding)?;
+        let digest: [u8; 32] = Sha256::digest(certificate.tbs_certificate.subject_pki.raw).into();
+        if !self.pins.is_empty() && !self.pins.contains(&digest) {
+            return Err(rustls_fork_shadow_tls::Error::General(
+                "certificate SubjectPublicKeyInfo does not match any configured SHA-256 pin".into(),
+            ));
+        }
+        Ok(ServerCertVerified::assertion())
+    }
 }
 
 fn inspect_server_record(
@@ -226,6 +320,7 @@ fn inspect_server_record(
     if record[0] == HANDSHAKE
         && record.get(TLS_HEADER) == Some(&SERVER_HELLO)
         && record.len() >= SERVER_RANDOM_INDEX + 32
+        && handshake_hmac.is_none()
     {
         let random: [u8; 32] = record[SERVER_RANDOM_INDEX..SERVER_RANDOM_INDEX + 32]
             .try_into()
@@ -357,5 +452,20 @@ mod tests {
         let first = hmac.finalize4();
         hmac.update(&first);
         assert_ne!(first, hmac.finalize4());
+    }
+
+    #[test]
+    fn session_id_authenticates_the_final_client_hello() {
+        const SESSION_ID: usize = 1 + 3 + 2 + 32 + 1;
+        let mut hello = vec![0x5a; SESSION_ID + 32 + 16];
+        hello[0] = 1;
+        let session = signed_session_id(&hello, "password");
+        hello[SESSION_ID..SESSION_ID + 32].copy_from_slice(&session);
+
+        let mut unsigned = hello.clone();
+        unsigned[SESSION_ID + 28..SESSION_ID + 32].fill(0);
+        let mut hmac = ShadowHmac::new("password", &[], &[]);
+        hmac.update(&unsigned);
+        assert_eq!(&session[28..], &hmac.finalize4());
     }
 }
