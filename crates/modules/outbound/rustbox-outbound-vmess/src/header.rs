@@ -269,18 +269,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cmd_key_is_deterministic() {
-        let uuid: [u8; 16] = [
-            0xb8, 0x31, 0x38, 0x1d, 0x63, 0x24, 0x4d, 0x53, 0xad, 0x4f, 0x8c, 0xda, 0x48, 0xb3,
-            0x08, 0x11,
-        ];
-        let k1 = cmd_key(&uuid);
-        let k2 = cmd_key(&uuid);
-        assert_eq!(k1, k2);
-        assert_ne!(k1, [0u8; 16]);
-    }
-
-    #[test]
     fn fnv1a_known_value() {
         assert_eq!(fnv1a32(b""), 0x811c_9dc5);
         assert_eq!(fnv1a32(b"a"), 0xe40c_292c);

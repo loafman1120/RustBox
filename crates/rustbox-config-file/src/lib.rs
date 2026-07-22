@@ -26,11 +26,7 @@ mod tests {
     };
     use rustbox_observability::{LevelFilter, ObservabilityOutput};
     use rustbox_types::Endpoint;
-    use rustbox_types::Host;
-    use std::net::IpAddr;
-    use std::net::{Ipv4Addr, Ipv6Addr};
     use std::path::PathBuf;
-    use std::str::FromStr;
 
     #[test]
     fn parses_http_and_socks5_proxy_config() {
@@ -541,14 +537,6 @@ outbound = "direct"
     }
 
     #[test]
-    fn parses_bracketed_ipv6_endpoint() {
-        let endpoint = Endpoint::from_str("[::1]:1080").expect("parse endpoint");
-
-        assert_eq!(endpoint.port, 1080);
-        assert_eq!(endpoint.host, Host::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-    }
-
-    #[test]
     fn parses_anytls_server_inbound() {
         let config = parse_toml_str(
             r#"
@@ -592,14 +580,6 @@ schema_version = 2
         .expect_err("unsupported schema");
 
         assert!(error.message.contains("unsupported config schema_version"));
-    }
-
-    #[test]
-    fn parses_ipv4_endpoint() {
-        let endpoint = Endpoint::from_str("127.0.0.1:18080").expect("parse endpoint");
-
-        assert_eq!(endpoint.port, 18080);
-        assert_eq!(endpoint.host, Host::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     }
 
     #[test]

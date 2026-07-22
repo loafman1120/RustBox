@@ -1008,19 +1008,19 @@ pub enum CompiledRouteRule {
     },
 }
 
-fn validate_uuid(value: &String, _: &()) -> garde::Result {
+fn validate_uuid(value: &str, _: &()) -> garde::Result {
     uuid::Uuid::parse_str(value)
         .map(|_| ())
         .map_err(|error| garde::Error::new(format!("invalid UUID: {error}")))
 }
 
-fn validate_url(value: &String, _: &()) -> garde::Result {
+fn validate_url(value: &str, _: &()) -> garde::Result {
     url::Url::parse(value)
         .map(|_| ())
         .map_err(|error| garde::Error::new(format!("invalid URL: {error}")))
 }
 
-fn validate_wireguard_key(value: &String, _: &()) -> garde::Result {
+fn validate_wireguard_key(value: &str, _: &()) -> garde::Result {
     value
         .parse::<rustbox_runtime_config::WireGuardKey>()
         .map(|_| ())
@@ -1041,7 +1041,7 @@ fn validate_optional_base64(value: &Option<String>, _: &()) -> garde::Result {
     })
 }
 
-fn validate_base64_32(value: &String, _: &()) -> garde::Result {
+fn validate_base64_32(value: &str, _: &()) -> garde::Result {
     let bytes = decode_config_base64(value).map_err(garde::Error::new)?;
     if bytes.len() == 32 {
         Ok(())

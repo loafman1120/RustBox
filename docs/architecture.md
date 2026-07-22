@@ -1,139 +1,79 @@
-# RustBox 架构
+# 架构
 
-本文描述当前代码的稳定边界与运行数据流。命令、能力清单和配置入口见根目录
-[`README.md`](../README.md)。
+RustBox 的核心约束是：应用拥有客户端，引擎拥有网络生命周期。CLI 和 Flutter 只负责
+宿主交互，协议、路由与平台操作由同一运行图完成。
 
-## 总览
+## 分层
 
 ```text
-apps/rustbox-cli          apps/rustbox-flutter
+apps/rustbox-cli        apps/rustbox-flutter
           \                 /
-           rustbox（组合根与异步生命周期）
-              ├─ control / config / observability
-              ├─ modules（inbound / outbound / DNS / inspect / transport）
-              └─ platform（操作系统能力实现）
-                         ↓
-              kernel（flow / route / relay / host ports）
-                         ↓
-              foundation（types / Tokio I/O）
+             rustbox（组合根）
+        /          |            \
+ config/control  modules      platform
+        \          |            /
+          kernel（flow / route / relay）
+                       |
+          foundation（types / Tokio I/O）
 ```
 
-架构不变量：
-
-1. Tokio 是唯一的生产运行时；CLI、Flutter 和模块不另建 runtime。
-2. `rustbox` 是组合根；协议 crate 不反向依赖应用或配置文件格式。
-3. 路由保持纯计算；DNS、进程和网络元数据在路由前完成补充。
-4. 平台操作通过 kernel host ports 注入，不进入可移植的路由和协议核心；
-   `target_os` 条件选择只允许出现在 `crates/platform`。
-5. 动态分派只保留在 service、outbound、I/O、观测 sink 和平台能力等异构边界。
-6. IP 和 socket 地址直接使用 `std::net::IpAddr` / `SocketAddr`；只有需要保留
-   未解析域名的跨层目标才使用 `Endpoint { Host, port }`。
-
-## Workspace 边界
-
-| 层 | 位置 | 所有权 |
+| 层 | 位置 | 职责 |
 | --- | --- | --- |
-| 产品入口 | `apps/rustbox-cli`、`apps/rustbox-flutter` | 参数、信号、Dart API、应用打包 |
-| 组合根 | `crates/rustbox` | 运行图装配和公共异步生命周期 |
-| 文件配置 | `crates/rustbox-config-file` | TOML 文档、迁移、字段校验、诊断 |
-| 控制面 | `crates/control` | 语义模型、共享控制服务、gRPC 与 Clash HTTP/WS API |
-| 数据面 | `crates/kernel` | flow、route、relay、dial 和 host capability ports |
-| 功能模块 | `crates/modules` | DNS、嗅探、协议、transport、inbound/outbound、用户态栈 |
-| 平台 | `crates/platform` | Linux、macOS、Windows、Android 能力实现 |
-| 基础 | `crates/foundation` | 公共类型、已解析的纯数据运行配置和 Tokio I/O 契约；不持有 socket 或 OS handle |
-| 观测 | `crates/rustbox-observability` | 事件、指标、连接快照和 sink |
+| 应用 | `apps/` | 参数、信号、Dart API 与打包 |
+| 组合根 | `crates/rustbox` | 装配运行图，提供 `start/reload/snapshot/stop` |
+| 配置与控制 | `crates/rustbox-config-file`、`crates/control` | TOML、语义配置、gRPC 与 Clash API |
+| 数据面 | `crates/kernel` | flow、路由、拨号、relay 与 host ports |
+| 模块 | `crates/modules` | DNS、嗅探、inbound、outbound、transport 与用户态栈 |
+| 平台 | `crates/platform` | TUN、路由、进程与系统网络能力 |
+| 基础 | `crates/foundation` | 公共类型、纯数据运行配置和 Tokio I/O 契约 |
 
-`apps/rustbox-flutter/rust` 同时是 Flutter package 的桥接层和 Cargo
-workspace 成员。生成代码留在 package 内，不上移为公共引擎接口。
+依赖只能向下或指向组合根定义的接口。协议 crate 不依赖应用、文件格式或具体操作
+系统；`target_os` 条件选择只应出现在平台层。
 
 ## 配置与生命周期
 
 ```text
-TOML → document → normalize → validate → compile → runtime graph
+TOML -> SourceConfig -> normalize -> validate -> CompiledConfig -> runtime graph
 ```
 
-文件语法与运行模型分离：文件入口产生 `SourceConfig`，CLI、Flutter 和库调用者再走
-同一个编译与装配流程。
+文件模型保留用户输入并产生字段级诊断；编译模型只保存已解析和已验证的数据。所有
+引用、依赖环和协议约束都应在网络 I/O 开始前失败。
 
-`SourceConfig` 保留用户输入形态，字符串字段通过 Serde 反序列化并由 Garde 给出字段级
-诊断；`CompiledConfig` 则只保存已经解析的 UUID、URL、WireGuard key、TLS/REALITY
-材料、内部 ID 和内核路由 matcher。跨编译器和数据面共享的纯数据计划放在轻量
-`rustbox-runtime-config` foundation crate，避免配置层反向依赖协议实现。组合根不得再次
-解析这些值，也不维护配置模型的逐字段镜像。仅在确实需要派生平台资源时使用显式
-`*Plan` 类型，例如 `TunInboundPlan`。
+`RustBox` 是唯一生命周期所有者：
 
-- `new`：校验配置并准备运行图。
-- `start`：启动 inbound、后台任务和可选控制服务。
-- `reload`：发布新 generation；新 flow 使用新图，旧 flow 有界排空。
-- `snapshot`：提供统一只读状态。
-- `stop`：停止接纳、结束任务并回滚平台配置；操作有界且幂等。
+- `start` 启动 inbound、控制服务与后台任务；
+- `reload` 发布新 generation，新 flow 使用新图，旧 flow 有界排空；
+- `snapshot` 返回统一只读状态；
+- `stop` 停止接纳、结束任务并回滚平台修改，且保持幂等。
 
-每个 generation 持有独立 `TaskScope`。reload/stop 会先取消 accept scope，session
-scope 最多排空 30 秒后取消。任务所有权由 `CancellationToken + TaskTracker` 明确
-表达，模块不通过全局 spawner 隐藏长期任务。
+每个 generation 使用独立的取消与任务跟踪作用域。模块不得通过全局 runtime 或隐藏的
+spawner 持有长期任务。
 
-## 数据面
+## 数据流
 
 ```text
 inbound
-  → Flow { meta, Stream | Datagram }
-  → metadata enrichment / protocol inspection
-  → route table
-  → selector or concrete outbound
-  → open_stream | open_datagram
-  → relay
+  -> Flow { metadata, Stream | Datagram }
+  -> DNS / process / network metadata enrichment
+  -> protocol inspection
+  -> route
+  -> selector or concrete outbound
+  -> relay
 ```
 
-TCP 与 UDP 通过 `FlowPayload` 显式区分。inspection 可从 HTTP Host、TLS/QUIC SNI
-和 DNS 中补充元数据；DNS reverse mapping 可为后续 flow 恢复域名。路由结果只描述
-outbound、reject 或 DNS hijack 等动作，具体网络 I/O 由 outbound 和 host capability
-完成。
+路由是纯计算。它只产生 outbound、reject、DNS hijack 或连接选项等结果；DNS 查询、
+socket 创建和平台操作在相应能力边界执行。规则集由组合层加载和刷新，路由只消费已
+发布的快照。
 
-路由支持非终结的 `resolve`、`route-options`，以及终结的 outbound、reject、
-`hijack-dns`。规则集加载和远程刷新由组合层管理，路由表只消费已发布快照。
+控制传输同样共享一个服务层：gRPC 和 Clash HTTP/WebSocket 只做 wire 映射，不互相
+调用，也不直接持有某个 generation 的运行对象。
 
-## 控制面与平台
+## 维护原则
 
-传输无关的 `rustbox-control-service` 统一持有观测快照、控制命令、出站/规则 catalog
-和订阅入口；gRPC 与 Clash API 只负责 wire 映射，不互相调用。reload 原子替换共享
-catalog/registry，传输层不持有 generation 内运行对象。
+- 优先在现有 crate 内拆私有模块；只有独立依赖约束或多处复用时才新增 crate。
+- 解析、校验、编译与运行构造保持分离。
+- 动态分派只用于 service、outbound、I/O、观测 sink 和平台能力等异构边界。
+- 平台修改必须返回可回滚 handle；普通 socket 不能声明其没有的 packet 能力。
+- 同一转换或错误映射出现三次时，应提取到拥有该语义的层。
 
-Clash HTTP handler 通过 `utoipa` 注解生成 OpenAPI 3.1，并由 vendored Swagger UI 提供
-离线可用的交互文档。gRPC 构建从 canonical `.proto` 生成 descriptor set，并注册 tonic
-reflection v1；两种传输的机器可读契约都直接来自其代码或 schema，而不是第二份手写清单。
-
-gRPC 控制面分为兼容层和原生层。兼容层复用 sing-box `daemon.StartedService` 的出站组
-wire contract；原生 `rustbox.control.v1.RustBoxControl` 提供连接查询/单连接取消、实时日志、
-连接变更和流量 server stream、按入站/出站聚合的流量、进程内存与引擎状态、rule-set
-状态/手动刷新、URLTest 手动触发，以及 reload/stop。流式接口由 Tokio
-`broadcast + mpsc + tonic server-streaming` 组合：数据面只发布结构化事件，不持有 gRPC
-对象；慢订阅者只丢弃超出有界广播环的旧事件，不阻塞 relay。
-
-`selector` 可切换且只影响新 flow。`urltest` 通过每个 child 的真实 outbound 周期执行
-HTTP/HTTPS 探测，按延迟和 `tolerance_ms` 自动选择，并在连续失败达到阈值后摘除候选。
-探测状态（延迟、错误、连续失败和最后成功时间）由 outbound group registry 持有，
-控制 API 会发布最近测试时间和延迟。selector 和 URLTest 都可配置 `cache_path` 恢复选择。
-`interrupt_exist_connections=true` 暂不支持且会在配置校验阶段明确拒绝；选择变化只影响新 flow。
-
-平台层实现网络配置、TUN/packet device、transparent redirect、进程查询和网络元数据。
-平台修改必须通过事务式 handle 回滚。普通代理 socket 不伪装成拥有原始 IP packet，
-因此 ICMP 注入等能力只在确实持有原始 packet path 时成立。
-
-Clash API 使用独立 HTTP/1.1 监听器，提供 Mihomo 形状的 JSON、NDJSON 和 WebSocket。
-连接观测在 flow 建立时固化结构化地址、进程、命中规则索引和叶子到外层组的出站链，
-避免查询时按当前 selector 反推旧连接。控制 token 同时用于两个 transport；非 loopback
-监听必须启用 token，WebSocket 额外兼容 `?token=`。
-
-## 模块维护准则
-
-优先在现有 crate 内拆私有模块；只有需要独立依赖约束或被多个 crate 复用时才新增
-crate。出现以下情况时应重新审视边界：
-
-- 一个模块同时拥有多个生命周期；
-- 解析、校验、编译和运行构造混在同一函数；
-- 新增协议必须修改无关的平台或应用代码；
-- 同一转换或错误映射复制到三个以上 crate；
-- 平台文件同时承担能力探测、进程查询、packet I/O 和网络事务。
-
-配置细节分别见 [路由与 transport](p1-routing-transport.md)、[DNS](dns-transports.md)
-和 [客户端 DNS 与 Windows TUN](client-dns-windows.md)。
+客户端侧的具体系统约束见[客户端网络](client-networking.md)。

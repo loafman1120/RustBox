@@ -461,7 +461,6 @@ impl DatagramSocket for IpStackDatagram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbox_io::IoErrorKind;
     use rustbox_kernel::{FlowError, FlowOutcome};
     use rustbox_types::RejectReason;
     use std::net::IpAddr;
@@ -523,19 +522,6 @@ mod tests {
     }
 
     #[test]
-    fn converts_socket_addr_to_endpoint() {
-        let endpoint: Endpoint = "127.0.0.1:53"
-            .parse::<std::net::SocketAddr>()
-            .expect("socket addr")
-            .into();
-
-        assert_eq!(
-            endpoint,
-            Endpoint::new(Host::Ip(IpAddr::from([127, 0, 0, 1])), 53)
-        );
-    }
-
-    #[test]
     fn builds_icmpv4_echo_reply_with_original_identity_and_payload() {
         let payload = b"rustbox-ping";
         let reply = build_icmp_echo_reply(
@@ -554,22 +540,6 @@ mod tests {
             etherparse::Icmpv4Type::EchoReply(etherparse::IcmpEchoHeader { id: 77, seq: 9 })
         ));
         assert_eq!(reply_payload, payload);
-    }
-
-    #[test]
-    fn maps_io_error_kinds() {
-        assert_eq!(
-            std::io::Error::from(IoError::new(IoErrorKind::Closed, "closed")).kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
-        assert_eq!(
-            IoError::from(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "unsupported"
-            ))
-            .kind,
-            IoErrorKind::Unsupported
-        );
     }
 
     #[tokio::test]

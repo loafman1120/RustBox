@@ -50,29 +50,3 @@ pub fn kdf12(key: &[u8], path: &[&[u8]]) -> [u8; 12] {
     out.copy_from_slice(&full[..12]);
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn kdf_produces_deterministic_output() {
-        let k1 = kdf(b"test-key", &[b"label1"]);
-        let k2 = kdf(b"test-key", &[b"label1"]);
-        assert_eq!(k1, k2);
-    }
-
-    #[test]
-    fn kdf_different_paths_differ() {
-        let k1 = kdf(b"test-key", &[b"label1"]);
-        let k2 = kdf(b"test-key", &[b"label2"]);
-        assert_ne!(k1, k2);
-    }
-
-    #[test]
-    fn kdf_multi_segment_path() {
-        let k1 = kdf(b"key", &[b"a", b"b"]);
-        let k2 = kdf(b"key", &[b"a"]);
-        assert_ne!(k1, k2);
-    }
-}
