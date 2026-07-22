@@ -1,0 +1,23 @@
+# Clash-compatible input is normalized into RustBox's shared SourceConfig.
+mixed-port: 7890
+allow-lan: false
+
+proxies:
+  - name: local-ss
+    type: ss
+    server: 127.0.0.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: change-me
+
+proxy-groups:
+  - name: proxy
+    type: select
+    proxies:
+      - local-ss
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,example.com,proxy
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - MATCH,DIRECT

@@ -1,8 +1,23 @@
 # 配置与协议
 
-RustBox 使用 TOML 描述客户端运行图。配置先完成规范化、引用检查和协议约束验证，
-成功后才创建 socket 或修改系统网络。可运行的完整字段示例见
-[`examples/rustbox.toml`](../examples/rustbox.toml)。
+RustBox 原生配置可使用 TOML 或字段完全相同的 JSON 描述客户端运行图，也可导入
+`.yaml` / `.yml` Clash 配置。CLI 根据扩展名选择格式；配置先完成规范化、引用检查和
+协议约束验证，成功后才创建 socket 或修改系统网络。原生配置的完整字段示例见
+[`examples/rustbox.toml`](../examples/rustbox.toml)，Clash 导入示例见
+[`examples/clash.yaml`](../examples/clash.yaml)。
+
+## Clash YAML 兼容范围
+
+Clash 文档会先转换成统一的 `SourceConfig`，而不是把 Clash 字段带入运行时。目前支持：
+
+- `port`、`socks-port`、`mixed-port`、`bind-address`、单用户 `authentication`；
+- `ss`、`socks5`、`http`、`vmess`、`vless`、`trojan`、`hysteria2` 和 `anytls` 代理；
+- `select`、`url-test` 代理组；
+- domain、IP CIDR、端口、进程、inbound、TCP/UDP 和 `MATCH` 规则。
+
+proxy/rule provider、`fallback`、`load-balance`、GeoIP/GeoSite 等尚无等价导入语义，
+解析时会明确报错，不会静默改成 direct。Clash 的 DNS/TUN 配置暂未导入；需要这些能力时
+使用原生 TOML/JSON。
 
 ## 路由
 

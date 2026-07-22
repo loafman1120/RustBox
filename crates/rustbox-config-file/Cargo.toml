@@ -14,6 +14,7 @@ garde = { version = "0.23", features = ["derive"] }
 miette = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde-saphyr = "0.0.29"
 serde_with = "3"
 thiserror = "2"
 humantime-serde = "1"

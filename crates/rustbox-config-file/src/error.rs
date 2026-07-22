@@ -26,4 +26,8 @@ impl ConfigFileError {
     pub(crate) fn parse_json(error: impl std::fmt::Display) -> Self {
         Self::new(format!("failed to parse JSON config: {error}"))
     }
+
+    pub(crate) fn parse_clash(error: impl std::fmt::Display) -> Self {
+        Self::new(format!("failed to parse Clash YAML config: {error}"))
+    }
 }

@@ -1,5 +1,6 @@
-//! TOML and JSON configuration frontends for RustBox.
+//! TOML, JSON, and Clash YAML configuration frontends for RustBox.
 
+mod clash;
 mod document;
 mod error;
 mod loader;
@@ -7,11 +8,13 @@ mod migration;
 mod srs;
 mod validation;
 
+pub use clash::{load_clash_file, load_clash_source, parse_clash_source, parse_clash_str};
 pub use document::SUPPORTED_SCHEMA_VERSION;
 pub use document::{
-    ConfigLoader, FileConfig, FileObservabilityConfig, load_json_file, load_json_source,
-    load_toml_file, load_toml_source, parse_json_source, parse_json_str,
-    parse_rule_set_rustbox_toml, parse_rule_set_source_json, parse_toml_source, parse_toml_str,
+    ConfigFormat, ConfigLoader, FileConfig, FileObservabilityConfig, load_config_file,
+    load_config_source, load_json_file, load_json_source, load_toml_file, load_toml_source,
+    parse_json_source, parse_json_str, parse_rule_set_rustbox_toml, parse_rule_set_source_json,
+    parse_toml_source, parse_toml_str,
 };
 pub use error::ConfigFileError;
 pub use srs::parse_rule_set_srs;

@@ -4,7 +4,7 @@ mod observability;
 use observability::ObservabilityArgs;
 use rustbox::{RustBox, RustBoxOptions};
 use rustbox_clash_api::ClashApiConfig;
-use rustbox_config_file::{load_toml_file, load_toml_source};
+use rustbox_config_file::{load_config_file, load_config_source};
 use rustbox_control::EngineCommand;
 use rustbox_control_api::{AuthPolicy, ControlApiConfig};
 use std::net::SocketAddr;
@@ -49,7 +49,7 @@ async fn main() {
             return;
         }
         CliCommand::CheckConfig { config } => {
-            let source = load_toml_source(&config).unwrap_or_else(|err| {
+            let source = load_config_source(&config).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", config.display(), err.message)
             });
             let runtime = RustBox::new(source)
@@ -63,7 +63,7 @@ async fn main() {
         }
         CliCommand::Run { config } => {
             // 文件配置先进入 config-file，再进入统一 SourceConfig -> CompiledConfig 流水线。
-            let file_config = load_toml_file(&config).unwrap_or_else(|err| {
+            let file_config = load_config_file(&config).unwrap_or_else(|err| {
                 panic!("load config file `{}`: {}", config.display(), err.message)
             });
             let observability = cli
@@ -181,12 +181,12 @@ struct ControlArgs {
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 enum CliCommand {
-    /// Start from a TOML configuration file.
+    /// Start from a TOML, native JSON, or Clash YAML configuration file.
     Run {
         #[arg(short, long, value_name = "FILE")]
         config: PathBuf,
     },
-    /// Validate and compose a TOML configuration without starting services.
+    /// Validate and compose a TOML, native JSON, or Clash YAML configuration.
     CheckConfig {
         #[arg(short, long, value_name = "FILE")]
         config: PathBuf,

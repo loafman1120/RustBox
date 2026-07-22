@@ -1,0 +1,44 @@
+# Adapted from the official Mihomo configuration reference:
+# - https://wiki.metacubex.one/en/config/proxies/
+# - https://wiki.metacubex.one/en/config/proxy-groups/
+# - https://wiki.metacubex.one/en/config/rules/
+#
+# Network-dependent providers and GeoIP databases are intentionally omitted so
+# this fixture remains deterministic in offline CI.
+mixed-port: 7890
+allow-lan: false
+
+proxies:
+  - name: ss
+    type: ss
+    server: proxy.example.test
+    port: 443
+    cipher: aes-128-gcm
+    password: test-password
+    udp: true
+
+proxy-groups:
+  - name: proxy
+    type: select
+    proxies:
+      - ss
+      - DIRECT
+  - name: auto
+    type: url-test
+    proxies:
+      - ss
+      - DIRECT
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+
+rules:
+  - DOMAIN-SUFFIX,google.com,auto
+  - DOMAIN-KEYWORD,google,auto
+  - DOMAIN,example.com,proxy
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - SRC-IP-CIDR,192.168.1.0/24,DIRECT
+  - DST-PORT,80,proxy
+  - SRC-PORT,7777,DIRECT
+  - NETWORK,udp,DIRECT
+  - MATCH,proxy

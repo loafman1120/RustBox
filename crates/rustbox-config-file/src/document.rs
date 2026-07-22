@@ -24,6 +24,33 @@ use observability::TomlObservabilityConfig;
 
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
+/// User-facing configuration syntax selected from a file extension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigFormat {
+    Toml,
+    Json,
+    Clash,
+}
+
+impl ConfigFormat {
+    fn from_path(path: &Path) -> Result<Self, ConfigFileError> {
+        match path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("toml") => Ok(Self::Toml),
+            Some("json") => Ok(Self::Json),
+            Some("yaml" | "yml") => Ok(Self::Clash),
+            extension => Err(ConfigFileError::new(format!(
+                "unsupported config file extension `{}`; expected .toml, .json, .yaml, or .yml",
+                extension.unwrap_or("<none>")
+            ))),
+        }
+    }
+}
+
 /// 文件解析结果：核心 SourceConfig 加上文件侧可选的应用级配置。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileConfig {
@@ -126,6 +153,21 @@ pub fn load_json_source(path: impl AsRef<Path>) -> Result<SourceConfig, ConfigFi
 /// 从 JSON 文本直接返回格式无关的运行配置。
 pub fn parse_json_source(input: &str) -> Result<SourceConfig, ConfigFileError> {
     parse_json_str(input).map(FileConfig::into_source)
+}
+
+/// Loads TOML, native JSON, or Clash YAML according to the file extension.
+pub fn load_config_file(path: impl AsRef<Path>) -> Result<FileConfig, ConfigFileError> {
+    let path = path.as_ref();
+    match ConfigFormat::from_path(path)? {
+        ConfigFormat::Toml => load_toml_file(path),
+        ConfigFormat::Json => load_json_file(path),
+        ConfigFormat::Clash => crate::clash::load_clash_file(path),
+    }
+}
+
+/// Loads only the normalized runtime model from any supported file syntax.
+pub fn load_config_source(path: impl AsRef<Path>) -> Result<SourceConfig, ConfigFileError> {
+    load_config_file(path).map(FileConfig::into_source)
 }
 
 pub fn parse_rule_set_source_json(input: &str) -> Result<Vec<RouteMatcherConfig>, ConfigFileError> {

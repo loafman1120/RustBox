@@ -55,9 +55,9 @@ Set `RUSTBOX_LOG=debug` for detailed logs.
 
 ### CLI
 
-`apps/rustbox-cli` is the reference host. It loads TOML, owns the engine
-lifecycle, responds to network changes, and can expose local gRPC and
-Clash/Mihomo-compatible control APIs.
+`apps/rustbox-cli` is the reference host. It loads RustBox TOML/native JSON or
+supported Clash YAML, owns the engine lifecycle, responds to network changes,
+and can expose local gRPC and Clash/Mihomo-compatible control APIs.
 
 ### Flutter
 
@@ -83,6 +83,7 @@ The examples are the configuration reference:
   outbound examples
 - [`examples/tun-transparent.toml`](examples/tun-transparent.toml) — TUN and
   transparent networking
+- [`examples/clash.yaml`](examples/clash.yaml) — supported Clash YAML import
 
 ## Design at a glance
 
@@ -95,7 +96,7 @@ CLI / Flutter
 ```
 
 Tokio is the only production executor. Configuration moves through
-`TOML -> normalize -> validate -> compile -> runtime`, and operating-system
+`TOML / JSON / Clash YAML -> normalize -> validate -> compile -> runtime`, and operating-system
 changes are represented by handles that can be rolled back.
 
 ## Documentation

@@ -84,7 +84,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: cargo build --locked -p rustbox-watchdog
 
-      - name: Validate example configs (all)
+      - name: Validate native example config
         shell: pwsh
         run: |
           cargo run --locked -p rustbox-app -- check-config --config examples/rustbox.toml
@@ -102,6 +102,43 @@ jobs:
             target/debug/rustbox-app.exe
             target/debug/rustbox-watchdog.exe
           if-no-files-found: error
+
+  # Clash YAML: parse -> normalize -> start mixed inbound -> route through selector -> local target.
+  e2e-clash-config:
+    name: E2E Clash config (${{ matrix.os }})
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: rustbox-app-${{ matrix.os }}
+          path: target/debug
+      - name: Fix permissions (Unix)
+        if: matrix.os != 'windows-latest'
+        run: chmod +x target/debug/rustbox-app
+      - name: Run Clash configuration E2E
+        shell: pwsh
+        env:
+          RUSTBOX_CI_DUMP_LOGS: ${{ runner.debug == '1' && '1' || '0' }}
+        run: ./scripts/test/clash-config.ps1
+      - name: Upload Clash E2E failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-clash-config-${{ matrix.os }}-logs
+          path: target/ci-clash-config/logs
+          if-no-files-found: warn
+          retention-days: 7
 
   # ── E2E inbound: RustBox as proxy server ────────────────────────
   #     curl → rustbox inbound → direct outbound → target
