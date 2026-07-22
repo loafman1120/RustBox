@@ -126,7 +126,7 @@ try {
     }
 
     $PwshExe = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-    $CurlExe = (Get-Command curl.exe, curl -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $CurlExe = (Get-Command curl -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
     Remove-Item -LiteralPath $ResolvedWork -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
