@@ -1,4 +1,6 @@
 # RustBox
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Floafman1120%2FRustBox.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Floafman1120%2FRustBox?ref=badge_shield)
+
 
 **A client-side network engine for applications that need a dependable local
 proxy.**
@@ -122,3 +124,6 @@ approved exception. Smoke and end-to-end helpers live in `scripts/test/`.
 ## License
 
 MIT
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Floafman1120%2FRustBox.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Floafman1120%2FRustBox?ref=badge_large)
