@@ -16,7 +16,7 @@ use rustbox_kernel::{
     TransparentTcpBind,
 };
 use rustbox_types::{Endpoint, Host, ProcessMetadata};
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::process::Command;

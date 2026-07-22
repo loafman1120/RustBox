@@ -305,7 +305,11 @@ pub(crate) fn route_from_add_route(
     interface: &InterfaceRef,
     metric: Option<u32>,
 ) -> Result<Route, NetworkControlError> {
-    if destination.prefix_len > destination.address.max_prefix_len() {
+    let max_prefix_len = match destination.address {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    };
+    if destination.prefix_len > max_prefix_len {
         return Err(NetworkControlError::new(format!(
             "invalid route prefix `{}` for destination {}",
             destination.prefix_len, destination.address
