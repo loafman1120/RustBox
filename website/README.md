@@ -1,9 +1,11 @@
 # RustBox website
 
-Static project showcase page. Open `index.html` directly, or serve this folder:
+React + Vite product site for RustBox. GSAP ScrollTrigger drives section and
+parallax animation; Lenis provides smooth scrolling.
 
 ```powershell
-python -m http.server 8080 --directory website
+pnpm install
+pnpm dev
 ```
 
-Then visit `http://localhost:8080`.
+Create a production build with `pnpm build`.

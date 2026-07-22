@@ -1,3 +1,6 @@
 /target
 /dist
+.pnpm-store/
+website/node_modules/
+website/dist/
 .trae/
