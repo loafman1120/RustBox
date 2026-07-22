@@ -17,7 +17,7 @@ struct GroupProbe {
     id: OutboundId,
     tag: String,
     children: Vec<(OutboundId, String, Arc<dyn Outbound>)>,
-    url: String,
+    url: reqwest::Url,
     interval: Duration,
     timeout: Duration,
     concurrency: usize,
@@ -56,7 +56,9 @@ impl UrlTestController {
             .get(tag)
             .cloned()
             .ok_or_else(|| format!("outbound `{tag}` not found"))?;
-        let delay = tokio::time::timeout(timeout, probe(outbound, url))
+        let url =
+            reqwest::Url::parse(url).map_err(|error| format!("invalid probe URL: {error}"))?;
+        let delay = tokio::time::timeout(timeout, probe(outbound, &url))
             .await
             .map_err(|_| format!("probe timed out after {} ms", timeout.as_millis()))??;
         Ok(delay.as_millis().min(u32::MAX as u128) as u32)
@@ -74,7 +76,8 @@ impl UrlTestController {
             .cloned()
             .ok_or_else(|| format!("URLTest group `{tag}` not found"))?;
         if !url.is_empty() {
-            group.url = url.to_string();
+            group.url =
+                reqwest::Url::parse(url).map_err(|error| format!("invalid probe URL: {error}"))?;
         }
         group.timeout = timeout;
         Ok(run_group(&group, &self.registry).await)
@@ -161,7 +164,8 @@ impl UrlTestService {
                             Some((*id, tags.get(id)?.clone(), outbounds.get(id)?.clone()))
                         })
                         .collect(),
-                    url: "http://www.gstatic.com/generate_204".to_string(),
+                    url: reqwest::Url::parse("http://www.gstatic.com/generate_204")
+                        .expect("valid default probe URL"),
                     interval: Duration::from_secs(300),
                     timeout: Duration::from_secs(5),
                     concurrency: 4,
@@ -292,8 +296,7 @@ impl rustbox_control_service::OutboundProbe for UrlTestController {
     }
 }
 
-async fn probe(outbound: Arc<dyn Outbound>, url: &str) -> Result<Duration, String> {
-    let url = reqwest::Url::parse(url).map_err(|e| format!("invalid probe URL: {e}"))?;
+async fn probe(outbound: Arc<dyn Outbound>, url: &reqwest::Url) -> Result<Duration, String> {
     let host = url
         .host_str()
         .ok_or_else(|| "probe URL has no host".to_string())?

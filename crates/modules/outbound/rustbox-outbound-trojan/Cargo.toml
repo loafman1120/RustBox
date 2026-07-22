@@ -7,13 +7,13 @@ license.workspace = true
 [dependencies]
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-runtime-config = { path = "../../../foundation/rustbox-runtime-config" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 rustbox-transport = { path = "../../transport/rustbox-transport" }
 rustls = "0.23.41"
 sha2 = "0.10"
 tokio = { version = "1", features = ["io-util"] }
 tokio-rustls = "0.26.4"
-webpki-roots = "1"
 
 [lints]
 workspace = true

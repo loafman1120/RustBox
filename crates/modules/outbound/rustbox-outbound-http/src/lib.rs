@@ -13,6 +13,7 @@ use rustbox_kernel::{
 };
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
 use rustbox_types::{Endpoint, Host, OutboundId};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -207,7 +208,7 @@ fn connect_request(target: &Endpoint, credentials: Option<&HttpProxyCredentials>
 
 fn endpoint_authority(endpoint: &Endpoint) -> String {
     match &endpoint.host {
-        Host::Ip(rustbox_types::IpAddress::V6(_)) => {
+        Host::Ip(IpAddr::V6(_)) => {
             format!("[{}]:{}", endpoint.host, endpoint.port)
         }
         _ => endpoint.to_string(),

@@ -13,7 +13,7 @@ use rustbox_kernel::{
     ObservabilitySink, TcpConnect,
 };
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
-use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
+use rustbox_types::{Endpoint, Host, OutboundId};
 use shadowsocks::config::{ServerConfig, ServerType};
 use shadowsocks::context::{Context as ShadowsocksContext, SharedContext};
 use shadowsocks::crypto::CipherKind;
@@ -22,7 +22,7 @@ use shadowsocks::relay::socks5::Address;
 use shadowsocks::relay::tcprelay::proxy_stream::client::ProxyClientStream;
 use shadowsocks::relay::udprelay::proxy_socket::ProxySocket;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::ReadBuf;
 
@@ -231,7 +231,7 @@ impl ShadowsocksDatagramSocket {
 
 impl DatagramSocket for ShadowsocksDatagramSocket {
     fn local_endpoint(&self) -> Option<Endpoint> {
-        self.inner.local_addr().ok().map(socket_addr_to_endpoint)
+        self.inner.local_addr().ok().map(Endpoint::from)
     }
 
     fn poll_recv_from(
@@ -259,7 +259,7 @@ impl DatagramSocket for ShadowsocksDatagramSocket {
                 buf[..payload.len()].copy_from_slice(payload);
                 Poll::Ready(Ok((payload.len(), address_to_endpoint(target))))
             }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err.into()))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(io::Error::from(err).into())),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -273,50 +273,22 @@ impl DatagramSocket for ShadowsocksDatagramSocket {
         self.get_mut()
             .inner
             .poll_send(&endpoint_to_address(target), buf, cx)
-            .map_err(|err| io_error(err.into()))
+            .map_err(|err| IoError::from(io::Error::from(err)))
     }
 }
 
 fn endpoint_to_address(endpoint: &Endpoint) -> Address {
     match &endpoint.host {
         Host::Domain(domain) => Address::DomainNameAddress(domain.clone(), endpoint.port),
-        Host::Ip(ip) => Address::SocketAddress(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
+        Host::Ip(ip) => Address::SocketAddress(SocketAddr::new(*ip, endpoint.port)),
     }
 }
 
 fn address_to_endpoint(address: Address) -> Endpoint {
     match address {
         Address::DomainNameAddress(domain, port) => Endpoint::new(Host::Domain(domain), port),
-        Address::SocketAddress(addr) => socket_addr_to_endpoint(addr),
+        Address::SocketAddress(addr) => addr.into(),
     }
-}
-
-fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
-        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
-    };
-    Endpoint::new(host, addr.port())
-}
-
-fn ip_to_std(ip: IpAddress) -> IpAddr {
-    match ip {
-        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
-        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
-    }
-}
-
-fn io_error(err: io::Error) -> IoError {
-    let kind = match err.kind() {
-        io::ErrorKind::BrokenPipe
-        | io::ErrorKind::ConnectionAborted
-        | io::ErrorKind::UnexpectedEof => IoErrorKind::Closed,
-        io::ErrorKind::Interrupted => IoErrorKind::Interrupted,
-        io::ErrorKind::InvalidInput => IoErrorKind::InvalidInput,
-        io::ErrorKind::Unsupported => IoErrorKind::Unsupported,
-        _ => IoErrorKind::Other,
-    };
-    IoError::new(kind, err.to_string())
 }
 
 #[cfg(test)]
@@ -403,7 +375,7 @@ mod tests {
         let listener = ProxyListener::bind(context, &config)
             .await
             .expect("bind shadowsocks tcp listener");
-        let server = socket_addr_to_endpoint(listener.local_addr().expect("server local addr"));
+        let server = listener.local_addr().expect("server local addr").into();
 
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept shadowsocks tcp");
@@ -429,7 +401,7 @@ mod tests {
         let socket = ProxySocket::bind(context, &config)
             .await
             .expect("bind shadowsocks udp socket");
-        let server = socket_addr_to_endpoint(socket.local_addr().expect("server local addr"));
+        let server = socket.local_addr().expect("server local addr").into();
 
         tokio::spawn(async move {
             let mut buf = vec![0_u8; 65_535];

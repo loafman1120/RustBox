@@ -23,8 +23,11 @@ apps/rustbox-cli          apps/rustbox-flutter
 1. Tokio 是唯一的生产运行时；CLI、Flutter 和模块不另建 runtime。
 2. `rustbox` 是组合根；协议 crate 不反向依赖应用或配置文件格式。
 3. 路由保持纯计算；DNS、进程和网络元数据在路由前完成补充。
-4. 平台操作通过 kernel host ports 注入，不进入可移植的路由和协议核心。
+4. 平台操作通过 kernel host ports 注入，不进入可移植的路由和协议核心；
+   `target_os` 条件选择只允许出现在 `crates/platform`。
 5. 动态分派只保留在 service、outbound、I/O、观测 sink 和平台能力等异构边界。
+6. IP 和 socket 地址直接使用 `std::net::IpAddr` / `SocketAddr`；只有需要保留
+   未解析域名的跨层目标才使用 `Endpoint { Host, port }`。
 
 ## Workspace 边界
 
@@ -37,7 +40,7 @@ apps/rustbox-cli          apps/rustbox-flutter
 | 数据面 | `crates/kernel` | flow、route、relay、dial 和 host capability ports |
 | 功能模块 | `crates/modules` | DNS、嗅探、协议、transport、inbound/outbound、用户态栈 |
 | 平台 | `crates/platform` | Linux、macOS、Windows、Android 能力实现 |
-| 基础 | `crates/foundation` | 公共类型和 Tokio I/O 契约；不持有 socket 或 OS handle |
+| 基础 | `crates/foundation` | 公共类型、已解析的纯数据运行配置和 Tokio I/O 契约；不持有 socket 或 OS handle |
 | 观测 | `crates/rustbox-observability` | 事件、指标、连接快照和 sink |
 
 `apps/rustbox-flutter/rust` 同时是 Flutter package 的桥接层和 Cargo
@@ -51,6 +54,13 @@ TOML → document → normalize → validate → compile → runtime graph
 
 文件语法与运行模型分离：文件入口产生 `SourceConfig`，CLI、Flutter 和库调用者再走
 同一个编译与装配流程。
+
+`SourceConfig` 保留用户输入形态，字符串字段通过 Serde 反序列化并由 Garde 给出字段级
+诊断；`CompiledConfig` 则只保存已经解析的 UUID、URL、WireGuard key、TLS/REALITY
+材料、内部 ID 和内核路由 matcher。跨编译器和数据面共享的纯数据计划放在轻量
+`rustbox-runtime-config` foundation crate，避免配置层反向依赖协议实现。组合根不得再次
+解析这些值，也不维护配置模型的逐字段镜像。仅在确实需要派生平台资源时使用显式
+`*Plan` 类型，例如 `TunInboundPlan`。
 
 - `new`：校验配置并准备运行图。
 - `start`：启动 inbound、后台任务和可选控制服务。
@@ -125,4 +135,5 @@ crate。出现以下情况时应重新审视边界：
 - 同一转换或错误映射复制到三个以上 crate；
 - 平台文件同时承担能力探测、进程查询、packet I/O 和网络事务。
 
-配置细节分别见 [路由与 transport](p1-routing-transport.md) 和 [DNS](dns-transports.md)。
+配置细节分别见 [路由与 transport](p1-routing-transport.md)、[DNS](dns-transports.md)
+和 [客户端 DNS 与 Windows TUN](client-dns-windows.md)。

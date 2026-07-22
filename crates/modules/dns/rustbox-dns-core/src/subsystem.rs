@@ -7,8 +7,9 @@ use crate::{
 use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
 use hickory_resolver::proto::rr::rdata::{A, AAAA};
 use hickory_resolver::proto::rr::{RData, Record, RecordType};
-use rustbox_types::{Host, IpAddress};
+use rustbox_types::Host;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 /// Fully assembled concrete DNS graph. Only the cross-subsystem reverse map is shared.
@@ -140,12 +141,8 @@ impl DnsSubsystem {
                             .filter(|_| answer.records.is_empty())
                         {
                             let data = match answer.host {
-                                Host::Ip(IpAddress::V4(value)) => {
-                                    Some(RData::A(A(std::net::Ipv4Addr::from(value))))
-                                }
-                                Host::Ip(IpAddress::V6(value)) => {
-                                    Some(RData::AAAA(AAAA(std::net::Ipv6Addr::from(value))))
-                                }
+                                Host::Ip(IpAddr::V4(value)) => Some(RData::A(A(value))),
+                                Host::Ip(IpAddr::V6(value)) => Some(RData::AAAA(AAAA(value))),
                                 Host::Domain(_) => None,
                             };
                             if let Some(data) = data {

@@ -1,7 +1,8 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
-use rustbox_types::{Endpoint, Host, IpAddress};
+use rustbox_types::{Endpoint, Host};
+use std::net::IpAddr;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 
 use crate::encode_endpoint;
@@ -166,8 +167,8 @@ fn parse_frame(bytes: &[u8]) -> Result<Option<ParsedFrame>, IoError> {
             if bytes.len() < 5 {
                 return Ok(None);
             }
-            let octets = bytes[1..5].try_into().expect("IPv4 length checked");
-            (Host::Ip(IpAddress::V4(octets)), 5)
+            let octets = <[u8; 4]>::try_from(&bytes[1..5]).expect("IPv4 length checked");
+            (Host::Ip(IpAddr::V4(octets.into())), 5)
         }
         0x03 => {
             let Some(length) = bytes.get(1).copied().map(usize::from) else {
@@ -189,8 +190,8 @@ fn parse_frame(bytes: &[u8]) -> Result<Option<ParsedFrame>, IoError> {
             if bytes.len() < 17 {
                 return Ok(None);
             }
-            let octets = bytes[1..17].try_into().expect("IPv6 length checked");
-            (Host::Ip(IpAddress::V6(octets)), 17)
+            let octets = <[u8; 16]>::try_from(&bytes[1..17]).expect("IPv6 length checked");
+            (Host::Ip(IpAddr::V6(octets.into())), 17)
         }
         value => {
             return Err(IoError::new(

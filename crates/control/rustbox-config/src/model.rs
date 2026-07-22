@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine as _;
 use garde::Validate;
 use rustbox_types::NetworkType;
 use serde::Deserialize;
@@ -116,6 +117,10 @@ pub struct TunInboundConfig {
     pub dns_mode: TunDnsMode,
     #[serde(default)]
     pub auto_route: bool,
+    /// Bind client-originated sockets to the physical default interface so a
+    /// full-tunnel route cannot capture RustBox's own outbound traffic.
+    #[serde(default)]
+    pub auto_detect_interface: bool,
     #[serde(default)]
     pub strict_route: bool,
     #[serde(default)]
@@ -134,6 +139,32 @@ pub struct TunInboundConfig {
 
 impl TunInboundConfig {
     pub fn normalize_derived_modes(&mut self) {
+        if self.strict_route {
+            self.auto_route = true;
+            let mut additions = Vec::new();
+            for target in &self.dns_hijack {
+                let counterpart = match target.network {
+                    Some(rustbox_types::Network::Tcp) => Some(rustbox_types::Network::Udp),
+                    Some(rustbox_types::Network::Udp) => Some(rustbox_types::Network::Tcp),
+                    None => None,
+                };
+                if let Some(network) = counterpart
+                    && !self.dns_hijack.iter().any(|candidate| {
+                        candidate.endpoint == target.endpoint
+                            && (candidate.network.is_none() || candidate.network == Some(network))
+                    })
+                    && !additions.iter().any(|candidate: &DnsHijackTarget| {
+                        candidate.endpoint == target.endpoint && candidate.network == Some(network)
+                    })
+                {
+                    additions.push(DnsHijackTarget {
+                        network: Some(network),
+                        endpoint: target.endpoint.clone(),
+                    });
+                }
+            }
+            self.dns_hijack.extend(additions);
+        }
         self.route_mode = if self.strict_route {
             RouteMode::Strict
         } else if self.auto_route {
@@ -302,6 +333,7 @@ pub enum OutboundConfigKind {
         outbounds: Vec<String>,
         /// 测试 URL。
         #[serde(default = "default_urltest_url")]
+        #[garde(custom(validate_url))]
         url: String,
         /// 测试间隔秒数。
         #[serde(default = "default_urltest_interval_seconds")]
@@ -333,9 +365,11 @@ pub enum OutboundConfigKind {
     Vmess {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
+        #[garde(custom(validate_uuid))]
         uuid: String,
         security: Option<String>,
         alter_id: Option<u16>,
+        #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
         transport: Option<V2RayTransportConfig>,
     },
@@ -343,8 +377,10 @@ pub enum OutboundConfigKind {
     Vless {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
+        #[garde(custom(validate_uuid))]
         uuid: String,
         flow: Option<String>,
+        #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
         transport: Option<V2RayTransportConfig>,
     },
@@ -353,6 +389,7 @@ pub enum OutboundConfigKind {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         password: String,
+        #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
         transport: Option<V2RayTransportConfig>,
     },
@@ -383,6 +420,7 @@ pub enum OutboundConfigKind {
         server: Endpoint,
         username: String,
         password: String,
+        #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
         #[serde(default)]
         headers: BTreeMap<String, String>,
@@ -391,8 +429,10 @@ pub enum OutboundConfigKind {
     Tuic {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
+        #[garde(custom(validate_uuid))]
         uuid: String,
         password: String,
+        #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
         #[serde(default = "default_tuic_heartbeat", with = "humantime_serde")]
         heartbeat: Duration,
@@ -403,9 +443,11 @@ pub enum OutboundConfigKind {
         #[serde(default)]
         #[serde_as(as = "Vec<DisplayFromStr>")]
         addresses: Vec<IpCidr>,
+        #[garde(custom(validate_wireguard_key))]
         private_key: String,
         #[serde(default)]
         listen_port: u16,
+        #[garde(dive)]
         peers: Vec<WireGuardPeerConfig>,
         #[serde(default = "default_wireguard_mtu")]
         mtu: usize,
@@ -419,6 +461,7 @@ pub enum OutboundConfigKind {
         #[serde(default = "default_shadowtls_version")]
         version: u8,
         password: String,
+        #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
     },
     /// AnyTLS 上游代理；组合根通过 `rustbox-outbound-anytls` 实例化数据面。
@@ -427,6 +470,7 @@ pub enum OutboundConfigKind {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         password: String,
+        #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
     },
 }
@@ -448,15 +492,19 @@ pub struct OutboundTlsConfig {
     pub client_private_key_pem: Option<String>,
     /// Additional PEM encoded certificate authorities.
     #[serde(default)]
+    #[garde(custom(validate_ca_pems))]
     pub certificate_authorities_pem: Vec<String>,
     /// Base64 encoded SHA-256 hashes of leaf certificate SubjectPublicKeyInfo.
     #[serde(default)]
+    #[garde(custom(validate_sha256_pins))]
     pub certificate_public_key_sha256: Vec<String>,
     /// ClientHello profile, for example `chrome` or `firefox`.
     pub fingerprint: Option<String>,
     /// Base64 encoded ECHConfigList.
+    #[garde(custom(validate_optional_base64))]
     pub ech_config: Option<String>,
     /// REALITY authentication parameters.
+    #[garde(dive)]
     pub reality: Option<OutboundRealityConfig>,
 }
 
@@ -465,8 +513,10 @@ pub struct OutboundTlsConfig {
 #[serde(deny_unknown_fields)]
 pub struct OutboundRealityConfig {
     /// URL-safe base64 encoded X25519 public key.
+    #[garde(custom(validate_base64_32))]
     pub public_key: String,
     /// Hex encoded short id (at most eight bytes; right padded with zeroes).
+    #[garde(custom(validate_short_id))]
     pub short_id: String,
     #[serde(default)]
     pub support_x25519_mlkem768: bool,
@@ -479,7 +529,9 @@ pub struct OutboundRealityConfig {
 pub struct WireGuardPeerConfig {
     #[serde_as(as = "DisplayFromStr")]
     pub server: Endpoint,
+    #[garde(custom(validate_wireguard_key))]
     pub public_key: String,
+    #[garde(custom(validate_optional_wireguard_key))]
     pub pre_shared_key: Option<String>,
     #[serde(default)]
     #[serde_as(as = "Vec<DisplayFromStr>")]
@@ -803,31 +855,9 @@ pub struct CompiledInbound {
     pub kind: CompiledInboundKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CompiledInboundKind {
-    Mixed {
-        listen: Endpoint,
-        username: Option<String>,
-        password: Option<String>,
-    },
-    HttpConnect {
-        listen: Endpoint,
-        username: Option<String>,
-        password: Option<String>,
-    },
-    Socks5 {
-        listen: Endpoint,
-        username: Option<String>,
-        password: Option<String>,
-    },
-    AnyTls {
-        listen: Endpoint,
-        password: String,
-        tls: AnyTlsInboundTlsConfig,
-    },
-    Tun(TunInboundConfig),
-    Transparent(TransparentInboundConfig),
-}
+/// Inbound compilation only assigns a stable ID; the validated payload is
+/// already runtime-ready and is intentionally shared instead of mirrored.
+pub type CompiledInboundKind = InboundConfigKind;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledOutbound {
@@ -879,7 +909,7 @@ pub enum CompiledOutboundKind {
     UrlTest {
         outbounds: Vec<OutboundId>,
         selected: RouteDecision,
-        url: String,
+        url: url::Url,
         interval_seconds: u64,
         tolerance_ms: u16,
         timeout_seconds: u64,
@@ -890,24 +920,24 @@ pub enum CompiledOutboundKind {
     },
     Vmess {
         server: Endpoint,
-        uuid: String,
+        uuid: uuid::Uuid,
         security: Option<String>,
         alter_id: Option<u16>,
-        tls: Option<OutboundTlsConfig>,
-        transport: Option<V2RayTransportConfig>,
+        tls: Option<rustbox_runtime_config::TlsClientConfig>,
+        transport: Option<rustbox_runtime_config::V2RayTransportPlan>,
     },
     Vless {
         server: Endpoint,
-        uuid: String,
+        uuid: uuid::Uuid,
         flow: Option<String>,
-        tls: Option<OutboundTlsConfig>,
-        transport: Option<V2RayTransportConfig>,
+        tls: Option<rustbox_runtime_config::TlsClientConfig>,
+        transport: Option<rustbox_runtime_config::V2RayTransportPlan>,
     },
     Trojan {
         server: Endpoint,
         password: String,
-        tls: Option<OutboundTlsConfig>,
-        transport: Option<V2RayTransportConfig>,
+        tls: Option<rustbox_runtime_config::TlsClientConfig>,
+        transport: Option<rustbox_runtime_config::V2RayTransportPlan>,
     },
     Hysteria2 {
         server: Endpoint,
@@ -927,33 +957,27 @@ pub enum CompiledOutboundKind {
         server: Endpoint,
         username: String,
         password: String,
-        tls: Option<OutboundTlsConfig>,
+        tls: Option<rustbox_runtime_config::TlsClientConfig>,
         headers: BTreeMap<String, String>,
     },
     Tuic {
         server: Endpoint,
-        uuid: String,
+        uuid: uuid::Uuid,
         password: String,
-        tls: Option<OutboundTlsConfig>,
+        tls: Option<rustbox_runtime_config::TlsClientConfig>,
         heartbeat: Duration,
     },
-    WireGuard {
-        addresses: Vec<IpCidr>,
-        private_key: String,
-        listen_port: u16,
-        peers: Vec<WireGuardPeerConfig>,
-        mtu: usize,
-    },
+    WireGuard(rustbox_runtime_config::WireGuardPlan),
     ShadowTls {
         server: Endpoint,
         version: u8,
         password: String,
-        tls: Option<OutboundTlsConfig>,
+        tls: Option<rustbox_runtime_config::TlsClientConfig>,
     },
     AnyTls {
         server: Endpoint,
         password: String,
-        tls: Option<OutboundTlsConfig>,
+        tls: Option<rustbox_runtime_config::TlsClientConfig>,
     },
 }
 
@@ -979,50 +1003,130 @@ pub struct CompiledDnsServerConfig {
 pub enum CompiledRouteRule {
     Default(RouteDecision),
     Rule {
-        matcher: CompiledRouteMatcher,
+        matcher: rustbox_route::RouteMatcher,
         action: RouteAction,
     },
+}
+
+fn validate_uuid(value: &String, _: &()) -> garde::Result {
+    uuid::Uuid::parse_str(value)
+        .map(|_| ())
+        .map_err(|error| garde::Error::new(format!("invalid UUID: {error}")))
+}
+
+fn validate_url(value: &String, _: &()) -> garde::Result {
+    url::Url::parse(value)
+        .map(|_| ())
+        .map_err(|error| garde::Error::new(format!("invalid URL: {error}")))
+}
+
+fn validate_wireguard_key(value: &String, _: &()) -> garde::Result {
+    value
+        .parse::<rustbox_runtime_config::WireGuardKey>()
+        .map(|_| ())
+        .map_err(garde::Error::new)
+}
+
+fn validate_optional_wireguard_key(value: &Option<String>, _: &()) -> garde::Result {
+    value
+        .as_ref()
+        .map_or(Ok(()), |value| validate_wireguard_key(value, &()))
+}
+
+fn validate_optional_base64(value: &Option<String>, _: &()) -> garde::Result {
+    value.as_ref().map_or(Ok(()), |value| {
+        decode_config_base64(value)
+            .map(|_| ())
+            .map_err(garde::Error::new)
+    })
+}
+
+fn validate_base64_32(value: &String, _: &()) -> garde::Result {
+    let bytes = decode_config_base64(value).map_err(garde::Error::new)?;
+    if bytes.len() == 32 {
+        Ok(())
+    } else {
+        Err(garde::Error::new("value must decode to exactly 32 bytes"))
+    }
+}
+
+fn validate_sha256_pins(values: &Vec<String>, _: &()) -> garde::Result {
+    for value in values {
+        validate_base64_32(value, &())?;
+    }
+    Ok(())
+}
+
+fn validate_ca_pems(values: &Vec<String>, _: &()) -> garde::Result {
+    for value in values {
+        let certificates = rustls_pemfile::certs(&mut value.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| garde::Error::new(format!("invalid certificate PEM: {error}")))?;
+        if certificates.is_empty() {
+            return Err(garde::Error::new(
+                "certificate-authority PEM contains no certificates",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_short_id(value: &String, _: &()) -> garde::Result {
+    let bytes = hex::decode(value)
+        .map_err(|error| garde::Error::new(format!("invalid hex short id: {error}")))?;
+    if bytes.len() <= 8 {
+        Ok(())
+    } else {
+        Err(garde::Error::new("short id must not exceed eight bytes"))
+    }
+}
+
+fn decode_config_base64(value: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(value))
+        .map_err(|error| format!("invalid base64 value: {error}"))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledRouteRuleSet {
     pub id: String,
-    pub rules: Vec<CompiledRouteMatcher>,
+    pub rules: Vec<rustbox_route::RouteMatcher>,
     pub source: RouteRuleSetSourceConfig,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CompiledRouteMatcher {
-    Conditions(Box<CompiledRouteConditions>),
-    Logical {
-        mode: LogicalModeConfig,
-        rules: Vec<CompiledRouteMatcher>,
-        invert: bool,
-    },
-}
+#[cfg(test)]
+mod tun_mode_tests {
+    use super::*;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct CompiledRouteConditions {
-    pub inbounds: Vec<InboundId>,
-    pub networks: Vec<Network>,
-    pub protocols: Vec<ProtocolHint>,
-    pub domains: Vec<String>,
-    pub domain_suffixes: Vec<String>,
-    pub domain_keywords: Vec<String>,
-    pub domain_regexes: Vec<String>,
-    pub ip_cidrs: Vec<IpCidr>,
-    pub source_ip_cidrs: Vec<IpCidr>,
-    pub ports: Vec<PortRange>,
-    pub source_ports: Vec<PortRange>,
-    pub rule_sets: Vec<String>,
-    pub process_names: Vec<String>,
-    pub process_paths: Vec<String>,
-    pub package_names: Vec<String>,
-    pub user_ids: Vec<u32>,
-    pub user_names: Vec<String>,
-    pub interfaces: Vec<String>,
-    pub wifi_ssids: Vec<String>,
-    pub wifi_bssids: Vec<String>,
-    pub network_types: Vec<NetworkType>,
-    pub invert: bool,
+    #[test]
+    fn strict_mode_completes_udp_and_tcp_dns_hijack() {
+        let endpoint: Endpoint = "172.19.0.2:53".parse().expect("DNS endpoint");
+        let mut config = TunInboundConfig {
+            interface_name: Some("rustbox0".into()),
+            addresses: vec!["172.19.0.1/30".parse().expect("TUN CIDR")],
+            mtu: Some(1500),
+            route_mode: manual_route_mode(),
+            dns_mode: no_tun_dns(),
+            auto_route: false,
+            auto_detect_interface: false,
+            strict_route: true,
+            route_includes: Vec::new(),
+            route_excludes: Vec::new(),
+            dns_hijack: vec![DnsHijackTarget {
+                network: Some(rustbox_types::Network::Udp),
+                endpoint: endpoint.clone(),
+            }],
+            platform_http_proxy: false,
+            auto_redirect: false,
+        };
+
+        config.normalize_derived_modes();
+
+        assert!(config.auto_route);
+        assert_eq!(config.route_mode, RouteMode::Strict);
+        assert!(config.dns_hijack.iter().any(|target| {
+            target.endpoint == endpoint && target.network == Some(rustbox_types::Network::Tcp)
+        }));
+    }
 }

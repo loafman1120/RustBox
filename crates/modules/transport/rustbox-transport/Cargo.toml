@@ -10,6 +10,7 @@ fingerprint = ["meow-transport/boring-tls"]
 [dependencies]
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-runtime-config = { path = "../../../foundation/rustbox-runtime-config" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 meow-transport = { version = "0.17.0", features = ["ech", "grpc", "h2", "httpupgrade", "tls", "ws"] }
 tokio = { version = "1", features = ["io-util", "sync"] }

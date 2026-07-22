@@ -5,18 +5,17 @@
 //! 查询会继续隔离在这里，portable kernel 和协议模块不直接看到 OS 细节。
 
 use net_route::{Handle as RouteHandle, Route};
+use rustbox_io::IoError;
 use rustbox_io::PacketDevice;
-use rustbox_io::{IoError, IoErrorKind};
 use rustbox_kernel::{
     AcceptedTransparentStream, BoxFuture, ConnectionKey, InterfaceRef, NetworkControl,
     NetworkControlError, NetworkLease, NetworkMetadataLookup, NetworkOperation, NetworkTransaction,
     PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
-    PacketDeviceProvider, ProcessInfo, ProcessLookup, ProcessLookupError, RollbackPolicy,
-    TransparentProxyError, TransparentProxyProvider, TransparentRedirectMode,
-    TransparentStreamListener, TransparentTcpBind,
+    PacketDeviceProvider, ProcessLookup, ProcessLookupError, RollbackPolicy, TransparentProxyError,
+    TransparentProxyProvider, TransparentRedirectMode, TransparentStreamListener,
+    TransparentTcpBind,
 };
-use rustbox_types::IpAddress;
-use rustbox_types::{Endpoint, Host};
+use rustbox_types::{Endpoint, Host, ProcessMetadata};
 use std::net::{IpAddr, SocketAddr};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
@@ -33,6 +32,7 @@ pub(super) const CAPABILITIES: crate::PlatformCapabilities = crate::PlatformCapa
     route_control: crate::CapabilitySupport::Limited,
     transparent_proxy: crate::CapabilitySupport::Limited,
     process_lookup: crate::CapabilitySupport::Supported,
+    strict_route_requires_interface_binding: false,
 };
 
 pub(super) fn tun() -> Option<crate::TunCapabilities> {
@@ -53,6 +53,22 @@ pub(super) fn network_metadata() -> Option<std::sync::Arc<dyn NetworkMetadataLoo
     Some(std::sync::Arc::new(
         network_metadata::NetworkMetadataProvider::default(),
     ))
+}
+
+pub(super) fn socket_policy() -> std::sync::Arc<dyn rustbox_kernel::TokioSocketPolicy> {
+    std::sync::Arc::new(socket::LinuxSocketPolicy)
+}
+
+pub(super) fn default_route_interface() -> Option<InterfaceRef> {
+    None
+}
+
+pub(super) fn default_route_interface_index() -> Option<u32> {
+    None
+}
+
+pub(super) async fn recover_stale_network_state() -> Result<(), String> {
+    Ok(())
 }
 
 /// Linux 平台能力集合。
@@ -76,4 +92,5 @@ mod network_control;
 mod network_metadata;
 mod packet_device;
 mod process;
+mod socket;
 mod transparent;

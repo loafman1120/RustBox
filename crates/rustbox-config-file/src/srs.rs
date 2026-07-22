@@ -6,7 +6,7 @@
 
 use flate2::read::ZlibDecoder;
 use rustbox_config::{LogicalModeConfig, RouteMatchConfig, RouteMatcherConfig};
-use rustbox_types::{IpAddress, IpCidr, Network, NetworkType, PortRange};
+use rustbox_types::{IpCidr, Network, NetworkType, PortRange};
 use std::io::{Cursor, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -390,9 +390,9 @@ fn range_to_cidrs(start: IpAddr, end: IpAddr) -> Result<Vec<IpCidr>, String> {
         let host_bits = alignment.min(capacity);
         let prefix = bits - host_bits;
         let address = if v4 {
-            IpAddress::V4((current as u32).to_be_bytes())
+            IpAddr::V4((current as u32).to_be_bytes().into())
         } else {
-            IpAddress::V6(current.to_be_bytes())
+            IpAddr::V6(current.to_be_bytes().into())
         };
         output.push(IpCidr::new(address, prefix as u8).ok_or("invalid generated CIDR")?);
         if host_bits == 128 || (1_u128 << host_bits) > remaining {

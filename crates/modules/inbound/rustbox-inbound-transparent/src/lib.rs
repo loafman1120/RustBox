@@ -15,7 +15,7 @@ use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TransparentInboundConfig {
+pub struct TransparentInboundPlan {
     pub mode: TransparentRedirectMode,
     pub mark: Option<u32>,
 }
@@ -25,7 +25,7 @@ pub struct TransparentProxyInbound {
     listen: Endpoint,
     provider: Arc<dyn TransparentProxyProvider>,
     sink: Arc<dyn FlowSink>,
-    config: TransparentInboundConfig,
+    config: TransparentInboundPlan,
     observability: Arc<dyn ObservabilitySink>,
     next_flow_id: Arc<AtomicU64>,
     local_endpoint: Arc<Mutex<Option<Endpoint>>>,
@@ -38,7 +38,7 @@ impl TransparentProxyInbound {
         listen: Endpoint,
         provider: Arc<dyn TransparentProxyProvider>,
         sink: Arc<dyn FlowSink>,
-        config: TransparentInboundConfig,
+        config: TransparentInboundPlan,
     ) -> Self {
         Self {
             id,
@@ -236,7 +236,7 @@ mod tests {
             Endpoint::localhost_v4(12345),
             provider,
             sink,
-            TransparentInboundConfig {
+            TransparentInboundPlan {
                 mode: TransparentRedirectMode::Redirect,
                 mark: None,
             },

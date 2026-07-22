@@ -37,6 +37,10 @@ jobs:
         shell: pwsh
         run: ./scripts/build/rust.ps1 -Fmt
 
+      - name: Verify unsafe-code policy coverage
+        shell: pwsh
+        run: ./scripts/test/workspace-lints.ps1 -Locked
+
   # ── Build: compile, test, clippy, doc, upload artifact ─────────
   build:
     name: Build (${{ matrix.os }})
@@ -76,6 +80,10 @@ jobs:
         shell: pwsh
         run: ./scripts/build/rust.ps1 -Build -Locked
 
+      - name: Build Windows recovery watchdog
+        if: matrix.os == 'windows-latest'
+        run: cargo build --locked -p rustbox-watchdog
+
       - name: Validate example configs (all)
         shell: pwsh
         run: |
@@ -92,6 +100,7 @@ jobs:
           path: |
             target/debug/rustbox-app
             target/debug/rustbox-app.exe
+            target/debug/rustbox-watchdog.exe
           if-no-files-found: error
 
   # ── E2E inbound: RustBox as proxy server ────────────────────────

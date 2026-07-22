@@ -1,4 +1,5 @@
 use super::*;
+use std::net::IpAddr;
 
 impl NetworkControl for LinuxPlatform {
     fn apply(
@@ -20,6 +21,7 @@ async fn apply_linux_network_transaction(
         return Ok(NetworkLease {
             id: 0,
             operations: transaction.operations,
+            undo_operations: Vec::new(),
             active: false,
         });
     }
@@ -64,6 +66,7 @@ async fn apply_linux_route_transaction(
                 }
             }
             NetworkOperation::SetInterfaceDns { .. }
+            | NetworkOperation::EnforceDnsLeakProtection { .. }
             | NetworkOperation::SetPlatformHttpProxy(_) => deferred.push(operation.clone()),
         }
     }
@@ -94,6 +97,7 @@ async fn apply_linux_route_transaction(
     Ok(NetworkLease {
         id: NEXT_NETWORK_LEASE_ID.fetch_add(1, Ordering::Relaxed),
         operations: route_operations,
+        undo_operations: Vec::new(),
         active: true,
     })
 }
@@ -102,7 +106,7 @@ fn preserved_route(
     destination: rustbox_types::IpCidr,
     routes: &[Route],
 ) -> Result<Route, NetworkControlError> {
-    let address = std_ip_address(destination.address);
+    let address = destination.address;
     let best = routes
         .iter()
         .filter(|route| route_contains(route, address))
@@ -151,7 +155,7 @@ fn route_contains(route: &Route, address: std::net::IpAddr) -> bool {
 }
 
 pub(crate) fn has_exact_route(destination: rustbox_types::IpCidr, routes: &[Route]) -> bool {
-    let address = std_ip_address(destination.address);
+    let address = destination.address;
     routes
         .iter()
         .any(|route| route.prefix == destination.prefix_len && route_contains(route, address))
@@ -181,6 +185,7 @@ async fn release_linux_network_lease(lease: NetworkLease) -> Result<(), NetworkC
                 preserved_route(*destination, &existing)?
             }
             NetworkOperation::SetInterfaceDns { .. }
+            | NetworkOperation::EnforceDnsLeakProtection { .. }
             | NetworkOperation::SetPlatformHttpProxy(_) => {
                 if let Err(err) = undo_linux_non_route_operation(operation) {
                     errors.push(err.message);
@@ -209,10 +214,7 @@ fn apply_linux_non_route_operation(
     match operation {
         NetworkOperation::SetInterfaceDns { interface, servers } => {
             let interface = interface_arg(interface);
-            let server_args = servers
-                .iter()
-                .map(|server| std_ip_address(*server).to_string())
-                .collect::<Vec<_>>();
+            let server_args = servers.iter().map(ToString::to_string).collect::<Vec<_>>();
             let mut args = vec!["dns".to_string(), interface];
             args.extend(server_args);
             run_linux_command("resolvectl", &args)
@@ -246,6 +248,7 @@ fn apply_linux_non_route_operation(
             }
             Ok(())
         }
+        NetworkOperation::EnforceDnsLeakProtection { .. } => Ok(()),
         other => Err(NetworkControlError::new(format!(
             "not a Linux non-route operation: {other:?}"
         ))),
@@ -266,6 +269,7 @@ fn undo_linux_non_route_operation(operation: &NetworkOperation) -> Result<(), Ne
                 "none".into(),
             ],
         ),
+        NetworkOperation::EnforceDnsLeakProtection { .. } => Ok(()),
         other => Err(NetworkControlError::new(format!(
             "not a Linux non-route operation: {other:?}"
         ))),
@@ -297,7 +301,7 @@ fn run_linux_command(program: &str, args: &[String]) -> Result<(), NetworkContro
 
 pub(crate) fn route_from_add_route(
     destination: rustbox_types::IpCidr,
-    gateway: Option<IpAddress>,
+    gateway: Option<IpAddr>,
     interface: &InterfaceRef,
     metric: Option<u32>,
 ) -> Result<Route, NetworkControlError> {
@@ -308,10 +312,10 @@ pub(crate) fn route_from_add_route(
         )));
     }
 
-    let mut route = Route::new(std_ip_address(destination.address), destination.prefix_len)
+    let mut route = Route::new(destination.address, destination.prefix_len)
         .with_ifindex(interface_index(interface)?);
     if let Some(gateway) = gateway {
-        route = route.with_gateway(std_ip_address(gateway));
+        route = route.with_gateway(gateway);
     }
     if let Some(metric) = metric {
         route = route.with_metric(metric);
@@ -325,13 +329,6 @@ fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError>
         InterfaceRef::Name(name) => Err(NetworkControlError::new(format!(
             "net-route AddRoute requires interface index on Linux; got name `{name}`"
         ))),
-    }
-}
-
-fn std_ip_address(address: IpAddress) -> std::net::IpAddr {
-    match address {
-        IpAddress::V4(octets) => std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)),
-        IpAddress::V6(octets) => std::net::IpAddr::V6(std::net::Ipv6Addr::from(octets)),
     }
 }
 

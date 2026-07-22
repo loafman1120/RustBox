@@ -9,7 +9,8 @@ use rustbox_kernel::{
     ObservabilitySink, TcpConnect, UdpBind,
 };
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
-use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
+use rustbox_types::{Endpoint, Host, OutboundId};
+use std::net::IpAddr;
 use std::sync::Arc;
 
 /// 直连出站实现，依赖注入的网络能力负责真正的 TCP 连接。
@@ -168,11 +169,11 @@ impl Outbound for DirectOutbound {
 
 fn udp_bind_endpoint_for_target(target: &Endpoint) -> Endpoint {
     let host = match &target.host {
-        Host::Ip(IpAddress::V6(octets)) if octets.iter().all(|byte| *byte == 0) => {
-            Host::Ip(IpAddress::V4([0, 0, 0, 0]))
+        Host::Ip(IpAddr::V6(address)) if address.is_unspecified() => {
+            Host::Ip(IpAddr::from([0, 0, 0, 0]))
         }
-        Host::Ip(IpAddress::V6(_)) => Host::Ip(IpAddress::V6([0; 16])),
-        _ => Host::Ip(IpAddress::V4([0, 0, 0, 0])),
+        Host::Ip(IpAddr::V6(_)) => Host::Ip(IpAddr::from([0; 16])),
+        _ => Host::Ip(IpAddr::from([0, 0, 0, 0])),
     };
     Endpoint::new(host, 0)
 }

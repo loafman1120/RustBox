@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "apps/rustbox-cli",
+    "apps/rustbox-watchdog",
     "apps/rustbox-flutter/rust",
     "crates/rustbox-config-file",
     "crates/rustbox",
@@ -11,6 +12,7 @@ members = [
     "crates/control/rustbox-control-api",
     "crates/control/rustbox-clash-api",
     "crates/foundation/rustbox-types",
+    "crates/foundation/rustbox-runtime-config",
     "crates/foundation/rustbox-io",
     "crates/kernel/rustbox-test-host",
     "crates/kernel/rustbox-kernel",

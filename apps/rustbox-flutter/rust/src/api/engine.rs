@@ -3,6 +3,7 @@ use rustbox_config_file::parse_toml_source;
 use rustbox_control::{EngineSnapshot, EngineState};
 use rustbox_observability::RuntimeObservability;
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BridgeErrorKind {
@@ -22,6 +23,13 @@ impl BridgeError {
     fn invalid_config(message: impl Into<String>) -> Self {
         Self {
             kind: BridgeErrorKind::InvalidConfig,
+            message: message.into(),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: BridgeErrorKind::Unavailable,
             message: message.into(),
         }
     }
@@ -93,7 +101,14 @@ impl From<EngineSnapshot> for BridgeEngineSnapshot {
 
 #[flutter_rust_bridge::frb(opaque)]
 pub struct NativeRustBoxEngine {
-    engine: tokio::sync::Mutex<RustBox>,
+    engine: Arc<tokio::sync::Mutex<RustBox>>,
+    network_monitor: Arc<tokio::sync::Mutex<Option<rustbox_platform::NetworkChangeMonitor>>>,
+    network_task: tokio::sync::Mutex<Option<NetworkTask>>,
+}
+
+struct NetworkTask {
+    cancel: tokio::sync::watch::Sender<bool>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 impl NativeRustBoxEngine {
@@ -105,13 +120,49 @@ impl NativeRustBoxEngine {
             source,
             RustBoxOptions::default().with_observability(observability.sink),
         )?;
+        let network_monitor = rustbox_platform::network_change_monitor().map_err(|error| {
+            BridgeError::unavailable(format!("subscribe to native network changes: {error}"))
+        })?;
         Ok(Self {
-            engine: tokio::sync::Mutex::new(engine),
+            engine: Arc::new(tokio::sync::Mutex::new(engine)),
+            network_monitor: Arc::new(tokio::sync::Mutex::new(network_monitor)),
+            network_task: tokio::sync::Mutex::new(None),
         })
     }
 
     pub async fn start(&self) -> Result<(), BridgeError> {
-        self.engine.lock().await.start().await.map_err(Into::into)
+        self.engine.lock().await.start().await?;
+        let mut task = self.network_task.lock().await;
+        if task.is_none() && self.network_monitor.lock().await.is_some() {
+            let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
+            let engine = self.engine.clone();
+            let monitor = self.network_monitor.clone();
+            let handle = tokio::spawn(async move {
+                loop {
+                    let changed = tokio::select! {
+                        changed = async {
+                            let mut monitor = monitor.lock().await;
+                            match monitor.as_mut() {
+                                Some(monitor) => monitor.changed().await,
+                                None => false,
+                            }
+                        } => changed,
+                        result = cancelled.changed() => {
+                            if result.is_err() || *cancelled.borrow() {
+                                break;
+                            }
+                            continue;
+                        }
+                    };
+                    if !changed {
+                        break;
+                    }
+                    let _ = engine.lock().await.reconcile_network_change().await;
+                }
+            });
+            *task = Some(NetworkTask { cancel, handle });
+        }
+        Ok(())
     }
 
     pub async fn reload(&self, config_toml: String) -> Result<(), BridgeError> {
@@ -130,6 +181,10 @@ impl NativeRustBoxEngine {
     }
 
     pub async fn stop(&self) -> Result<(), BridgeError> {
+        if let Some(task) = self.network_task.lock().await.take() {
+            let _ = task.cancel.send(true);
+            let _ = task.handle.await;
+        }
         self.engine.lock().await.stop().await.map_err(Into::into)
     }
 

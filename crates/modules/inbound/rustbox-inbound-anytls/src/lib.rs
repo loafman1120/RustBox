@@ -12,14 +12,15 @@ use core::num::NonZeroU64;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
+use rustbox_io::{ByteStream, DatagramSocket, IoError};
 use rustbox_kernel::{BoxFuture, NetworkProvider, StreamListener, TaskScope, TcpBind};
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
-use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network};
+use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, Network};
 use rustls::ServerConfig;
 use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 use std::io;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio_rustls::TlsAcceptor;
@@ -413,7 +414,7 @@ impl DatagramSocket for AnyTlsInboundDatagram {
             }
             Poll::Ready(Err(error)) => {
                 self.read = None;
-                Poll::Ready(Err(io_error(error)))
+                Poll::Ready(Err(error.into()))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -443,7 +444,7 @@ impl DatagramSocket for AnyTlsInboundDatagram {
         {
             Poll::Ready(result) => {
                 self.write = None;
-                Poll::Ready(result.map_err(io_error))
+                Poll::Ready(result.map_err(Into::into))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -510,7 +511,7 @@ async fn read_socks_target(stream: &Stream) -> io::Result<Endpoint> {
         1 => {
             let mut value = [0; 4];
             read_stream_bytes(stream, &mut value).await?;
-            Host::Ip(IpAddress::V4(value))
+            Host::Ip(IpAddr::V4(value.into()))
         }
         3 => {
             let mut length = [0];
@@ -525,7 +526,7 @@ async fn read_socks_target(stream: &Stream) -> io::Result<Endpoint> {
         4 => {
             let mut value = [0; 16];
             read_stream_bytes(stream, &mut value).await?;
-            Host::Ip(IpAddress::V6(value))
+            Host::Ip(IpAddr::V6(value.into()))
         }
         value => {
             return Err(io::Error::new(
@@ -552,15 +553,6 @@ impl rustbox_io::uot::Reader for UotStreamReader<'_> {
         read_stream_bytes(self.0, output).await
     }
 }
-fn io_error(error: io::Error) -> IoError {
-    let kind = match error.kind() {
-        io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof => IoErrorKind::Closed,
-        io::ErrorKind::InvalidInput => IoErrorKind::InvalidInput,
-        io::ErrorKind::Unsupported => IoErrorKind::Unsupported,
-        _ => IoErrorKind::Other,
-    };
-    IoError::new(kind, error.to_string())
-}
 
 #[cfg(test)]
 mod tests {
@@ -568,9 +560,10 @@ mod tests {
     use rcgen::generate_simple_self_signed;
     use rustbox_kernel::TokioNetworkProvider;
     use rustbox_kernel::{Engine, Outbound, Service};
-    use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
+    use rustbox_outbound_anytls::AnyTlsOutbound;
     use rustbox_outbound_direct::DirectOutbound;
     use rustbox_route::StaticRouter;
+    use rustbox_runtime_config::TlsClientConfig;
     use rustbox_types::OutboundId;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -624,10 +617,11 @@ mod tests {
             server,
             // codeql[rust/hard-coded-cryptographic-value]: test-only value, never used in production
             "secret",
-            AnyTlsTlsConfig {
+            TlsClientConfig {
+                enabled: true,
                 server_name: Some("localhost".into()),
                 insecure: true,
-                alpn: Vec::new(),
+                ..TlsClientConfig::default()
             },
             host,
         )

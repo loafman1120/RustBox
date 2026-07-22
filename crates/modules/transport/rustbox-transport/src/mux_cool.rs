@@ -3,8 +3,9 @@
 use crate::TransportError;
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{Outbound, OutboundContext, TaskScope};
-use rustbox_types::{Endpoint, Host, IpAddress};
+use rustbox_types::{Endpoint, Host};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -493,14 +494,18 @@ fn decode_endpoint(bytes: &[u8]) -> std::io::Result<Endpoint> {
     }
     let port = u16::from_be_bytes([bytes[0], bytes[1]]);
     let host = match bytes[2] {
-        1 if bytes.len() >= 7 => Host::Ip(IpAddress::V4(bytes[3..7].try_into().unwrap())),
+        1 if bytes.len() >= 7 => Host::Ip(IpAddr::V4(
+            <[u8; 4]>::try_from(&bytes[3..7]).unwrap().into(),
+        )),
         2 if bytes.len() >= 4 + bytes[3] as usize => {
             let length = bytes[3] as usize;
             let domain = std::str::from_utf8(&bytes[4..4 + length])
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             Host::domain(domain)
         }
-        3 if bytes.len() >= 19 => Host::Ip(IpAddress::V6(bytes[3..19].try_into().unwrap())),
+        3 if bytes.len() >= 19 => Host::Ip(IpAddr::V6(
+            <[u8; 16]>::try_from(&bytes[3..19]).unwrap().into(),
+        )),
         _ => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -544,9 +549,9 @@ fn simple_frame_with_options(id: u16, status: u8, options: u8) -> Vec<u8> {
 
 fn encode_address(output: &mut Vec<u8>, host: &Host) -> Result<(), TransportError> {
     match host {
-        Host::Ip(IpAddress::V4(value)) => {
+        Host::Ip(IpAddr::V4(value)) => {
             output.push(1);
-            output.extend_from_slice(value);
+            output.extend_from_slice(&value.octets());
         }
         Host::Domain(value) => {
             output.push(2);
@@ -556,9 +561,9 @@ fn encode_address(output: &mut Vec<u8>, host: &Host) -> Result<(), TransportErro
             );
             output.extend_from_slice(value.as_bytes());
         }
-        Host::Ip(IpAddress::V6(value)) => {
+        Host::Ip(IpAddr::V6(value)) => {
             output.push(3);
-            output.extend_from_slice(value);
+            output.extend_from_slice(&value.octets());
         }
     }
     Ok(())

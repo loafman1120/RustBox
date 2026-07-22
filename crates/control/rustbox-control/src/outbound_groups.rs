@@ -401,7 +401,7 @@ fn outbound_kind_name(kind: &CompiledOutboundKind) -> &'static str {
         CompiledOutboundKind::Hysteria2 { .. } => "hysteria2",
         CompiledOutboundKind::Naive { .. } => "naive",
         CompiledOutboundKind::Tuic { .. } => "tuic",
-        CompiledOutboundKind::WireGuard { .. } => "wireguard",
+        CompiledOutboundKind::WireGuard(..) => "wireguard",
         CompiledOutboundKind::ShadowTls { .. } => "shadowtls",
     }
 }
@@ -481,7 +481,9 @@ mod tests {
                     kind: CompiledOutboundKind::UrlTest {
                         outbounds: vec![direct],
                         selected: RouteDecision::Forward(direct),
-                        url: "https://www.gstatic.com/generate_204".into(),
+                        url: "https://www.gstatic.com/generate_204"
+                            .parse()
+                            .expect("valid test URL"),
                         interval_seconds: 300,
                         tolerance_ms: 50,
                         timeout_seconds: 10,

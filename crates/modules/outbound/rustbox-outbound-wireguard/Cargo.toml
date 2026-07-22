@@ -5,10 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-base64 = "0.22"
 boringtun = "0.7"
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
+rustbox-runtime-config = { path = "../../../foundation/rustbox-runtime-config" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 tokio = { version = "1", features = ["io-util", "net", "rt", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }

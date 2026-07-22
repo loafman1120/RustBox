@@ -3,15 +3,17 @@
 //! Tokio 是项目的直接依赖。这里的 trait 用于测试替身和操作系统能力注入，
 //! 不是为了抽象或替换 Tokio runtime。
 
-pub mod net;
 mod tokio_host;
 
-pub use tokio_host::{TokioNetworkProvider, TokioNetworkProviderFactory};
+pub use tokio_host::{
+    DefaultTokioSocketPolicy, TokioNetworkProvider, TokioNetworkProviderFactory, TokioSocketPolicy,
+};
 
 use core::future::Future;
 use core::pin::Pin;
 use rustbox_io::{ByteStream, DatagramSocket, PacketDevice};
-use rustbox_types::{Endpoint, IpAddress, IpCidr, Network};
+use rustbox_types::{Endpoint, IpCidr, Network, ProcessMetadata};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -80,7 +82,7 @@ pub enum NetworkProviderPurpose {
 /// Minimal DNS boundary consumed by the dialer.  DNS protocol and caching stay
 /// in rustbox-dns-core; the socket layer only needs ordered addresses.
 pub trait DomainResolver: Send + Sync {
-    fn resolve(&self, domain: String) -> BoxFuture<'_, Result<Vec<IpAddress>, NetError>>;
+    fn resolve(&self, domain: String) -> BoxFuture<'_, Result<Vec<IpAddr>, NetError>>;
 }
 
 impl TaskScope {
@@ -187,8 +189,8 @@ pub struct TcpConnect {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DialOptions {
     pub bind_interface: Option<String>,
-    pub inet4_bind_address: Option<IpAddress>,
-    pub inet6_bind_address: Option<IpAddress>,
+    pub inet4_bind_address: Option<IpAddr>,
+    pub inet6_bind_address: Option<IpAddr>,
     pub routing_mark: Option<u32>,
     pub connect_timeout: Option<Duration>,
     /// `None` leaves the platform default untouched; `Some(None)` disables it.
@@ -260,9 +262,26 @@ pub struct NetworkTransaction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkLease {
     pub id: u64,
-    /// lease 记录已接收的操作，后续真实平台实现可据此做幂等回滚。
+    /// Desired operations retained for diagnostics and compatibility.
     pub operations: Vec<NetworkOperation>,
+    /// Exact records produced after inspecting the pre-existing platform
+    /// state. Release consumes these records rather than guessing from the
+    /// desired operations.
+    pub undo_operations: Vec<NetworkUndo>,
     pub active: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NetworkUndo {
+    DeleteRoute {
+        destination: IpCidr,
+        gateway: Option<IpAddr>,
+        interface: InterfaceRef,
+        metric: Option<u32>,
+    },
+    /// Versioned platform payload. Registry, WFP, NetworkManager and
+    /// SystemConfiguration details remain outside the portable kernel.
+    RestorePlatformState { namespace: String, payload: String },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,7 +335,7 @@ pub struct PlatformProxyConfig {
 pub enum NetworkOperation {
     AddRoute {
         destination: IpCidr,
-        gateway: Option<IpAddress>,
+        gateway: Option<IpAddr>,
         interface: InterfaceRef,
         metric: Option<u32>,
     },
@@ -328,7 +347,12 @@ pub enum NetworkOperation {
     },
     SetInterfaceDns {
         interface: InterfaceRef,
-        servers: Vec<IpAddress>,
+        servers: Vec<IpAddr>,
+    },
+    /// Install a fail-closed platform policy that permits the TUN path and the
+    /// current RustBox executable while blocking other plaintext DNS paths.
+    EnforceDnsLeakProtection {
+        tunnel_interface_alias: String,
     },
     SetPlatformHttpProxy(PlatformProxyConfig),
 }
@@ -338,7 +362,7 @@ pub trait ProcessLookup: Send + Sync {
     fn lookup(
         &self,
         key: ConnectionKey,
-    ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>>;
+    ) -> BoxFuture<'_, Result<Option<ProcessMetadata>, ProcessLookupError>>;
 }
 
 /// Platform network context sampled before route evaluation. Implementations
@@ -370,14 +394,6 @@ pub struct ConnectionKey {
 pub enum FlowDirection {
     Inbound,
     Outbound,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProcessInfo {
-    pub pid: Option<u32>,
-    pub executable_path: Option<String>,
-    pub package_name: Option<String>,
-    pub user_id: Option<u32>,
 }
 
 /// 结构化事件是核心和模块跨观测边界传递的唯一载体。

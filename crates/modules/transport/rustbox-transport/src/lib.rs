@@ -14,6 +14,9 @@ use core::task::{Context, Poll};
 use meow_transport::Transport as MeowTransport;
 use rustbox_io::ByteStream;
 use rustbox_kernel::{BoxFuture, NetworkProvider, TcpConnect};
+pub use rustbox_runtime_config::{
+    RealityConfig as RealityLayerConfig, TlsClientConfig as TlsLayerConfig, V2RayTransportPlan,
+};
 use rustbox_types::Endpoint;
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -79,52 +82,6 @@ impl StreamTransport for TcpTransport {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TlsLayerConfig {
-    pub enabled: bool,
-    pub server_name: Option<String>,
-    pub insecure: bool,
-    pub alpn: Vec<String>,
-    pub client_certificate_pem: Option<Vec<u8>>,
-    pub client_private_key_pem: Option<Vec<u8>>,
-    pub certificate_authorities_der: Vec<Vec<u8>>,
-    pub fingerprint: Option<String>,
-    pub ech_config: Option<Vec<u8>>,
-    pub reality: Option<RealityLayerConfig>,
-    pub public_key_pins: Vec<[u8; 32]>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RealityLayerConfig {
-    pub public_key: [u8; 32],
-    pub short_id: [u8; 8],
-    pub support_x25519_mlkem768: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum V2RayTransportConfig {
-    WebSocket {
-        path: String,
-        host: Option<String>,
-        headers: Vec<(String, String)>,
-        max_early_data: usize,
-        early_data_header: Option<String>,
-    },
-    Http2 {
-        path: String,
-        hosts: Vec<String>,
-    },
-    Grpc {
-        service_name: String,
-        authority: String,
-    },
-    HttpUpgrade {
-        path: String,
-        host: Option<String>,
-        headers: Vec<(String, String)>,
-    },
-}
-
 /// A pre-built immutable transport chain. Connections only allocate their
 /// stream state; TLS roots and layer configuration are shared by the outbound.
 #[derive(Clone)]
@@ -138,7 +95,7 @@ impl LayeredTransport {
     pub fn new(
         network: Arc<dyn NetworkProvider>,
         tls: Option<TlsLayerConfig>,
-        transport: Option<V2RayTransportConfig>,
+        transport: Option<V2RayTransportPlan>,
     ) -> Result<Self, TransportError> {
         let mut layers: Vec<Arc<dyn MeowTransport>> = Vec::new();
         let mut pinned_tls = None;
@@ -191,7 +148,7 @@ impl LayeredTransport {
         }
         if let Some(transport) = transport {
             match transport {
-                V2RayTransportConfig::WebSocket {
+                V2RayTransportPlan::WebSocket {
                     path,
                     host,
                     headers,
@@ -208,10 +165,10 @@ impl LayeredTransport {
                     .map_err(|error| TransportError::new(error.to_string()))?;
                     layers.push(Arc::new(layer));
                 }
-                V2RayTransportConfig::Http2 { path, hosts } => layers.push(Arc::new(
+                V2RayTransportPlan::Http2 { path, hosts } => layers.push(Arc::new(
                     meow_transport::h2::H2Layer::new(meow_transport::h2::H2Config { path, hosts }),
                 )),
-                V2RayTransportConfig::Grpc {
+                V2RayTransportPlan::Grpc {
                     service_name,
                     authority,
                 } => layers.push(Arc::new(meow_transport::grpc::GrpcLayer::new(
@@ -220,7 +177,7 @@ impl LayeredTransport {
                         authority,
                     },
                 ))),
-                V2RayTransportConfig::HttpUpgrade {
+                V2RayTransportPlan::HttpUpgrade {
                     path,
                     host,
                     headers,
@@ -369,6 +326,20 @@ pub fn rustls_client_config(config: &TlsLayerConfig) -> Result<ClientConfig, Tra
         .map(|value| value.as_bytes().to_vec())
         .collect();
     Ok(client)
+}
+
+/// Resolve the TLS server name, falling back to the outbound endpoint when no
+/// explicit SNI was configured.
+pub fn rustls_server_name(
+    config: &TlsLayerConfig,
+    server: &Endpoint,
+) -> Result<ServerName<'static>, TransportError> {
+    let host = config
+        .server_name
+        .clone()
+        .unwrap_or_else(|| server.host.to_string());
+    ServerName::try_from(host.clone())
+        .map_err(|error| TransportError::new(format!("invalid TLS server name `{host}`: {error}")))
 }
 
 #[derive(Debug)]

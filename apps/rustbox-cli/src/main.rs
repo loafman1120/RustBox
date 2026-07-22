@@ -83,6 +83,8 @@ async fn main() {
             )
         }
     };
+    let mut network_monitor = rustbox_platform::network_change_monitor()
+        .unwrap_or_else(|error| panic!("subscribe to network changes: {error}"));
     runtime.start().await.expect("start configured proxy graph");
 
     if let Some(listen) = runtime.control_grpc_addr() {
@@ -112,11 +114,26 @@ async fn main() {
                     None => break "control API command channel closed",
                 }
             }
+            changed = next_network_change(&mut network_monitor) => {
+                if changed {
+                    tracing::info!("physical network changed; rebuilding RustBox routes and bindings");
+                    if let Err(error) = runtime.reconcile_network_change().await {
+                        tracing::error!(?error, "network change reconciliation failed");
+                    }
+                }
+            }
         }
     };
 
     tracing::info!(reason = stop_reason, "RustBox stopping");
     runtime.stop().await.expect("stop configured proxy graph");
+}
+
+async fn next_network_change(monitor: &mut Option<rustbox_platform::NetworkChangeMonitor>) -> bool {
+    match monitor {
+        Some(monitor) => monitor.changed().await,
+        None => std::future::pending().await,
+    }
 }
 
 fn init_tracing() {

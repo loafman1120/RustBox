@@ -1,12 +1,13 @@
 use crate::{DnsAnswer, DnsError, DnsQuery, DnsResponse, Resolver};
-use rustbox_types::{Host, IpAddress};
+use rustbox_types::Host;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, Instant};
 
 pub struct ReverseDns {
     capacity: usize,
-    entries: RwLock<HashMap<IpAddress, ReverseEntry>>,
+    entries: RwLock<HashMap<IpAddr, ReverseEntry>>,
 }
 struct ReverseEntry {
     domain: String,
@@ -20,7 +21,7 @@ impl ReverseDns {
             entries: RwLock::new(HashMap::new()),
         }
     }
-    pub fn lookup(&self, ip: IpAddress) -> Option<String> {
+    pub fn lookup(&self, ip: IpAddr) -> Option<String> {
         self.entries
             .read()
             .expect("reverse DNS read lock")
@@ -28,7 +29,7 @@ impl ReverseDns {
             .filter(|entry| entry.expires_at > Instant::now())
             .map(|entry| entry.domain.clone())
     }
-    pub fn record(&self, domain: &str, answers: &[(IpAddress, u32)]) {
+    pub fn record(&self, domain: &str, answers: &[(IpAddr, u32)]) {
         if self.capacity == 0 {
             return;
         }

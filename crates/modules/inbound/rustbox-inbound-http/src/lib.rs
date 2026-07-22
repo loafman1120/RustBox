@@ -14,9 +14,7 @@ use rustbox_kernel::{
     ObservabilitySink, StreamListener, TaskScope, TcpBind,
 };
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
-use rustbox_types::{
-    Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network, ProtocolHint,
-};
+use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, Network, ProtocolHint};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -412,8 +410,7 @@ fn parse_authority(authority: &str) -> Result<Endpoint, ServiceError> {
         .parse::<u16>()
         .map_err(|_| ServiceError::new("HTTP CONNECT port is invalid"))?;
     let host = match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => Host::Ip(IpAddress::V4(ip.octets())),
-        Ok(IpAddr::V6(ip)) => Host::Ip(IpAddress::V6(ip.octets())),
+        Ok(ip) => Host::Ip(ip),
         Err(_) => Host::Domain(host.to_string()),
     };
     Ok(Endpoint::new(host, port))
@@ -481,8 +478,7 @@ fn parse_authority_with_default_port(
 
 fn parse_host(host: &str) -> Host {
     match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => Host::Ip(IpAddress::V4(ip.octets())),
-        Ok(IpAddr::V6(ip)) => Host::Ip(IpAddress::V6(ip.octets())),
+        Ok(ip) => Host::Ip(ip),
         Err(_) => Host::Domain(host.to_string()),
     }
 }
@@ -607,7 +603,7 @@ mod tests {
 
         let proxy = inbound.local_endpoint().expect("proxy local endpoint");
         let proxy_addr = match proxy.host {
-            Host::Ip(IpAddress::V4(octets)) => std::net::SocketAddr::from((octets, proxy.port)),
+            Host::Ip(IpAddr::V4(octets)) => std::net::SocketAddr::from((octets, proxy.port)),
             _ => panic!("expected IPv4 proxy endpoint"),
         };
 
@@ -696,7 +692,7 @@ mod tests {
 
         let proxy = inbound.local_endpoint().expect("proxy local endpoint");
         let proxy_addr = match proxy.host {
-            Host::Ip(IpAddress::V4(octets)) => std::net::SocketAddr::from((octets, proxy.port)),
+            Host::Ip(IpAddr::V4(octets)) => std::net::SocketAddr::from((octets, proxy.port)),
             _ => panic!("expected IPv4 proxy endpoint"),
         };
 
@@ -757,7 +753,7 @@ mod tests {
 
         let proxy = inbound.local_endpoint().expect("proxy local endpoint");
         let proxy_addr = match proxy.host {
-            Host::Ip(IpAddress::V4(octets)) => std::net::SocketAddr::from((octets, proxy.port)),
+            Host::Ip(IpAddr::V4(octets)) => std::net::SocketAddr::from((octets, proxy.port)),
             _ => panic!("expected IPv4 proxy endpoint"),
         };
 

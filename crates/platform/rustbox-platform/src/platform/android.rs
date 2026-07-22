@@ -1,8 +1,9 @@
 use crate::{CapabilitySupport, PlatformCapabilities, TunCapabilities};
 use rustbox_kernel::{
     BoxFuture, ConnectionKey, NetworkMetadataError, NetworkMetadataInfo, NetworkMetadataLookup,
-    ProcessInfo, ProcessLookup, ProcessLookupError, TransparentProxyProvider,
+    ProcessLookup, ProcessLookupError, TransparentProxyProvider,
 };
+use rustbox_types::ProcessMetadata;
 use std::sync::Arc;
 
 pub(super) const CAPABILITIES: PlatformCapabilities = PlatformCapabilities {
@@ -12,6 +13,7 @@ pub(super) const CAPABILITIES: PlatformCapabilities = PlatformCapabilities {
     route_control: CapabilitySupport::Planned,
     transparent_proxy: CapabilitySupport::Unsupported,
     process_lookup: CapabilitySupport::Limited,
+    strict_route_requires_interface_binding: false,
 };
 
 pub(super) fn tun() -> Option<TunCapabilities> {
@@ -26,9 +28,47 @@ pub(super) fn process() -> Option<Arc<dyn ProcessLookup>> {
 pub(super) fn network_metadata() -> Option<Arc<dyn NetworkMetadataLookup>> {
     Some(Arc::new(AndroidNetworkMetadataLookup))
 }
+pub(super) fn socket_policy() -> Arc<dyn rustbox_kernel::TokioSocketPolicy> {
+    Arc::new(AndroidSocketPolicy)
+}
+pub(super) fn default_route_interface() -> Option<rustbox_kernel::InterfaceRef> {
+    None
+}
+
+pub(super) fn default_route_interface_index() -> Option<u32> {
+    None
+}
+
+pub(super) async fn recover_stale_network_state() -> Result<(), String> {
+    Ok(())
+}
 
 struct AndroidProcessLookup;
 struct AndroidNetworkMetadataLookup;
+struct AndroidSocketPolicy;
+
+impl rustbox_kernel::TokioSocketPolicy for AndroidSocketPolicy {
+    fn bind_interface(
+        &self,
+        socket: &socket2::Socket,
+        interface: &str,
+        _destination: std::net::IpAddr,
+    ) -> Result<(), rustbox_kernel::NetError> {
+        socket
+            .bind_device(Some(interface.as_bytes()))
+            .map_err(|error| rustbox_kernel::NetError::new(error.to_string()))
+    }
+
+    fn set_routing_mark(
+        &self,
+        socket: &socket2::Socket,
+        mark: u32,
+    ) -> Result<(), rustbox_kernel::NetError> {
+        socket
+            .set_mark(mark)
+            .map_err(|error| rustbox_kernel::NetError::new(error.to_string()))
+    }
+}
 
 impl NetworkMetadataLookup for AndroidNetworkMetadataLookup {
     fn lookup_network(
@@ -72,7 +112,7 @@ impl ProcessLookup for AndroidProcessLookup {
     fn lookup(
         &self,
         key: ConnectionKey,
-    ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>> {
+    ) -> BoxFuture<'_, Result<Option<ProcessMetadata>, ProcessLookupError>> {
         Box::pin(async move {
             let files = match key.network {
                 rustbox_types::Network::Tcp => ["/proc/net/tcp", "/proc/net/tcp6"],
@@ -135,18 +175,27 @@ impl ProcessLookup for AndroidProcessLookup {
                     .await
                     .ok()
                     .map(|path| path.to_string_lossy().into_owned());
-                return Ok(Some(ProcessInfo {
+                let name = executable_path.as_deref().and_then(|path| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                });
+                return Ok(Some(ProcessMetadata {
                     pid: Some(pid),
-                    executable_path,
+                    name,
+                    path: executable_path,
                     package_name,
                     user_id: Some(uid),
+                    user_name: None,
                 }));
             }
-            Ok(Some(ProcessInfo {
+            Ok(Some(ProcessMetadata {
                 pid: None,
-                executable_path: None,
+                name: None,
+                path: None,
                 package_name: None,
                 user_id: Some(uid),
+                user_name: None,
             }))
         })
     }

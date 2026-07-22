@@ -19,11 +19,9 @@ use rustbox_kernel::{
     ObservabilitySink, StreamListener, TaskScope, TcpBind, UdpBind,
 };
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, Inbound, Service, ServiceContext, ServiceError};
-use rustbox_types::{
-    Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network, ProtocolHint,
-};
+use rustbox_types::{Endpoint, FlowId, FlowMeta, Host, InboundId, Network, ProtocolHint};
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
@@ -680,10 +678,7 @@ fn flow_meta(
 
 fn udp_relay_bind_endpoint(association_target: &Endpoint, peer: &Endpoint) -> Endpoint {
     match &association_target.host {
-        Host::Ip(IpAddress::V4([0, 0, 0, 0])) => Endpoint::new(peer.host.clone(), 0),
-        Host::Ip(IpAddress::V6(octets)) if octets.iter().all(|byte| *byte == 0) => {
-            Endpoint::new(peer.host.clone(), 0)
-        }
+        Host::Ip(ip) if ip.is_unspecified() => Endpoint::new(peer.host.clone(), 0),
         Host::Ip(_) => Endpoint::new(association_target.host.clone(), 0),
         Host::Domain(_) => Endpoint::new(peer.host.clone(), 0),
     }
@@ -846,7 +841,7 @@ impl DatagramSocket for Socks5UdpRelaySocket {
         };
         let mut encoded = match new_udp_header(endpoint_to_target_addr(target)) {
             Ok(encoded) => encoded,
-            Err(err) => return Poll::Ready(Err(io_error(io::Error::other(err.to_string())))),
+            Err(err) => return Poll::Ready(Err(io::Error::other(err.to_string()).into())),
         };
         encoded.extend_from_slice(buf);
 
@@ -919,43 +914,24 @@ impl AsyncWrite for PrefixedByteStream {
 fn endpoint_to_target_addr(endpoint: &Endpoint) -> TargetAddr {
     match &endpoint.host {
         Host::Domain(domain) => TargetAddr::Domain(domain.clone(), endpoint.port),
-        Host::Ip(ip) => TargetAddr::Ip(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
+        Host::Ip(ip) => TargetAddr::Ip(SocketAddr::new(*ip, endpoint.port)),
     }
 }
 
 fn target_addr_to_endpoint(target: TargetAddr) -> Endpoint {
     match target {
         TargetAddr::Domain(domain, port) => Endpoint::new(Host::Domain(domain), port),
-        TargetAddr::Ip(addr) => socket_addr_to_endpoint(addr),
+        TargetAddr::Ip(addr) => addr.into(),
     }
 }
 
 fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, ServiceError> {
-    match &endpoint.host {
-        Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
-        Host::Domain(domain) => Err(ServiceError::new(format!(
+    endpoint.socket_addr().ok_or_else(|| match &endpoint.host {
+        Host::Domain(domain) => ServiceError::new(format!(
             "cannot use domain endpoint {domain} as SOCKS reply bind address"
-        ))),
-    }
-}
-
-fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
-        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
-    };
-    Endpoint::new(host, addr.port())
-}
-
-fn ip_to_std(ip: IpAddress) -> IpAddr {
-    match ip {
-        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
-        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
-    }
-}
-
-fn io_error(err: io::Error) -> IoError {
-    IoError::new(IoErrorKind::Other, err.to_string())
+        )),
+        Host::Ip(_) => unreachable!("IP endpoint must produce a socket address"),
+    })
 }
 
 #[cfg(test)]

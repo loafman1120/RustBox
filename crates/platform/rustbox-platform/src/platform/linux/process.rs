@@ -4,14 +4,14 @@ impl ProcessLookup for LinuxPlatform {
     fn lookup(
         &self,
         key: ConnectionKey,
-    ) -> BoxFuture<'_, Result<Option<ProcessInfo>, ProcessLookupError>> {
+    ) -> BoxFuture<'_, Result<Option<ProcessMetadata>, ProcessLookupError>> {
         Box::pin(async move { lookup_linux_process(key).await })
     }
 }
 
 async fn lookup_linux_process(
     key: ConnectionKey,
-) -> Result<Option<ProcessInfo>, ProcessLookupError> {
+) -> Result<Option<ProcessMetadata>, ProcessLookupError> {
     let protocol = match key.network {
         rustbox_types::Network::Tcp => "-tanp",
         rustbox_types::Network::Udp => "-uanp",
@@ -51,10 +51,17 @@ async fn lookup_linux_process(
         .await
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
-    Ok(Some(ProcessInfo {
+    let name = executable_path.as_deref().and_then(|path| {
+        std::path::Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    });
+    Ok(Some(ProcessMetadata {
         pid: Some(pid),
-        executable_path,
+        name,
+        path: executable_path,
         package_name: None,
         user_id: None,
+        user_name: None,
     }))
 }

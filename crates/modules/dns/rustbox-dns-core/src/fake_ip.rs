@@ -1,6 +1,7 @@
 use crate::{DnsAnswer, DnsError, DnsQuery, DnsRecordType, DnsResponse, FakeIpConfig};
-use rustbox_types::{Host, IpAddress, IpCidr};
+use rustbox_types::{Host, IpCidr};
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::{collections::HashMap, io::Write, path::PathBuf};
 use tokio::sync::{Mutex, OnceCell};
 
@@ -41,7 +42,7 @@ impl FakeIpAllocator {
         state.next_v4 = saved.next_v4;
         state.next_v6 = saved.next_v6;
         for (name, address) in saved.entries {
-            if let (Ok(name), Ok(address)) = (crate::DnsName::new(name), parse_ip(&address)) {
+            if let (Ok(name), Ok(address)) = (crate::DnsName::new(name), address.parse()) {
                 state
                     .by_name
                     .insert((name.clone(), family(address)), address);
@@ -104,7 +105,7 @@ impl FakeIpAllocator {
             entries: state
                 .by_ip
                 .iter()
-                .map(|(address, name)| (name.clone(), format_ip(*address)))
+                .map(|(address, name)| (name.clone(), address.to_string()))
                 .collect(),
             next_v4: state.next_v4,
             next_v6: state.next_v6,
@@ -121,15 +122,15 @@ impl FakeIpAllocator {
         .map_err(|error| DnsError::new(format!("atomically replace FakeIP state: {error}")))
     }
 
-    pub async fn lookup(&self, address: IpAddress) -> Option<String> {
+    pub async fn lookup(&self, address: IpAddr) -> Option<String> {
         self.state.lock().await.by_ip.get(&address).cloned()
     }
 }
 
 #[derive(Default, Debug)]
 struct FakeIpState {
-    by_name: HashMap<(crate::DnsName, u8), IpAddress>,
-    by_ip: HashMap<IpAddress, String>,
+    by_name: HashMap<(crate::DnsName, u8), IpAddr>,
+    by_ip: HashMap<IpAddr, String>,
     next_v4: u128,
     next_v6: u128,
 }
@@ -151,8 +152,8 @@ struct AddressPool {
 impl AddressPool {
     fn new(cidr: IpCidr) -> Result<Self, DnsError> {
         let (address, bits, family) = match cidr.address {
-            IpAddress::V4(value) => (u32::from_be_bytes(value) as u128, 32, 4),
-            IpAddress::V6(value) => (u128::from_be_bytes(value), 128, 6),
+            IpAddr::V4(value) => (u32::from_be_bytes(value.octets()) as u128, 32, 4),
+            IpAddr::V6(value) => (u128::from_be_bytes(value.octets()), 128, 6),
         };
         let host_bits = bits - u32::from(cidr.prefix_len);
         if !(2..128).contains(&host_bits) {
@@ -167,12 +168,12 @@ impl AddressPool {
             family,
         })
     }
-    fn address_at(self, offset: u128) -> IpAddress {
+    fn address_at(self, offset: u128) -> IpAddr {
         let value = self.base + offset % self.usable;
         if self.family == 4 {
-            IpAddress::V4((value as u32).to_be_bytes())
+            IpAddr::V4((value as u32).to_be_bytes().into())
         } else {
-            IpAddress::V6(value.to_be_bytes())
+            IpAddr::V6(value.to_be_bytes().into())
         }
     }
     fn next_offset(self, offset: u128) -> u128 {
@@ -180,26 +181,14 @@ impl AddressPool {
     }
 }
 
-fn family(address: IpAddress) -> u8 {
-    if matches!(address, IpAddress::V4(_)) {
+fn family(address: IpAddr) -> u8 {
+    if matches!(address, IpAddr::V4(_)) {
         4
     } else {
         6
     }
 }
-fn format_ip(address: IpAddress) -> String {
-    match address {
-        IpAddress::V4(v) => std::net::Ipv4Addr::from(v).to_string(),
-        IpAddress::V6(v) => std::net::Ipv6Addr::from(v).to_string(),
-    }
-}
-fn parse_ip(value: &str) -> Result<IpAddress, std::net::AddrParseError> {
-    value.parse::<std::net::IpAddr>().map(|ip| match ip {
-        std::net::IpAddr::V4(v) => IpAddress::V4(v.octets()),
-        std::net::IpAddr::V6(v) => IpAddress::V6(v.octets()),
-    })
-}
-fn response(address: IpAddress, ttl_seconds: u32) -> DnsResponse {
+fn response(address: IpAddr, ttl_seconds: u32) -> DnsResponse {
     DnsResponse {
         answers: vec![DnsAnswer {
             host: Host::Ip(address),

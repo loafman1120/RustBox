@@ -2,14 +2,14 @@
 //! socket stack. The encrypted UDP device and TCP/UDP proxy sockets share one
 //! userspace interface; no operating-system TUN interface is required.
 
-use base64::Engine as _;
 use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{BoxFuture, Outbound, OutboundContext, OutboundError, TaskScope};
-use rustbox_types::{Endpoint, Host, IpAddress, IpCidr, OutboundId};
+pub use rustbox_runtime_config::{WireGuardKey, WireGuardPeerPlan, WireGuardPlan};
+use rustbox_types::{Endpoint, Host, IpCidr, OutboundId};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
@@ -18,32 +18,13 @@ use tokio_util::sync::PollSender;
 use ts_netstack_smoltcp::CreateSocket;
 use ts_netstack_smoltcp::netcore::{Channel, HasChannel, NetstackControl};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WireGuardPeerConfig {
-    pub server: Endpoint,
-    pub public_key: String,
-    pub pre_shared_key: Option<String>,
-    pub allowed_ips: Vec<IpCidr>,
-    pub persistent_keepalive: Option<Duration>,
-    pub reserved: [u8; 3],
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WireGuardConfig {
-    pub addresses: Vec<IpCidr>,
-    pub private_key: String,
-    pub listen_port: u16,
-    pub peers: Vec<WireGuardPeerConfig>,
-    pub mtu: usize,
-}
-
 struct Session {
     channel: Channel,
 }
 
 pub struct WireGuardOutbound {
     id: OutboundId,
-    config: WireGuardConfig,
+    config: WireGuardPlan,
     local_v4: Option<Ipv4Addr>,
     local_v6: Option<Ipv6Addr>,
     state: Mutex<Option<Session>>,
@@ -54,7 +35,7 @@ pub struct WireGuardOutbound {
 impl WireGuardOutbound {
     pub fn new(
         id: OutboundId,
-        config: WireGuardConfig,
+        config: WireGuardPlan,
         tasks: TaskScope,
     ) -> Result<Self, OutboundError> {
         if config.addresses.is_empty() {
@@ -67,23 +48,18 @@ impl WireGuardOutbound {
                 "WireGuard endpoint requires at least one peer",
             ));
         }
-        decode_key("private_key", &config.private_key)?;
         for peer in &config.peers {
-            decode_key("peer public_key", &peer.public_key)?;
-            if let Some(key) = &peer.pre_shared_key {
-                decode_key("peer pre_shared_key", key)?;
-            }
             if peer.allowed_ips.is_empty() {
                 return Err(OutboundError::new("WireGuard peer requires allowed_ips"));
             }
         }
         let local_v4 = config.addresses.iter().find_map(|cidr| match cidr.address {
-            IpAddress::V4(value) => Some(Ipv4Addr::from(value)),
-            IpAddress::V6(_) => None,
+            IpAddr::V4(value) => Some(value),
+            IpAddr::V6(_) => None,
         });
         let local_v6 = config.addresses.iter().find_map(|cidr| match cidr.address {
-            IpAddress::V6(value) => Some(Ipv6Addr::from(value)),
-            IpAddress::V4(_) => None,
+            IpAddr::V6(value) => Some(value),
+            IpAddr::V4(_) => None,
         });
         Ok(Self {
             id,
@@ -111,16 +87,11 @@ impl WireGuardOutbound {
         let channel = stack.command_channel();
         self.tasks.spawn(async move { stack.run_tokio().await });
         channel
-            .set_ips(
-                self.config
-                    .addresses
-                    .iter()
-                    .map(|cidr| to_std_ip(cidr.address)),
-            )
+            .set_ips(self.config.addresses.iter().map(|cidr| cidr.address))
             .await
             .map_err(|error| OutboundError::new(format!("WireGuard stack addresses: {error}")))?;
 
-        let private_key = decode_key("private_key", &self.config.private_key)?;
+        let private_key = self.config.private_key.into_bytes();
         let mut peers = Vec::with_capacity(self.config.peers.len());
         for (index, peer) in self.config.peers.iter().enumerate() {
             let endpoint = resolve_endpoint(&peer.server).await?;
@@ -133,11 +104,8 @@ impl WireGuardOutbound {
                 reserved: peer.reserved,
                 tunnel: Tunn::new(
                     StaticSecret::from(private_key),
-                    PublicKey::from(decode_key("peer public_key", &peer.public_key)?),
-                    peer.pre_shared_key
-                        .as_deref()
-                        .map(|key| decode_key("peer pre_shared_key", key))
-                        .transpose()?,
+                    PublicKey::from(peer.public_key.into_bytes()),
+                    peer.pre_shared_key.map(WireGuardKey::into_bytes),
                     keepalive,
                     index as u32 + 1,
                     None,
@@ -317,7 +285,7 @@ impl DatagramSocket for WireGuardDatagram {
         packet: &[u8],
         target: &Endpoint,
     ) -> Poll<Result<usize, IoError>> {
-        let Some(target) = endpoint_socket_addr(target) else {
+        let Some(target) = target.socket_addr() else {
             return Poll::Ready(Err(IoError::new(
                 IoErrorKind::InvalidInput,
                 "WireGuard UDP target must be resolved before sending",
@@ -367,7 +335,7 @@ async fn run_udp(
             received = &mut receive => {
                 match received {
                     Ok((source, packet)) => {
-                        if packets.send(Ok((packet.to_vec(), socket_endpoint(source)))).await.is_err() { return; }
+                        if packets.send(Ok((packet.to_vec(), source.into()))).await.is_err() { return; }
                     }
                     Err(error) => {
                         let _ = packets.send(Err(io_error(format!("WireGuard UDP receive: {error}")))).await;
@@ -380,17 +348,8 @@ async fn run_udp(
     }
 }
 
-fn decode_key(field: &str, value: &str) -> Result<[u8; 32], OutboundError> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(value)
-        .map_err(|error| OutboundError::new(format!("WireGuard {field}: {error}")))?;
-    bytes
-        .try_into()
-        .map_err(|_| OutboundError::new(format!("WireGuard {field} must decode to 32 bytes")))
-}
-
 async fn resolve_endpoint(endpoint: &Endpoint) -> Result<SocketAddr, OutboundError> {
-    if let Some(address) = endpoint_socket_addr(endpoint) {
+    if let Some(address) = endpoint.socket_addr() {
         return Ok(address);
     }
     let Host::Domain(domain) = &endpoint.host else {
@@ -403,28 +362,14 @@ async fn resolve_endpoint(endpoint: &Endpoint) -> Result<SocketAddr, OutboundErr
         .ok_or_else(|| OutboundError::new("WireGuard DNS returned no address"))
 }
 
-fn endpoint_socket_addr(endpoint: &Endpoint) -> Option<SocketAddr> {
-    match endpoint.host {
-        Host::Ip(address) => Some(SocketAddr::new(to_std_ip(address), endpoint.port)),
-        Host::Domain(_) => None,
-    }
-}
-
-fn to_std_ip(address: IpAddress) -> IpAddr {
-    match address {
-        IpAddress::V4(value) => IpAddr::V4(value.into()),
-        IpAddress::V6(value) => IpAddr::V6(value.into()),
-    }
-}
-
 fn cidr_contains(cidr: IpCidr, address: IpAddr) -> bool {
     match (cidr.address, address) {
-        (IpAddress::V4(network), IpAddr::V4(address)) => {
-            let bits = u32::from_be_bytes(network) ^ u32::from(address);
+        (IpAddr::V4(network), IpAddr::V4(address)) => {
+            let bits = u32::from(network) ^ u32::from(address);
             bits.leading_zeros() >= u32::from(cidr.prefix_len)
         }
-        (IpAddress::V6(network), IpAddr::V6(address)) => {
-            let bits = u128::from_be_bytes(network) ^ u128::from(address);
+        (IpAddr::V6(network), IpAddr::V6(address)) => {
+            let bits = u128::from(network) ^ u128::from(address);
             bits.leading_zeros() >= u32::from(cidr.prefix_len)
         }
         _ => false,
@@ -437,25 +382,6 @@ fn apply_reserved(packet: &mut [u8], reserved: [u8; 3]) {
     }
 }
 
-fn socket_endpoint(address: SocketAddr) -> Endpoint {
-    let host = match address.ip() {
-        IpAddr::V4(value) => Host::Ip(IpAddress::V4(value.octets())),
-        IpAddr::V6(value) => Host::Ip(IpAddress::V6(value.octets())),
-    };
-    Endpoint::new(host, address.port())
-}
-
 fn io_error(message: String) -> IoError {
     IoError::new(IoErrorKind::Other, message)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_wrong_key_length() {
-        let error = decode_key("key", "AA==").expect_err("invalid key");
-        assert!(error.message.contains("32 bytes"));
-    }
 }

@@ -1,8 +1,9 @@
 //! Shared UDP-over-TCP v2 framing.
 
-use rustbox_types::{Endpoint, Host, IpAddress};
+use rustbox_types::{Endpoint, Host};
 use std::future::Future;
 use std::io;
+use std::net::IpAddr;
 
 pub const SENTINEL: &str = "sp.v2.udp-over-tcp.arpa";
 
@@ -16,9 +17,9 @@ pub trait Reader {
 pub fn encode_address(target: &Endpoint) -> io::Result<Vec<u8>> {
     let mut output = Vec::with_capacity(32);
     match &target.host {
-        Host::Ip(IpAddress::V4(value)) => {
+        Host::Ip(IpAddr::V4(value)) => {
             output.push(0);
-            output.extend_from_slice(value);
+            output.extend_from_slice(&value.octets());
         }
         Host::Domain(value) => {
             output.push(2);
@@ -27,9 +28,9 @@ pub fn encode_address(target: &Endpoint) -> io::Result<Vec<u8>> {
             })?);
             output.extend_from_slice(value.as_bytes());
         }
-        Host::Ip(IpAddress::V6(value)) => {
+        Host::Ip(IpAddr::V6(value)) => {
             output.push(1);
-            output.extend_from_slice(value);
+            output.extend_from_slice(&value.octets());
         }
     }
     output.extend_from_slice(&target.port.to_be_bytes());
@@ -52,7 +53,7 @@ pub async fn read_address<R: Reader + Send>(reader: &mut R) -> io::Result<Endpoi
         0 => {
             let mut value = [0_u8; 4];
             reader.read_exact(&mut value).await?;
-            Host::Ip(IpAddress::V4(value))
+            Host::Ip(IpAddr::V4(value.into()))
         }
         2 => {
             let mut length = [0_u8; 1];
@@ -67,7 +68,7 @@ pub async fn read_address<R: Reader + Send>(reader: &mut R) -> io::Result<Endpoi
         1 => {
             let mut value = [0_u8; 16];
             reader.read_exact(&mut value).await?;
-            Host::Ip(IpAddress::V6(value))
+            Host::Ip(IpAddr::V6(value.into()))
         }
         value => {
             return Err(io::Error::new(
@@ -118,7 +119,7 @@ mod tests {
 
     #[tokio::test]
     async fn ipv4_wire_format_matches_sing_uot_v2() {
-        let endpoint = Endpoint::new(Host::Ip(IpAddress::V4([127, 0, 0, 1])), 53);
+        let endpoint = Endpoint::new(Host::Ip(IpAddr::from([127, 0, 0, 1])), 53);
         let frame = encode_datagram(&endpoint, b"query").unwrap();
         assert_eq!(
             frame,

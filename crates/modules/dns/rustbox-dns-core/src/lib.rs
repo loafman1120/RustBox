@@ -24,7 +24,8 @@ pub use transport::HickoryTransport;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbox_types::{Host, IpAddress, IpCidr};
+    use rustbox_types::{Host, IpCidr};
+    use std::net::IpAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -40,7 +41,7 @@ mod tests {
     async fn fake_ip_allocates_stable_answers_and_reverse_mapping() {
         let allocator = FakeIpAllocator::new(FakeIpConfig {
             enabled: true,
-            ipv4_pool: IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 30).expect("cidr"),
+            ipv4_pool: IpCidr::new(IpAddr::from([198, 18, 0, 0]), 30).expect("cidr"),
             ipv6_pool: None,
             state_file: None,
             ttl_seconds: 60,
@@ -73,10 +74,10 @@ mod tests {
         ));
         let config = FakeIpConfig {
             enabled: true,
-            ipv4_pool: IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 24).expect("v4"),
+            ipv4_pool: IpCidr::new(IpAddr::from([198, 18, 0, 0]), 24).expect("v4"),
             ipv6_pool: Some(
                 IpCidr::new(
-                    IpAddress::V6([0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                    IpAddr::from([0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
                     120,
                 )
                 .expect("v6"),
@@ -161,7 +162,7 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(DnsResponse {
                 answers: vec![DnsAnswer {
-                    host: Host::Ip(IpAddress::V4([203, 0, 113, 1])),
+                    host: Host::Ip(IpAddr::from([203, 0, 113, 1])),
                     ttl_seconds: 30,
                 }],
                 records: Vec::new(),

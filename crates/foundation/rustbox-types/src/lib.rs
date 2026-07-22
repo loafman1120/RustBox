@@ -6,13 +6,13 @@
 use core::fmt;
 use core::num::NonZeroU64;
 use core::str::FromStr;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 /// 可路由的主机标识，可以是域名，也可以是已经解析出的 IP。
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Host {
     Domain(String),
-    Ip(IpAddress),
+    Ip(IpAddr),
 }
 
 impl Host {
@@ -34,83 +34,28 @@ impl FromStr for Host {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.parse::<IpAddr>() {
-            Ok(IpAddr::V4(ip)) => Ok(Self::Ip(IpAddress::V4(ip.octets()))),
-            Ok(IpAddr::V6(ip)) => Ok(Self::Ip(IpAddress::V6(ip.octets()))),
-            Err(_) => Ok(Self::Domain(value.to_string())),
-        }
-    }
-}
-
-/// 平台无关的 IP 表示，避免在基础层泄漏 `std::net` 具体类型。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum IpAddress {
-    V4([u8; 4]),
-    V6([u8; 16]),
-}
-
-impl IpAddress {
-    /// CIDR 前缀长度依赖 IP 版本，放在基础层可避免平台层重复判断。
-    pub fn max_prefix_len(self) -> u8 {
-        match self {
-            Self::V4(_) => 32,
-            Self::V6(_) => 128,
-        }
-    }
-
-    pub fn version(self) -> u8 {
-        match self {
-            Self::V4(_) => 4,
-            Self::V6(_) => 6,
-        }
-    }
-}
-
-impl fmt::Display for IpAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::V4(octets) => {
-                write!(f, "{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
-            }
-            Self::V6(octets) => {
-                let segments = [
-                    u16::from_be_bytes([octets[0], octets[1]]),
-                    u16::from_be_bytes([octets[2], octets[3]]),
-                    u16::from_be_bytes([octets[4], octets[5]]),
-                    u16::from_be_bytes([octets[6], octets[7]]),
-                    u16::from_be_bytes([octets[8], octets[9]]),
-                    u16::from_be_bytes([octets[10], octets[11]]),
-                    u16::from_be_bytes([octets[12], octets[13]]),
-                    u16::from_be_bytes([octets[14], octets[15]]),
-                ];
-                write!(
-                    f,
-                    "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
-                    segments[0],
-                    segments[1],
-                    segments[2],
-                    segments[3],
-                    segments[4],
-                    segments[5],
-                    segments[6],
-                    segments[7]
-                )
-            }
-        }
+        Ok(value
+            .parse::<IpAddr>()
+            .map(Self::Ip)
+            .unwrap_or_else(|_| Self::Domain(value.to_string())))
     }
 }
 
 /// 平台无关的 CIDR 表示，用于 TUN 地址、自动路由 include/exclude 和控制面快照。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct IpCidr {
-    pub address: IpAddress,
+    pub address: IpAddr,
     pub prefix_len: u8,
 }
 
 impl IpCidr {
     /// 返回 `None` 而不是 panic，配置层可以把它转成带路径的诊断。
-    pub fn new(address: IpAddress, prefix_len: u8) -> Option<Self> {
-        if prefix_len <= address.max_prefix_len() {
+    pub fn new(address: IpAddr, prefix_len: u8) -> Option<Self> {
+        let max_prefix_len = match address {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        if prefix_len <= max_prefix_len {
             Some(Self {
                 address,
                 prefix_len,
@@ -137,11 +82,9 @@ impl FromStr for IpCidr {
         let prefix_len = prefix_len
             .parse::<u8>()
             .map_err(|_| format!("CIDR `{value}` has invalid prefix length"))?;
-        let address = match address.parse::<IpAddr>() {
-            Ok(IpAddr::V4(ip)) => IpAddress::V4(ip.octets()),
-            Ok(IpAddr::V6(ip)) => IpAddress::V6(ip.octets()),
-            Err(_) => return Err(format!("CIDR `{value}` has invalid IP address")),
-        };
+        let address = address
+            .parse::<IpAddr>()
+            .map_err(|_| format!("CIDR `{value}` has invalid IP address"))?;
         Self::new(address, prefix_len)
             .ok_or_else(|| format!("CIDR `{value}` has invalid prefix length"))
     }
@@ -216,16 +159,31 @@ impl Endpoint {
 
     pub fn localhost_v4(port: u16) -> Self {
         Self {
-            host: Host::Ip(IpAddress::V4([127, 0, 0, 1])),
+            host: Host::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             port,
         }
+    }
+
+    /// Returns a standard socket address when the endpoint already contains an
+    /// IP address. Domain resolution intentionally remains the caller's job.
+    pub fn socket_addr(&self) -> Option<SocketAddr> {
+        match self.host {
+            Host::Ip(ip) => Some(SocketAddr::new(ip, self.port)),
+            Host::Domain(_) => None,
+        }
+    }
+}
+
+impl From<SocketAddr> for Endpoint {
+    fn from(value: SocketAddr) -> Self {
+        Self::new(Host::Ip(value.ip()), value.port())
     }
 }
 
 impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.host {
-            Host::Ip(IpAddress::V6(_)) => write!(f, "[{}]:{}", self.host, self.port),
+            Host::Ip(IpAddr::V6(_)) => write!(f, "[{}]:{}", self.host, self.port),
             _ => write!(f, "{}:{}", self.host, self.port),
         }
     }
@@ -432,17 +390,11 @@ mod tests {
     fn parses_endpoint_hosts_and_ports() {
         let ipv4 = Endpoint::from_str("127.0.0.1:18080").expect("ipv4 endpoint");
         assert_eq!(ipv4.port, 18080);
-        assert_eq!(
-            ipv4.host,
-            Host::Ip(IpAddress::V4(Ipv4Addr::LOCALHOST.octets()))
-        );
+        assert_eq!(ipv4.host, Host::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
 
         let ipv6 = Endpoint::from_str("[::1]:1080").expect("ipv6 endpoint");
         assert_eq!(ipv6.port, 1080);
-        assert_eq!(
-            ipv6.host,
-            Host::Ip(IpAddress::V6(Ipv6Addr::LOCALHOST.octets()))
-        );
+        assert_eq!(ipv6.host, Host::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
 
         let domain = Endpoint::from_str("proxy.example.test:443").expect("domain endpoint");
         assert_eq!(domain.host, Host::Domain("proxy.example.test".to_string()));
@@ -452,7 +404,7 @@ mod tests {
     fn parses_cidr_and_port_ranges() {
         assert_eq!(
             IpCidr::from_str("198.18.0.0/15").expect("cidr"),
-            IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 15).expect("cidr")
+            IpCidr::new(IpAddr::from([198, 18, 0, 0]), 15).expect("cidr")
         );
         assert_eq!(
             PortRange::from_str("443").expect("single"),

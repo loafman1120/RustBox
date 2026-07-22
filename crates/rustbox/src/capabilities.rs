@@ -1,6 +1,6 @@
 use rustbox_kernel::{
     NetworkControl, NetworkMetadataLookup, NetworkProviderFactory, PacketDeviceProvider,
-    ProcessLookup, TokioNetworkProviderFactory, TransparentProxyProvider,
+    ProcessLookup, TransparentProxyProvider,
 };
 use std::sync::Arc;
 
@@ -56,7 +56,7 @@ impl Default for RuntimeCapabilities {
     fn default() -> Self {
         let tun = rustbox_platform::tun_capabilities();
         Self {
-            network: Arc::new(TokioNetworkProviderFactory),
+            network: rustbox_platform::network_provider_factory(),
             packet_device: tun.as_ref().map(|(provider, _)| provider.clone()),
             network_control: tun.map(|(_, control)| control),
             transparent_proxy: rustbox_platform::transparent_proxy_provider(),

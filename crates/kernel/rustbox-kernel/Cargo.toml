@@ -9,7 +9,7 @@ rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-route = { path = "../rustbox-route" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 serde = { version = "1", features = ["derive"] }
-socket2 = { version = "0.6", features = ["all"] }
+socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 

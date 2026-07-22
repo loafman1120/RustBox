@@ -3,11 +3,7 @@ use crate::{
     dns_hijack::DnsHijackOutbound,
     routing::{RuntimeRouter, route_table},
 };
-use base64::Engine as _;
-use rustbox_config::{
-    CompiledConfig, CompiledOutboundKind, ConfigError, MultiplexConfig, OutboundTlsConfig,
-    V2RayTransportConfig,
-};
+use rustbox_config::{CompiledConfig, CompiledOutboundKind, ConfigError, MultiplexConfig};
 use rustbox_control::OutboundGroupRegistry;
 use rustbox_dns_core::{DnsName, DnsQuery, DnsRecordType, DnsResponse, DnsSubsystem, ReverseDns};
 use rustbox_inspect::{FlowEnricher, ProtocolSniffer, SniffConfig};
@@ -16,7 +12,7 @@ use rustbox_kernel::{
     BoxFuture, Dialer, DomainResolver, NetError, NetworkProvider, NetworkProviderPurpose,
     ObservabilitySink, Outbound, RouteResolver, TaskScope,
 };
-use rustbox_outbound_anytls::{AnyTlsOutbound, AnyTlsTlsConfig};
+use rustbox_outbound_anytls::AnyTlsOutbound;
 use rustbox_outbound_direct::DirectOutbound;
 use rustbox_outbound_http::{HttpProxyCredentials, HttpProxyOutbound};
 use rustbox_outbound_hysteria2::{Hysteria2Config, Hysteria2Outbound};
@@ -25,21 +21,18 @@ use rustbox_outbound_naive::NaiveOutbound;
 use rustbox_outbound_shadowsocks::ShadowsocksOutbound;
 use rustbox_outbound_shadowtls::ShadowTlsOutbound;
 use rustbox_outbound_socks5::{Socks5Credentials, Socks5Outbound};
-use rustbox_outbound_trojan::{TrojanOutbound, TrojanTlsConfig};
+use rustbox_outbound_trojan::TrojanOutbound;
 use rustbox_outbound_tuic::{TuicConfig, TuicOutbound};
-use rustbox_outbound_vless::{VlessOutbound, VlessTlsConfig};
-use rustbox_outbound_vmess::{VmessOutbound, VmessTlsConfig};
-use rustbox_outbound_wireguard::{
-    WireGuardConfig as RuntimeWireGuardConfig, WireGuardOutbound,
-    WireGuardPeerConfig as RuntimeWireGuardPeerConfig,
-};
+use rustbox_outbound_vless::VlessOutbound;
+use rustbox_outbound_vmess::VmessOutbound;
+use rustbox_outbound_wireguard::WireGuardOutbound;
 use rustbox_route::ResolveStrategy;
 use rustbox_transport::{
-    H2TunnelPool, LayeredTransport, MuxCoolConfig, MuxCoolPool, RealityLayerConfig,
-    ShadowTlsTransport, StreamTransport, TcpTransport, TlsLayerConfig,
-    V2RayTransportConfig as RuntimeTransportConfig,
+    H2TunnelPool, LayeredTransport, MuxCoolConfig, MuxCoolPool, ShadowTlsTransport,
+    StreamTransport, TcpTransport, TlsLayerConfig, V2RayTransportPlan,
 };
-use rustbox_types::{Host, IpAddress};
+use rustbox_types::Host;
+use std::net::IpAddr;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -214,14 +207,9 @@ pub(crate) fn compose_engine(
                 let mut runtime_outbound = VmessOutbound::new(
                     outbound.id,
                     server.clone(),
-                    uuid,
+                    *uuid,
                     security.as_deref(),
-                    VmessTlsConfig {
-                        enabled: tls.is_some_and(|value| value.enabled),
-                        server_name: tls.and_then(|value| value.server_name.clone()),
-                        insecure: tls.is_some_and(|value| value.insecure),
-                        alpn: tls.map(|value| value.alpn.clone()).unwrap_or_default(),
-                    },
+                    tls.cloned().unwrap_or_default(),
                     network.clone(),
                     session_tasks.clone(),
                 )
@@ -253,14 +241,9 @@ pub(crate) fn compose_engine(
                 let mut runtime_outbound = VlessOutbound::new(
                     outbound.id,
                     server.clone(),
-                    uuid,
+                    *uuid,
                     flow.as_deref(),
-                    VlessTlsConfig {
-                        enabled: tls.is_some_and(|value| value.enabled),
-                        server_name: tls.and_then(|value| value.server_name.clone()),
-                        insecure: tls.is_some_and(|value| value.insecure),
-                        alpn: tls.map(|value| value.alpn.clone()).unwrap_or_default(),
-                    },
+                    tls.cloned().unwrap_or_default(),
                     network.clone(),
                 )
                 .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?;
@@ -291,11 +274,7 @@ pub(crate) fn compose_engine(
                     outbound.id,
                     server.clone(),
                     password,
-                    TrojanTlsConfig {
-                        server_name: tls.and_then(|value| value.server_name.clone()),
-                        insecure: tls.is_some_and(|value| value.insecure),
-                        alpn: tls.map(|value| value.alpn.clone()).unwrap_or_default(),
-                    },
+                    tls.cloned().unwrap_or_default(),
                     network.clone(),
                 )
                 .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?;
@@ -325,11 +304,7 @@ pub(crate) fn compose_engine(
                     outbound.id,
                     server.clone(),
                     password,
-                    AnyTlsTlsConfig {
-                        server_name: tls.and_then(|value| value.server_name.clone()),
-                        insecure: tls.is_some_and(|value| value.insecure),
-                        alpn: tls.map(|value| value.alpn.clone()).unwrap_or_default(),
-                    },
+                    tls.cloned().unwrap_or_default(),
                     network.clone(),
                 )
                 .map_err(|err| ComposeError::Config(ConfigError::new(err.message)))?
@@ -387,12 +362,12 @@ pub(crate) fn compose_engine(
                 tls,
                 headers,
             } => {
-                let mut tls_config = compose_tls_config(
-                    tls.as_ref().ok_or_else(|| {
+                let mut tls_config = tls
+                    .as_ref()
+                    .ok_or_else(|| {
                         ComposeError::Config(ConfigError::new("Naive outbound requires TLS"))
-                    })?,
-                    &server.host.to_string(),
-                )?;
+                    })?
+                    .clone();
                 if tls_config.alpn.is_empty() {
                     tls_config.alpn.push("h2".into());
                 } else if !tls_config.alpn.iter().any(|value| value == "h2") {
@@ -435,9 +410,9 @@ pub(crate) fn compose_engine(
                         outbound.id,
                         TuicConfig {
                             server: server.clone(),
-                            uuid: uuid.clone(),
+                            uuid: *uuid,
                             password: password.clone(),
-                            tls: compose_tls_config(tls, &server.host.to_string())?,
+                            tls: tls.clone(),
                             heartbeat: *heartbeat,
                         },
                         session_tasks.clone(),
@@ -449,36 +424,10 @@ pub(crate) fn compose_engine(
                     .map_err(ComposeError::Engine)?;
                 runtime_outbounds.insert(outbound.id, runtime);
             }
-            CompiledOutboundKind::WireGuard {
-                addresses,
-                private_key,
-                listen_port,
-                peers,
-                mtu,
-            } => {
+            CompiledOutboundKind::WireGuard(config) => {
                 let runtime: Arc<dyn Outbound> = Arc::new(
-                    WireGuardOutbound::new(
-                        outbound.id,
-                        RuntimeWireGuardConfig {
-                            addresses: addresses.clone(),
-                            private_key: private_key.clone(),
-                            listen_port: *listen_port,
-                            peers: peers
-                                .iter()
-                                .map(|peer| RuntimeWireGuardPeerConfig {
-                                    server: peer.server.clone(),
-                                    public_key: peer.public_key.clone(),
-                                    pre_shared_key: peer.pre_shared_key.clone(),
-                                    allowed_ips: peer.allowed_ips.clone(),
-                                    persistent_keepalive: peer.persistent_keepalive,
-                                    reserved: peer.reserved,
-                                })
-                                .collect(),
-                            mtu: *mtu,
-                        },
-                        session_tasks.clone(),
-                    )
-                    .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?,
+                    WireGuardOutbound::new(outbound.id, config.clone(), session_tasks.clone())
+                        .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))?,
                 );
                 builder = builder
                     .register_outbound_arc(runtime.clone())
@@ -500,7 +449,7 @@ pub(crate) fn compose_engine(
                     ShadowTlsTransport::new(
                         server.clone(),
                         password.clone(),
-                        compose_tls_config(tls, &server.host.to_string())?,
+                        tls.clone(),
                         underlay,
                         session_tasks.clone(),
                     )
@@ -548,69 +497,23 @@ fn apply_multiplex(
 
 fn compose_transport(
     server: &rustbox_types::Endpoint,
-    tls: Option<&OutboundTlsConfig>,
-    transport: Option<&V2RayTransportConfig>,
+    tls: Option<&TlsLayerConfig>,
+    transport: Option<&V2RayTransportPlan>,
     force_tls: bool,
     network: Arc<dyn NetworkProvider>,
 ) -> Result<Option<Arc<dyn StreamTransport>>, ComposeError> {
-    let transport = transport.filter(|value| !matches!(value, V2RayTransportConfig::Tcp));
-    let needs_advanced_tls = tls.is_some_and(|tls| {
-        tls.client_certificate_pem.is_some()
-            || !tls.certificate_authorities_pem.is_empty()
-            || !tls.certificate_public_key_sha256.is_empty()
-            || tls.fingerprint.is_some()
-            || tls.ech_config.is_some()
-            || tls.reality.is_some()
-    });
-    if transport.is_none() && !needs_advanced_tls {
+    let needs_specialized_tls =
+        tls.is_some_and(|tls| tls.fingerprint.is_some() || tls.reality.is_some());
+    if transport.is_none() && !needs_specialized_tls {
         return Ok(None);
     }
     let host = server.host.to_string();
-    let runtime_transport = transport.map(|transport| match transport {
-        V2RayTransportConfig::Tcp => unreachable!(),
-        V2RayTransportConfig::WebSocket {
-            path,
-            host: configured_host,
-            headers,
-            max_early_data,
-            early_data_header,
-        } => RuntimeTransportConfig::WebSocket {
-            path: path.clone(),
-            host: Some(configured_host.clone().unwrap_or_else(|| host.clone())),
-            headers: headers
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-            max_early_data: *max_early_data,
-            early_data_header: early_data_header.clone(),
-        },
-        V2RayTransportConfig::Http2 { path, hosts } => RuntimeTransportConfig::Http2 {
-            path: path.clone(),
-            hosts: hosts.clone(),
-        },
-        V2RayTransportConfig::Grpc {
-            service_name,
-            authority,
-        } => RuntimeTransportConfig::Grpc {
-            service_name: service_name.clone(),
-            authority: authority.clone().unwrap_or_else(|| host.clone()),
-        },
-        V2RayTransportConfig::HttpUpgrade {
-            path,
-            host: configured_host,
-            headers,
-        } => RuntimeTransportConfig::HttpUpgrade {
-            path: path.clone(),
-            host: Some(configured_host.clone().unwrap_or_else(|| host.clone())),
-            headers: headers
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        },
-    });
     let tls_config = tls
-        .map(|tls| compose_tls_config(tls, &host))
-        .transpose()?
+        .cloned()
+        .map(|mut tls| {
+            tls.enabled |= force_tls;
+            tls
+        })
         .or_else(|| {
             force_tls.then(|| TlsLayerConfig {
                 enabled: true,
@@ -618,120 +521,9 @@ fn compose_transport(
                 ..TlsLayerConfig::default()
             })
         });
-    LayeredTransport::new(network, tls_config, runtime_transport)
+    LayeredTransport::new(network, tls_config, transport.cloned())
         .map(|transport| Some(Arc::new(transport) as Arc<dyn StreamTransport>))
         .map_err(|error| ComposeError::Config(ConfigError::new(error.message)))
-}
-
-fn compose_tls_config(
-    tls: &OutboundTlsConfig,
-    default_server_name: &str,
-) -> Result<TlsLayerConfig, ComposeError> {
-    if tls.client_certificate_pem.is_some() != tls.client_private_key_pem.is_some() {
-        return Err(ComposeError::Config(ConfigError::new(
-            "TLS client_certificate_pem and client_private_key_pem must be configured together",
-        )));
-    }
-    let mut roots = Vec::new();
-    for pem in &tls.certificate_authorities_pem {
-        let certificates = rustls_pemfile::certs(&mut pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                ComposeError::Config(ConfigError::new(format!(
-                    "invalid TLS certificate authority PEM: {error}"
-                )))
-            })?;
-        if certificates.is_empty() {
-            return Err(ComposeError::Config(ConfigError::new(
-                "TLS certificate authority PEM contains no certificates",
-            )));
-        }
-        roots.extend(
-            certificates
-                .into_iter()
-                .map(|certificate| certificate.to_vec()),
-        );
-    }
-    let ech_config = tls.ech_config.as_deref().map(decode_base64).transpose()?;
-    let public_key_pins = tls
-        .certificate_public_key_sha256
-        .iter()
-        .map(|pin| {
-            decode_base64(pin)?.try_into().map_err(|_| {
-                ComposeError::Config(ConfigError::new(
-                    "TLS certificate public-key SHA-256 pin must decode to 32 bytes",
-                ))
-            })
-        })
-        .collect::<Result<Vec<[u8; 32]>, _>>()?;
-    let reality = tls
-        .reality
-        .as_ref()
-        .map(|reality| {
-            let public_key = decode_base64(&reality.public_key)?;
-            let public_key: [u8; 32] = public_key.try_into().map_err(|_| {
-                ComposeError::Config(ConfigError::new(
-                    "REALITY public_key must decode to exactly 32 bytes",
-                ))
-            })?;
-            let short = hex::decode(&reality.short_id).map_err(|error| {
-                ComposeError::Config(ConfigError::new(format!(
-                    "invalid REALITY short_id: {error}"
-                )))
-            })?;
-            if short.len() > 8 {
-                return Err(ComposeError::Config(ConfigError::new(
-                    "REALITY short_id must not exceed eight bytes",
-                )));
-            }
-            let mut short_id = [0_u8; 8];
-            short_id[..short.len()].copy_from_slice(&short);
-            Ok(RealityLayerConfig {
-                public_key,
-                short_id,
-                support_x25519_mlkem768: reality.support_x25519_mlkem768,
-            })
-        })
-        .transpose()?;
-    if ech_config.is_some() && reality.is_some() {
-        return Err(ComposeError::Config(ConfigError::new(
-            "ECH and REALITY cannot be enabled on the same TLS layer",
-        )));
-    }
-    Ok(TlsLayerConfig {
-        enabled: tls.enabled,
-        server_name: Some(
-            tls.server_name
-                .clone()
-                .unwrap_or_else(|| default_server_name.to_string()),
-        ),
-        insecure: tls.insecure,
-        alpn: tls.alpn.clone(),
-        client_certificate_pem: tls
-            .client_certificate_pem
-            .as_ref()
-            .map(|value| value.as_bytes().to_vec()),
-        client_private_key_pem: tls
-            .client_private_key_pem
-            .as_ref()
-            .map(|value| value.as_bytes().to_vec()),
-        certificate_authorities_der: roots,
-        fingerprint: tls.fingerprint.clone(),
-        ech_config,
-        reality,
-        public_key_pins,
-    })
-}
-
-fn decode_base64(value: &str) -> Result<Vec<u8>, ComposeError> {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(value)
-        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(value))
-        .map_err(|error| {
-            ComposeError::Config(ConfigError::new(format!(
-                "invalid base64 encoded TLS value: {error}"
-            )))
-        })
 }
 
 struct DialDomainResolver {
@@ -749,7 +541,7 @@ impl RouteResolver for RouteDnsResolver {
         domain: String,
         server: Option<String>,
         strategy: ResolveStrategy,
-    ) -> BoxFuture<'_, Result<Vec<IpAddress>, NetError>> {
+    ) -> BoxFuture<'_, Result<Vec<IpAddr>, NetError>> {
         Box::pin(async move {
             let name = DnsName::new(domain).map_err(|error| NetError::new(error.message))?;
             let query = |record_type| DnsQuery {
@@ -804,7 +596,7 @@ impl RouteResolver for RouteDnsResolver {
 }
 
 impl DomainResolver for DialDomainResolver {
-    fn resolve(&self, domain: String) -> BoxFuture<'_, Result<Vec<IpAddress>, NetError>> {
+    fn resolve(&self, domain: String) -> BoxFuture<'_, Result<Vec<IpAddr>, NetError>> {
         Box::pin(async move {
             let name = DnsName::new(domain).map_err(|error| NetError::new(error.message))?;
             let (ipv4, ipv6) = tokio::join!(

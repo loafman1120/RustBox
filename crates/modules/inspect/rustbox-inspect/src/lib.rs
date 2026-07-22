@@ -19,9 +19,8 @@ use rustbox_kernel::{
     ConnectionKey, Flow, FlowDirection, FlowPayload, InspectError, MetadataEnricher,
     NetworkMetadataLookup, ProcessLookup,
 };
-use rustbox_types::{Endpoint, Host, ProcessMetadata, ProtocolHint};
+use rustbox_types::{Endpoint, Host, ProtocolHint};
 use std::collections::VecDeque;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::time::{Instant, timeout_at};
@@ -140,20 +139,8 @@ impl MetadataEnricher for FlowEnricher {
             }
         };
         let (process, network) = tokio::join!(process, network);
-        if let Some(info) = process {
-            let name = info.executable_path.as_deref().and_then(|path| {
-                Path::new(path)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            });
-            flow.meta.platform.process = Some(ProcessMetadata {
-                pid: info.pid,
-                name,
-                path: info.executable_path,
-                package_name: info.package_name,
-                user_id: info.user_id,
-                user_name: None,
-            });
+        if let Some(metadata) = process {
+            flow.meta.platform.process = Some(metadata);
         }
         if let Some(info) = network {
             if flow.meta.platform.interface.is_none() {
@@ -289,7 +276,8 @@ mod tests {
     use super::*;
     use core::num::NonZeroU64;
     use rustbox_test_host::MemoryStream;
-    use rustbox_types::{FlowId, FlowMeta, InboundId, IpAddress, Network};
+    use rustbox_types::{FlowId, FlowMeta, InboundId, Network};
+    use std::net::IpAddr;
 
     #[tokio::test]
     async fn replays_stream_prefix_after_http_sniff() {
@@ -299,7 +287,7 @@ mod tests {
                 id: FlowId::new(NonZeroU64::new(1).unwrap()),
                 network: Network::Tcp,
                 source: Endpoint::localhost_v4(12345),
-                destination: Endpoint::new(Host::Ip(IpAddress::V4([203, 0, 113, 1])), 80),
+                destination: Endpoint::new(Host::Ip(IpAddr::from([203, 0, 113, 1])), 80),
                 inbound: InboundId::new(NonZeroU64::new(1).unwrap()),
                 domain: None,
                 protocol_hint: None,

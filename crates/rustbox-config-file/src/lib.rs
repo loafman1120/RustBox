@@ -26,7 +26,8 @@ mod tests {
     };
     use rustbox_observability::{LevelFilter, ObservabilityOutput};
     use rustbox_types::Endpoint;
-    use rustbox_types::{Host, IpAddress};
+    use rustbox_types::Host;
+    use std::net::IpAddr;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -544,10 +545,7 @@ outbound = "direct"
         let endpoint = Endpoint::from_str("[::1]:1080").expect("parse endpoint");
 
         assert_eq!(endpoint.port, 1080);
-        assert_eq!(
-            endpoint.host,
-            Host::Ip(IpAddress::V6(Ipv6Addr::LOCALHOST.octets()))
-        );
+        assert_eq!(endpoint.host, Host::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
 
     #[test]
@@ -601,10 +599,7 @@ schema_version = 2
         let endpoint = Endpoint::from_str("127.0.0.1:18080").expect("parse endpoint");
 
         assert_eq!(endpoint.port, 18080);
-        assert_eq!(
-            endpoint.host,
-            Host::Ip(IpAddress::V4(Ipv4Addr::LOCALHOST.octets()))
-        );
+        assert_eq!(endpoint.host, Host::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     }
 
     #[test]

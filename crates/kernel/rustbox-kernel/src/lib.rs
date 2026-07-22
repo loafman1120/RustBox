@@ -13,11 +13,12 @@ use core::task::{Context, Poll};
 use rustbox_io::{ByteStream, DatagramSocket, IoErrorKind};
 use rustbox_route::{ResolveStrategy, RouteAction, RouteOptions, Router};
 use rustbox_types::{
-    Endpoint, FlowId, FlowMeta, Host, InboundId, IpAddress, Network, OutboundId, RejectReason,
-    RouteDecision, ServiceId,
+    Endpoint, FlowId, FlowMeta, Host, InboundId, Network, OutboundId, RejectReason, RouteDecision,
+    ServiceId,
 };
 use std::collections::HashMap;
 use std::future::{Future, poll_fn};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -122,7 +123,7 @@ pub trait RouteResolver: Send + Sync {
         domain: String,
         server: Option<String>,
         strategy: ResolveStrategy,
-    ) -> BoxFuture<'_, Result<Vec<IpAddress>, NetError>>;
+    ) -> BoxFuture<'_, Result<Vec<IpAddr>, NetError>>;
 }
 
 /// No-op stage used when a runtime does not install inspection.
@@ -705,12 +706,7 @@ fn endpoint_is_unspecified(endpoint: &Endpoint) -> bool {
         return false;
     }
     match &endpoint.host {
-        rustbox_types::Host::Ip(rustbox_types::IpAddress::V4(octets)) => {
-            octets.iter().all(|byte| *byte == 0)
-        }
-        rustbox_types::Host::Ip(rustbox_types::IpAddress::V6(octets)) => {
-            octets.iter().all(|byte| *byte == 0)
-        }
+        rustbox_types::Host::Ip(ip) => ip.is_unspecified(),
         rustbox_types::Host::Domain(_) => false,
     }
 }
@@ -1126,7 +1122,7 @@ mod tests {
         let target = Endpoint::localhost_v4(53);
         let mut meta = flow_meta(outbound_id);
         meta.network = Network::Udp;
-        meta.destination = Endpoint::new(Host::Ip(rustbox_types::IpAddress::V4([0; 4])), 0);
+        meta.destination = Endpoint::new(Host::Ip(IpAddr::from([0; 4])), 0);
         let flow = resolve_datagram_destination(Flow {
             meta,
             payload: FlowPayload::Datagram(Box::new(OneDatagram {

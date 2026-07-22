@@ -7,15 +7,15 @@
 use rustbox_io::{ByteStream, DatagramSocket};
 use rustbox_kernel::{BoxFuture, NetworkProvider, TcpConnect};
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
-use rustbox_transport::{StreamTransport, TransportContext};
-use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{
-    ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
+use rustbox_runtime_config::TlsClientConfig;
+use rustbox_transport::{
+    StreamTransport, TransportContext, rustls_client_config, rustls_server_name,
 };
+use rustbox_types::{Endpoint, Host, OutboundId};
+use rustls::ClientConfig;
+use rustls::pki_types::ServerName;
 use sha2::{Digest, Sha224};
+use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio_rustls::TlsConnector;
@@ -27,13 +27,6 @@ const CMD_UDP_ASSOCIATE: u8 = 0x03;
 const ATYP_IPV4: u8 = 0x01;
 const ATYP_DOMAIN: u8 = 0x03;
 const ATYP_IPV6: u8 = 0x04;
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TrojanTlsConfig {
-    pub server_name: Option<String>,
-    pub insecure: bool,
-    pub alpn: Vec<String>,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrojanConfigError {
@@ -55,7 +48,7 @@ impl TrojanOutbound {
         id: OutboundId,
         server: Endpoint,
         password: &str,
-        tls: TrojanTlsConfig,
+        tls: TlsClientConfig,
         network: Arc<dyn NetworkProvider>,
     ) -> Result<Self, TrojanConfigError> {
         if password.is_empty() {
@@ -66,8 +59,8 @@ impl TrojanOutbound {
         let digest = Sha224::digest(password.as_bytes());
         let mut password_hash = [0_u8; 56];
         encode_hex(&digest, &mut password_hash);
-        let server_name = tls_server_name(tls.server_name.as_deref(), &server)?;
-        let tls_config = tls_client_config(&tls)?;
+        let server_name = rustls_server_name(&tls, &server).map_err(config_error)?;
+        let tls_config = Arc::new(rustls_client_config(&tls).map_err(config_error)?);
         Ok(Self {
             id,
             server,
@@ -180,9 +173,9 @@ pub(crate) fn encode_endpoint(
     endpoint: &Endpoint,
 ) -> Result<(), OutboundError> {
     match &endpoint.host {
-        Host::Ip(IpAddress::V4(octets)) => {
+        Host::Ip(IpAddr::V4(octets)) => {
             output.push(ATYP_IPV4);
-            output.extend_from_slice(octets);
+            output.extend_from_slice(&octets.octets());
         }
         Host::Domain(domain) => {
             let length = u8::try_from(domain.len())
@@ -191,9 +184,9 @@ pub(crate) fn encode_endpoint(
             output.push(length);
             output.extend_from_slice(domain.as_bytes());
         }
-        Host::Ip(IpAddress::V6(octets)) => {
+        Host::Ip(IpAddr::V6(octets)) => {
             output.push(ATYP_IPV6);
-            output.extend_from_slice(octets);
+            output.extend_from_slice(&octets.octets());
         }
     }
     output.extend_from_slice(&endpoint.port.to_be_bytes());
@@ -208,80 +201,9 @@ fn encode_hex(input: &[u8], output: &mut [u8; 56]) {
     }
 }
 
-fn tls_client_config(tls: &TrojanTlsConfig) -> Result<Arc<ClientConfig>, TrojanConfigError> {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let builder = ClientConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-        .map_err(|error| TrojanConfigError {
-            message: format!("failed to select trojan TLS protocol versions: {error}"),
-        })?;
-    let mut config = builder.with_root_certificates(roots).with_no_client_auth();
-    if tls.insecure {
-        config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoCertificateVerification {
-                supported: provider.signature_verification_algorithms,
-            }));
-    }
-    config.alpn_protocols = tls
-        .alpn
-        .iter()
-        .map(|protocol| protocol.as_bytes().to_vec())
-        .collect();
-    Ok(Arc::new(config))
-}
-
-fn tls_server_name(
-    configured: Option<&str>,
-    server: &Endpoint,
-) -> Result<ServerName<'static>, TrojanConfigError> {
-    let host = configured
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| server.host.to_string());
-    ServerName::try_from(host.clone()).map_err(|error| TrojanConfigError {
-        message: format!("invalid trojan TLS server name `{host}`: {error}"),
-    })
-}
-
-#[derive(Debug)]
-struct NoCertificateVerification {
-    supported: WebPkiSupportedAlgorithms,
-}
-
-impl ServerCertVerifier for NoCertificateVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, TlsError> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, TlsError> {
-        verify_tls12_signature(message, cert, dss, &self.supported)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, TlsError> {
-        verify_tls13_signature(message, cert, dss, &self.supported)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.supported.supported_schemes()
+fn config_error(error: rustbox_transport::TransportError) -> TrojanConfigError {
+    TrojanConfigError {
+        message: format!("trojan {}", error.message),
     }
 }
 

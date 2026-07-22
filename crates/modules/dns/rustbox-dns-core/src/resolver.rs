@@ -2,7 +2,8 @@ use crate::{
     DnsAnswer, DnsError, DnsName, DnsQuery, DnsRecordType, DnsResponse, DnsRuleAction,
     DnsRuleConfig, DnsTransport, FakeIpAllocator, HickoryTransport, Resolver,
 };
-use rustbox_types::{Host, IpAddress};
+use rustbox_types::Host;
+use std::net::IpAddr;
 use std::{collections::HashMap, sync::Arc};
 
 pub struct RuleBasedResolver {
@@ -67,14 +68,14 @@ impl StaticResolver {
     }
     pub fn insert_v4(mut self, name: DnsName, address: [u8; 4], ttl_seconds: u32) -> Self {
         self.records.entry(name).or_default().push(DnsAnswer {
-            host: Host::Ip(IpAddress::V4(address)),
+            host: Host::Ip(IpAddr::V4(address.into())),
             ttl_seconds,
         });
         self
     }
     pub fn insert_v6(mut self, name: DnsName, address: [u8; 16], ttl_seconds: u32) -> Self {
         self.records.entry(name).or_default().push(DnsAnswer {
-            host: Host::Ip(IpAddress::V6(address)),
+            host: Host::Ip(IpAddr::V6(address.into())),
             ttl_seconds,
         });
         self
@@ -92,8 +93,8 @@ impl Resolver for StaticResolver {
             .filter(|answer| {
                 matches!(
                     (&answer.host, query.record_type),
-                    (Host::Ip(IpAddress::V4(_)), DnsRecordType::A)
-                        | (Host::Ip(IpAddress::V6(_)), DnsRecordType::Aaaa)
+                    (Host::Ip(IpAddr::V4(_)), DnsRecordType::A)
+                        | (Host::Ip(IpAddr::V6(_)), DnsRecordType::Aaaa)
                 )
             })
             .collect();

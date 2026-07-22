@@ -17,21 +17,20 @@ use anytls::{AsyncReadWrite, DialOutFunc};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
+use rustbox_io::{ByteStream, DatagramSocket, IoError};
 use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NetworkProvider, NoopObservabilitySink,
     ObservabilitySink, TcpConnect,
 };
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
-use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{
-    ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
-};
+use rustbox_runtime_config::TlsClientConfig;
+use rustbox_transport::{rustls_client_config, rustls_server_name};
+use rustbox_types::{Endpoint, Host, OutboundId};
+use rustls::ClientConfig;
+use rustls::pki_types::ServerName;
 use sha2::{Digest, Sha256};
 use std::io;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -44,14 +43,6 @@ const UOT_SENTINEL: &str = rustbox_io::uot::SENTINEL;
 /// Peer implementation profile covered by RustBox's unit and process-level
 /// end-to-end tests.
 pub const SUPPORTED_ANYTLS_PROFILE: &str = "canonical-anytls-v2/rustbox-anytls-0.2.3";
-
-/// TLS policy used by an AnyTLS outbound.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct AnyTlsTlsConfig {
-    pub server_name: Option<String>,
-    pub insecure: bool,
-    pub alpn: Vec<String>,
-}
 
 /// Configuration error detected before the outbound is registered.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,7 +68,7 @@ impl AnyTlsOutbound {
         id: OutboundId,
         server: Endpoint,
         password: &str,
-        tls: AnyTlsTlsConfig,
+        tls: TlsClientConfig,
         network: Arc<dyn NetworkProvider>,
     ) -> Result<Self, AnyTlsConfigError> {
         if password.is_empty() {
@@ -86,8 +77,8 @@ impl AnyTlsOutbound {
             });
         }
 
-        let server_name = tls_server_name(tls.server_name.as_deref(), &server)?;
-        let tls_config = tls_client_config(&tls)?;
+        let server_name = rustls_server_name(&tls, &server).map_err(config_error)?;
+        let tls_config = Arc::new(rustls_client_config(&tls).map_err(config_error)?);
         let password_hash: [u8; 32] = Sha256::digest(password.as_bytes()).into();
         Ok(Self {
             id,
@@ -344,51 +335,18 @@ async fn dial_server(
     Ok(Box::new(tls_stream))
 }
 
-fn tls_client_config(tls: &AnyTlsTlsConfig) -> Result<Arc<ClientConfig>, AnyTlsConfigError> {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    let builder = ClientConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-        .map_err(|err| AnyTlsConfigError {
-            message: format!("failed to select anytls TLS protocol versions: {err}"),
-        })?;
-    let mut config = builder.with_root_certificates(roots).with_no_client_auth();
-
-    if tls.insecure {
-        config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoCertificateVerification {
-                supported: provider.signature_verification_algorithms,
-            }));
+fn config_error(error: rustbox_transport::TransportError) -> AnyTlsConfigError {
+    AnyTlsConfigError {
+        message: format!("anytls {}", error.message),
     }
-    config.alpn_protocols = tls
-        .alpn
-        .iter()
-        .map(|protocol| protocol.as_bytes().to_vec())
-        .collect();
-    Ok(Arc::new(config))
-}
-
-fn tls_server_name(
-    configured: Option<&str>,
-    server: &Endpoint,
-) -> Result<ServerName<'static>, AnyTlsConfigError> {
-    let host = configured
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| server.host.to_string());
-    ServerName::try_from(host.clone()).map_err(|err| AnyTlsConfigError {
-        message: format!("invalid anytls TLS server name `{host}`: {err}"),
-    })
 }
 
 fn encode_target(target: &Endpoint) -> Result<Vec<u8>, OutboundError> {
     let mut encoded = Vec::new();
     match &target.host {
-        Host::Ip(IpAddress::V4(octets)) => {
+        Host::Ip(IpAddr::V4(octets)) => {
             encoded.push(0x01);
-            encoded.extend_from_slice(octets);
+            encoded.extend_from_slice(&octets.octets());
         }
         Host::Domain(domain) => {
             let length = u8::try_from(domain.len())
@@ -397,53 +355,13 @@ fn encode_target(target: &Endpoint) -> Result<Vec<u8>, OutboundError> {
             encoded.push(length);
             encoded.extend_from_slice(domain.as_bytes());
         }
-        Host::Ip(IpAddress::V6(octets)) => {
+        Host::Ip(IpAddr::V6(octets)) => {
             encoded.push(0x04);
-            encoded.extend_from_slice(octets);
+            encoded.extend_from_slice(&octets.octets());
         }
     }
     encoded.extend_from_slice(&target.port.to_be_bytes());
     Ok(encoded)
-}
-
-#[derive(Debug)]
-struct NoCertificateVerification {
-    supported: WebPkiSupportedAlgorithms,
-}
-
-impl ServerCertVerifier for NoCertificateVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, TlsError> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, TlsError> {
-        verify_tls12_signature(message, cert, dss, &self.supported)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, TlsError> {
-        verify_tls13_signature(message, cert, dss, &self.supported)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.supported.supported_schemes()
-    }
 }
 
 type ReadFuture = Pin<Box<dyn Future<Output = (Vec<u8>, io::Result<usize>)> + Send>>;
@@ -650,7 +568,7 @@ impl DatagramSocket for AnyTlsDatagramSocket {
             }
             Poll::Ready(Err(err)) => {
                 self.recv = None;
-                Poll::Ready(Err(std_io_error(err)))
+                Poll::Ready(Err(err.into()))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -677,7 +595,7 @@ impl DatagramSocket for AnyTlsDatagramSocket {
         match future.as_mut().poll(cx) {
             Poll::Ready(result) => {
                 self.send = None;
-                Poll::Ready(result.map_err(std_io_error))
+                Poll::Ready(result.map_err(Into::into))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -716,7 +634,7 @@ async fn read_socks_target(stream: &Stream) -> io::Result<Endpoint> {
         0x01 => {
             let mut octets = [0_u8; 4];
             read_stream_bytes(stream, &mut octets).await?;
-            Host::Ip(IpAddress::V4(octets))
+            Host::Ip(IpAddr::V4(octets.into()))
         }
         0x03 => {
             let mut length = [0_u8; 1];
@@ -731,7 +649,7 @@ async fn read_socks_target(stream: &Stream) -> io::Result<Endpoint> {
         0x04 => {
             let mut octets = [0_u8; 16];
             read_stream_bytes(stream, &mut octets).await?;
-            Host::Ip(IpAddress::V6(octets))
+            Host::Ip(IpAddr::V6(octets.into()))
         }
         value => {
             return Err(io::Error::new(
@@ -763,20 +681,6 @@ fn outbound_io_error(err: io::Error) -> OutboundError {
     OutboundError::new(err.to_string())
 }
 
-fn std_io_error(err: io::Error) -> IoError {
-    let kind = match err.kind() {
-        io::ErrorKind::BrokenPipe
-        | io::ErrorKind::ConnectionAborted
-        | io::ErrorKind::ConnectionReset
-        | io::ErrorKind::UnexpectedEof => IoErrorKind::Closed,
-        io::ErrorKind::Interrupted => IoErrorKind::Interrupted,
-        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => IoErrorKind::InvalidInput,
-        io::ErrorKind::Unsupported => IoErrorKind::Unsupported,
-        _ => IoErrorKind::Other,
-    };
-    IoError::new(kind, err.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,10 +708,11 @@ mod tests {
             outbound_id,
             server,
             PASSWORD,
-            AnyTlsTlsConfig {
+            TlsClientConfig {
+                enabled: true,
                 server_name: Some("localhost".to_string()),
                 insecure: true,
-                alpn: Vec::new(),
+                ..TlsClientConfig::default()
             },
             host,
         )
@@ -838,10 +743,11 @@ mod tests {
             outbound_id,
             server,
             PASSWORD,
-            AnyTlsTlsConfig {
+            TlsClientConfig {
+                enabled: true,
                 server_name: Some("localhost".to_string()),
                 insecure: true,
-                alpn: Vec::new(),
+                ..TlsClientConfig::default()
             },
             host,
         )
@@ -878,7 +784,7 @@ mod tests {
             Endpoint::localhost_v4(443),
             // codeql[rust/hard-coded-cryptographic-value]: empty value validates that empty passwords are rejected at construction
             "",
-            AnyTlsTlsConfig::default(),
+            TlsClientConfig::default(),
             host,
         ) {
             Ok(_) => panic!("expected empty password to fail"),
@@ -947,7 +853,7 @@ mod tests {
             let unspecified = read_socks_target(&stream).await?;
             assert_eq!(
                 unspecified,
-                Endpoint::new(Host::Ip(IpAddress::V4([0, 0, 0, 0])), 0)
+                Endpoint::new(Host::Ip(IpAddr::from([0, 0, 0, 0])), 0)
             );
             stream.handshake_success().await?;
 

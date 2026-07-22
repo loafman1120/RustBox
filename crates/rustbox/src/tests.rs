@@ -11,7 +11,8 @@ use rustbox_control_api::daemon::{
     SelectOutboundRequest, started_service_client::StartedServiceClient,
 };
 use rustbox_observability::ObservabilityStore;
-use rustbox_types::{Endpoint, Host, IpAddress, IpCidr};
+use rustbox_types::{Endpoint, Host, IpCidr};
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -139,7 +140,7 @@ async fn composes_dns_rules_cache_fake_ip_and_resolver_api() {
         cache: DnsCacheConfig::default(),
         fake_ip: Some(FakeIpConfig {
             enabled: true,
-            ipv4_pool: IpCidr::new(IpAddress::V4([198, 18, 0, 0]), 24).expect("pool"),
+            ipv4_pool: IpCidr::new(IpAddr::from([198, 18, 0, 0]), 24).expect("pool"),
             ipv6_pool: None,
             state_file: None,
             ttl_seconds: 60,
@@ -154,10 +155,7 @@ async fn composes_dns_rules_cache_fake_ip_and_resolver_api() {
         })
         .await
         .expect("resolve");
-    assert!(matches!(
-        response.answers[0].host,
-        Host::Ip(IpAddress::V4(_))
-    ));
+    assert!(matches!(response.answers[0].host, Host::Ip(IpAddr::V4(_))));
 }
 
 #[test]
@@ -613,13 +611,14 @@ fn composes_tun_inbound_runtime_graph_on_supported_platforms() {
             kind: InboundConfigKind::Tun(rustbox_config::TunInboundConfig {
                 interface_name: Some("rustbox0".to_string()),
                 addresses: vec![
-                    rustbox_types::IpCidr::new(rustbox_types::IpAddress::V4([172, 18, 0, 1]), 30)
+                    rustbox_types::IpCidr::new(std::net::IpAddr::from([172, 18, 0, 1]), 30)
                         .expect("cidr"),
                 ],
                 mtu: Some(1500),
                 route_mode: rustbox_config::RouteMode::Manual,
                 dns_mode: rustbox_config::TunDnsMode::None,
                 auto_route: false,
+                auto_detect_interface: false,
                 strict_route: false,
                 route_includes: Vec::new(),
                 route_excludes: Vec::new(),

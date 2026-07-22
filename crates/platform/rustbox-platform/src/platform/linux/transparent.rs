@@ -35,7 +35,7 @@ struct LinuxTransparentTcpListener {
 
 impl TransparentStreamListener for LinuxTransparentTcpListener {
     fn local_endpoint(&self) -> Option<Endpoint> {
-        self.inner.local_addr().ok().map(socket_addr_to_endpoint)
+        self.inner.local_addr().ok().map(Endpoint::from)
     }
 
     fn accept(
@@ -48,7 +48,7 @@ impl TransparentStreamListener for LinuxTransparentTcpListener {
             let original_destination = original_destination(&stream)?;
             Ok(AcceptedTransparentStream {
                 stream: Box::new(stream),
-                peer: socket_addr_to_endpoint(peer),
+                peer: peer.into(),
                 original_destination,
             })
         })
@@ -56,7 +56,12 @@ impl TransparentStreamListener for LinuxTransparentTcpListener {
 }
 
 async fn bind_tcp_listener(listen: &Endpoint) -> Result<TcpListener, TransparentProxyError> {
-    let addr = endpoint_to_socket_addr(listen).map_err(TransparentProxyError::new)?;
+    let addr = listen.socket_addr().ok_or_else(|| {
+        TransparentProxyError::new(format!(
+            "cannot bind transparent listener to domain {}",
+            listen.host
+        ))
+    })?;
     TcpListener::bind(addr)
         .await
         .map_err(|err| TransparentProxyError::new(format!("bind transparent TCP: {err}")))
@@ -75,7 +80,7 @@ fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxy
                 })?;
             let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
             Ok(Endpoint::new(
-                Host::Ip(IpAddress::V4(ip.octets())),
+                Host::Ip(IpAddr::V4(ip)),
                 u16::from_be(addr.sin_port),
             ))
         }
@@ -87,33 +92,9 @@ fn original_destination(stream: &TcpStream) -> Result<Endpoint, TransparentProxy
                     })?;
             let ip = Ipv6Addr::from(addr.sin6_addr.s6_addr);
             Ok(Endpoint::new(
-                Host::Ip(IpAddress::V6(ip.octets())),
+                Host::Ip(IpAddr::V6(ip)),
                 u16::from_be(addr.sin6_port),
             ))
         }
-    }
-}
-
-fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, String> {
-    match &endpoint.host {
-        Host::Ip(ip) => Ok(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
-        Host::Domain(domain) => Err(format!(
-            "cannot bind transparent listener to domain {domain}"
-        )),
-    }
-}
-
-fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
-        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
-    };
-    Endpoint::new(host, addr.port())
-}
-
-fn ip_to_std(ip: IpAddress) -> IpAddr {
-    match ip {
-        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
-        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
     }
 }

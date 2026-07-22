@@ -1,0 +1,12 @@
+[package]
+name = "rustbox-runtime-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.22"
+rustbox-types = { path = "../rustbox-types" }
+
+[lints]
+workspace = true

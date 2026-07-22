@@ -15,7 +15,7 @@ use rustbox_kernel::{
     ObservabilitySink, TcpConnect,
 };
 use rustbox_kernel::{Outbound, OutboundContext, OutboundError};
-use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
+use rustbox_types::{Endpoint, Host, OutboundId};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -224,11 +224,7 @@ impl Socks5DatagramSocket {
 
 impl DatagramSocket for Socks5DatagramSocket {
     fn local_endpoint(&self) -> Option<Endpoint> {
-        self.inner
-            .get_ref()
-            .local_addr()
-            .ok()
-            .map(socket_addr_to_endpoint)
+        self.inner.get_ref().local_addr().ok().map(Endpoint::from)
     }
 
     fn poll_recv_from(
@@ -245,7 +241,7 @@ impl DatagramSocket for Socks5DatagramSocket {
                 let (frag, target, data) = match ready_or_error(parsed.as_mut().poll(cx)) {
                     Ok(parsed) => parsed,
                     Err(err) => {
-                        return Poll::Ready(Err(io_error(io::Error::other(err.to_string()))));
+                        return Poll::Ready(Err(io::Error::other(err.to_string()).into()));
                     }
                 };
                 if frag != 0 {
@@ -263,7 +259,7 @@ impl DatagramSocket for Socks5DatagramSocket {
                 buf[..data.len()].copy_from_slice(data);
                 Poll::Ready(Ok((data.len(), target_addr_to_endpoint(target))))
             }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -276,12 +272,12 @@ impl DatagramSocket for Socks5DatagramSocket {
     ) -> Poll<Result<usize, IoError>> {
         let mut packet = match new_udp_header(endpoint_to_target_addr(target)) {
             Ok(header) => header,
-            Err(err) => return Poll::Ready(Err(io_error(io::Error::other(err.to_string())))),
+            Err(err) => return Poll::Ready(Err(io::Error::other(err.to_string()).into())),
         };
         packet.extend_from_slice(buf);
         match self.get_mut().inner.get_ref().poll_send(cx, &packet) {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(buf.len())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -289,7 +285,7 @@ impl DatagramSocket for Socks5DatagramSocket {
 
 async fn bind_udp_for_target(target: &Endpoint) -> io::Result<UdpSocket> {
     let bind = match &target.host {
-        Host::Ip(IpAddress::V6(_)) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        Host::Ip(IpAddr::V6(_)) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
     };
     UdpSocket::bind(bind).await
@@ -298,29 +294,14 @@ async fn bind_udp_for_target(target: &Endpoint) -> io::Result<UdpSocket> {
 fn endpoint_to_target_addr(endpoint: &Endpoint) -> TargetAddr {
     match &endpoint.host {
         Host::Domain(domain) => TargetAddr::Domain(domain.clone(), endpoint.port),
-        Host::Ip(ip) => TargetAddr::Ip(SocketAddr::new(ip_to_std(*ip), endpoint.port)),
+        Host::Ip(ip) => TargetAddr::Ip(SocketAddr::new(*ip, endpoint.port)),
     }
 }
 
 fn target_addr_to_endpoint(target: TargetAddr) -> Endpoint {
     match target {
         TargetAddr::Domain(domain, port) => Endpoint::new(Host::Domain(domain), port),
-        TargetAddr::Ip(addr) => socket_addr_to_endpoint(addr),
-    }
-}
-
-fn socket_addr_to_endpoint(addr: SocketAddr) -> Endpoint {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) => Host::Ip(IpAddress::V4(ip.octets())),
-        IpAddr::V6(ip) => Host::Ip(IpAddress::V6(ip.octets())),
-    };
-    Endpoint::new(host, addr.port())
-}
-
-fn ip_to_std(ip: IpAddress) -> IpAddr {
-    match ip {
-        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
-        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
+        TargetAddr::Ip(addr) => addr.into(),
     }
 }
 
@@ -329,19 +310,6 @@ fn ready_or_error<T, E>(poll: Poll<Result<T, E>>) -> Result<T, E> {
         Poll::Ready(result) => result,
         Poll::Pending => panic!("fast-socks5 slice UDP parser unexpectedly returned Pending"),
     }
-}
-
-fn io_error(err: io::Error) -> IoError {
-    let kind = match err.kind() {
-        io::ErrorKind::BrokenPipe
-        | io::ErrorKind::ConnectionAborted
-        | io::ErrorKind::UnexpectedEof => IoErrorKind::Closed,
-        io::ErrorKind::Interrupted => IoErrorKind::Interrupted,
-        io::ErrorKind::InvalidInput => IoErrorKind::InvalidInput,
-        io::ErrorKind::Unsupported => IoErrorKind::Unsupported,
-        _ => IoErrorKind::Other,
-    };
-    IoError::new(kind, err.to_string())
 }
 
 #[cfg(test)]

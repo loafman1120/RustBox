@@ -105,3 +105,47 @@ impl From<std::io::Error> for IoError {
         Self::new(kind, error.to_string())
     }
 }
+
+impl From<IoError> for std::io::Error {
+    fn from(error: IoError) -> Self {
+        let kind = match error.kind {
+            IoErrorKind::Closed => std::io::ErrorKind::UnexpectedEof,
+            IoErrorKind::Interrupted => std::io::ErrorKind::WouldBlock,
+            IoErrorKind::InvalidInput => std::io::ErrorKind::InvalidInput,
+            IoErrorKind::Unsupported => std::io::ErrorKind::Unsupported,
+            IoErrorKind::Other => std::io::ErrorKind::Other,
+        };
+        Self::new(kind, error.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_std_io_error_kinds_consistently() {
+        let cases = [
+            (std::io::ErrorKind::ConnectionReset, IoErrorKind::Closed),
+            (std::io::ErrorKind::WouldBlock, IoErrorKind::Interrupted),
+            (std::io::ErrorKind::InvalidData, IoErrorKind::InvalidInput),
+            (std::io::ErrorKind::Unsupported, IoErrorKind::Unsupported),
+            (std::io::ErrorKind::PermissionDenied, IoErrorKind::Other),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(
+                IoError::from(std::io::Error::new(source, "test")).kind,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn maps_portable_io_error_back_to_std() {
+        let error = std::io::Error::from(IoError::new(IoErrorKind::Closed, "closed"));
+
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.to_string(), "closed");
+    }
+}

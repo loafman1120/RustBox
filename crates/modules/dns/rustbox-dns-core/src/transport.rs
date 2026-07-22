@@ -12,10 +12,10 @@ use hickory_resolver::proto::runtime::{
 };
 use hickory_resolver::proto::udp::DnsUdpSocket;
 use hickory_resolver::proto::xfer::Protocol;
-use rustbox_types::{Host, IpAddress};
+use rustbox_types::Host;
 use std::future::Future;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -70,7 +70,7 @@ impl HickoryTransport {
             (Host::Domain(_), Some(_)) => {
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.server.endpoint.port)
             }
-            (Host::Ip(ip), _) => SocketAddr::new(to_std_ip(*ip), self.server.endpoint.port),
+            (Host::Ip(ip), _) => SocketAddr::new(*ip, self.server.endpoint.port),
             (Host::Domain(domain), None) => {
                 tokio::net::lookup_host((domain.as_str(), self.server.endpoint.port))
                     .await
@@ -169,11 +169,11 @@ impl DnsTransport for HickoryTransport {
             .iter()
             .filter_map(|record| match record.data() {
                 RData::A(value) => Some(DnsAnswer {
-                    host: Host::Ip(IpAddress::V4(value.0.octets())),
+                    host: Host::Ip(IpAddr::V4(value.0)),
                     ttl_seconds: record.ttl(),
                 }),
                 RData::AAAA(value) => Some(DnsAnswer {
-                    host: Host::Ip(IpAddress::V6(value.0.octets())),
+                    host: Host::Ip(IpAddr::V6(value.0)),
                     ttl_seconds: record.ttl(),
                 }),
                 _ => None,
@@ -321,7 +321,7 @@ impl DnsUdpSocket for InjectedUdpSocket {
             .inner
             .lock()
             .map_err(|_| io::Error::other("poisoned DNS datagram"))?;
-        let endpoint = socket_to_endpoint(target);
+        let endpoint = target.into();
         Pin::new(&mut **inner)
             .poll_send_to(cx, buf, &endpoint)
             .map_err(|error| io::Error::other(error.message))
@@ -331,23 +331,6 @@ impl DnsUdpSocket for InjectedUdpSocket {
 fn dns_io_error(error: DnsError) -> io::Error {
     io::Error::other(error.message)
 }
-fn socket_to_endpoint(address: SocketAddr) -> rustbox_types::Endpoint {
-    rustbox_types::Endpoint::new(
-        Host::Ip(match address.ip() {
-            IpAddr::V4(v) => IpAddress::V4(v.octets()),
-            IpAddr::V6(v) => IpAddress::V6(v.octets()),
-        }),
-        address.port(),
-    )
-}
-
-fn to_std_ip(ip: IpAddress) -> IpAddr {
-    match ip {
-        IpAddress::V4(value) => IpAddr::V4(Ipv4Addr::from(value)),
-        IpAddress::V6(value) => IpAddr::V6(Ipv6Addr::from(value)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,7 +406,7 @@ mod tests {
             .expect("exchange");
         assert_eq!(
             result.answers[0].host,
-            Host::Ip(IpAddress::V4([203, 0, 113, 9]))
+            Host::Ip(IpAddr::from([203, 0, 113, 9]))
         );
     }
 
@@ -456,7 +439,7 @@ mod tests {
             .expect("exchange");
         assert_eq!(
             result.answers[0].host,
-            Host::Ip(IpAddress::V4([203, 0, 113, 9]))
+            Host::Ip(IpAddr::from([203, 0, 113, 9]))
         );
     }
 
@@ -497,9 +480,7 @@ mod tests {
         ) -> Poll<Result<(usize, Endpoint), rustbox_io::IoError>> {
             let mut read = ReadBuf::new(buf);
             match self.socket.poll_recv_from(cx, &mut read) {
-                Poll::Ready(Ok(peer)) => {
-                    Poll::Ready(Ok((read.filled().len(), socket_to_endpoint(peer))))
-                }
+                Poll::Ready(Ok(peer)) => Poll::Ready(Ok((read.filled().len(), peer.into()))),
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
                 Poll::Pending => Poll::Pending,
             }
@@ -533,7 +514,7 @@ mod tests {
             .expect("exchange");
         assert_eq!(
             result.answers[0].host,
-            Host::Ip(IpAddress::V4([203, 0, 113, 9]))
+            Host::Ip(IpAddr::from([203, 0, 113, 9]))
         );
     }
 

@@ -1,4 +1,4 @@
-use crate::{ComposeError, routing::route_matcher};
+use crate::ComposeError;
 use reqwest::StatusCode;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use rustbox_config::{
@@ -286,10 +286,7 @@ fn parse_rule_set(bytes: &[u8], format: RouteRuleSetFormat) -> Result<RouteRuleS
         .iter()
         .map(compile_headless_route_matcher)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.message)?
-        .iter()
-        .map(route_matcher)
-        .collect();
+        .map_err(|error| error.message)?;
     Ok(RouteRuleSet::new(rules))
 }
 

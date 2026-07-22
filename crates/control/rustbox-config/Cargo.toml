@@ -5,15 +5,21 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.22"
 garde = { version = "0.23", features = ["derive"] }
+hex = "0.4"
 humantime-serde = "1"
 regex = "1"
 rustbox-dns-core = { path = "../../modules/dns/rustbox-dns-core" }
 rustbox-kernel = { path = "../../kernel/rustbox-kernel" }
+rustbox-runtime-config = { path = "../../foundation/rustbox-runtime-config" }
 rustbox-route = { path = "../../kernel/rustbox-route" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
+rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"
+url = "2"
+uuid = "1"
 
 [lints]
 workspace = true

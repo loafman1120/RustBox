@@ -1,7 +1,24 @@
 # RustBox
 
-RustBox is a modular proxy engine written in Rust and built on Tokio. The same
-engine powers the command-line app and the Flutter bridge.
+RustBox is a modular client-side proxy engine written in Rust and built on
+Tokio. It is intended for local command-line clients and embedding in end-user
+Flutter applications; the same engine powers both surfaces.
+
+## Product scope
+
+RustBox is designed for a single-user client running on an end-user device. Its
+primary deployment model is a local desktop or mobile application that owns the
+proxy engine, TUN/network integration, configuration, and local control UI.
+Client features such as traffic routing, DNS handling, outbound selection,
+network-change reconciliation, and crash-safe restoration of device networking
+take priority over server hosting and multi-user administration.
+
+RustBox assumes that the engine, its configuration, and its local control plane
+belong to the same user and device. It is not designed as an Internet-facing
+multi-tenant proxy service or as a security sandbox for untrusted protocol
+modules. Keep proxy and control listeners on loopback by default. If remote
+access is required, provide authentication and transport encryption at a
+trusted network boundary.
 
 > RustBox is under active development. Protocol support and configuration may
 > change before the first stable release.
@@ -21,6 +38,8 @@ CLI / Flutter
 - Configuration follows `TOML -> normalize -> validate -> compile -> runtime`.
 - TCP and UDP enter the kernel as explicit `Flow` payloads, then pass through
   inspection, routing, outbound selection, and relay.
+- Shared addresses use the standard library's `IpAddr` and `SocketAddr` types;
+  `Endpoint` only adds unresolved domain-name support where it is needed.
 - Operating-system behavior stays behind platform and host capability
   boundaries.
 
@@ -179,6 +198,11 @@ management endpoints are documented in
 [`docs/clash-api-compat.md`](docs/clash-api-compat.md).
 
 ## Development
+
+Production workspace crates inherit `unsafe_code = "forbid"`. The generated
+Flutter FFI bridge is the only approved exception. CI runs
+`scripts/test/workspace-lints.ps1` so a newly added crate cannot silently omit
+the workspace lint policy.
 
 ```powershell
 cargo fmt --all --check

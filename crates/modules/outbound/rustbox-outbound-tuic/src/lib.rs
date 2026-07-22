@@ -11,7 +11,7 @@ use quinn::crypto::rustls::QuicClientConfig;
 use rustbox_io::{ByteStream, DatagramSocket, IoError, IoErrorKind};
 use rustbox_kernel::{BoxFuture, Outbound, OutboundContext, OutboundError, TaskScope};
 use rustbox_transport::{TlsLayerConfig, rustls_client_config};
-use rustbox_types::{Endpoint, Host, IpAddress, OutboundId};
+use rustbox_types::{Endpoint, Host, OutboundId};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -35,7 +35,7 @@ type AssociationMap = Arc<StdMutex<HashMap<u16, mpsc::Sender<DatagramPacket>>>>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TuicConfig {
     pub server: Endpoint,
-    pub uuid: String,
+    pub uuid: uuid::Uuid,
     pub password: String,
     pub tls: TlsLayerConfig,
     pub heartbeat: Duration,
@@ -66,8 +66,6 @@ impl TuicOutbound {
         mut config: TuicConfig,
         tasks: TaskScope,
     ) -> Result<Self, OutboundError> {
-        let uuid = uuid::Uuid::parse_str(&config.uuid)
-            .map_err(|error| OutboundError::new(format!("TUIC UUID: {error}")))?;
         if config.password.is_empty() {
             return Err(OutboundError::new("TUIC password must not be empty"));
         }
@@ -87,7 +85,7 @@ impl TuicOutbound {
             id,
             server: config.server,
             server_name,
-            uuid: *uuid.as_bytes(),
+            uuid: *config.uuid.as_bytes(),
             password: config.password.into_bytes(),
             client_config: quinn::ClientConfig::new(Arc::new(quic)),
             heartbeat: config.heartbeat.max(Duration::from_secs(1)),
@@ -332,12 +330,7 @@ impl DatagramSocket for TuicDatagram {
 
 async fn resolve_server(server: &Endpoint) -> Result<SocketAddr, OutboundError> {
     match server.host {
-        Host::Ip(IpAddress::V4(value)) => {
-            Ok(SocketAddr::new(IpAddr::V4(value.into()), server.port))
-        }
-        Host::Ip(IpAddress::V6(value)) => {
-            Ok(SocketAddr::new(IpAddr::V6(value.into()), server.port))
-        }
+        Host::Ip(value) => Ok(SocketAddr::new(value, server.port)),
         Host::Domain(ref domain) => tokio::net::lookup_host((domain.as_str(), server.port))
             .await
             .map_err(|error| OutboundError::new(format!("TUIC server DNS: {error}")))?
@@ -523,13 +516,13 @@ fn encode_address(target: &Endpoint, output: &mut impl BufMut) -> Result<(), Out
             output.put_u8(length);
             output.put_slice(domain.as_bytes());
         }
-        Host::Ip(IpAddress::V4(address)) => {
+        Host::Ip(IpAddr::V4(address)) => {
             output.put_u8(1);
-            output.put_slice(address);
+            output.put_slice(&address.octets());
         }
-        Host::Ip(IpAddress::V6(address)) => {
+        Host::Ip(IpAddr::V6(address)) => {
             output.put_u8(2);
-            output.put_slice(address);
+            output.put_slice(&address.octets());
         }
     }
     output.put_u16(target.port);
@@ -567,7 +560,7 @@ fn decode_address(packet: &[u8], offset: usize) -> Result<(Option<Endpoint>, usi
                 .unwrap();
             Ok((
                 Some(Endpoint::new(
-                    Host::Ip(IpAddress::V4(bytes)),
+                    Host::Ip(IpAddr::V4(bytes.into())),
                     read_port(packet, end)?,
                 )),
                 end + 2,
@@ -582,7 +575,7 @@ fn decode_address(packet: &[u8], offset: usize) -> Result<(Option<Endpoint>, usi
                 .unwrap();
             Ok((
                 Some(Endpoint::new(
-                    Host::Ip(IpAddress::V6(bytes)),
+                    Host::Ip(IpAddr::V6(bytes.into())),
                     read_port(packet, end)?,
                 )),
                 end + 2,
@@ -613,9 +606,9 @@ mod tests {
     fn packet_codec_round_trips_each_address_family() {
         for endpoint in [
             Endpoint::new(Host::domain("example.test"), 53),
-            Endpoint::new(Host::Ip(IpAddress::V4([192, 0, 2, 1])), 443),
+            Endpoint::new(Host::Ip(IpAddr::from([192, 0, 2, 1])), 443),
             Endpoint::new(
-                Host::Ip(IpAddress::V6([
+                Host::Ip(IpAddr::from([
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
                 ])),
                 80,

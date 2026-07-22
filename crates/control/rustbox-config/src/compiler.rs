@@ -1,4 +1,6 @@
 use super::*;
+use base64::Engine as _;
+use garde::Validate as _;
 
 impl ConfigCompiler {
     pub fn parse(source: SourceConfig) -> Result<ParsedConfig, ConfigError> {
@@ -27,6 +29,9 @@ impl ConfigCompiler {
         let mut outbound_ids = HashSet::new();
         let mut outbound_kinds = HashMap::new();
         for outbound in &normalized.source.outbounds {
+            outbound.validate().map_err(|error| {
+                ConfigError::new(format!("outbound `{}`: {error}", outbound.logical_id()))
+            })?;
             let logical_id = outbound.logical_id();
             if logical_id.is_empty() {
                 return Err(ConfigError::new("outbound id must not be empty"));
@@ -449,52 +454,10 @@ impl ConfigCompiler {
             .iter()
             .enumerate()
             .map(|(index, inbound)| {
-                let kind = match &inbound.kind {
-                    InboundConfigKind::Mixed {
-                        listen,
-                        username,
-                        password,
-                    } => CompiledInboundKind::Mixed {
-                        listen: listen.clone(),
-                        username: username.clone(),
-                        password: password.clone(),
-                    },
-                    InboundConfigKind::HttpConnect {
-                        listen,
-                        username,
-                        password,
-                    } => CompiledInboundKind::HttpConnect {
-                        listen: listen.clone(),
-                        username: username.clone(),
-                        password: password.clone(),
-                    },
-                    InboundConfigKind::Socks5 {
-                        listen,
-                        username,
-                        password,
-                    } => CompiledInboundKind::Socks5 {
-                        listen: listen.clone(),
-                        username: username.clone(),
-                        password: password.clone(),
-                    },
-                    InboundConfigKind::AnyTls {
-                        listen,
-                        password,
-                        tls,
-                    } => CompiledInboundKind::AnyTls {
-                        listen: listen.clone(),
-                        password: password.clone(),
-                        tls: tls.clone(),
-                    },
-                    InboundConfigKind::Tun(config) => CompiledInboundKind::Tun(config.clone()),
-                    InboundConfigKind::Transparent(config) => {
-                        CompiledInboundKind::Transparent(config.clone())
-                    }
-                };
                 Ok(CompiledInbound {
                     id: InboundId::new(non_zero_id(index)),
                     logical_id: inbound.id.clone(),
-                    kind,
+                    kind: inbound.kind.clone(),
                 })
             })
             .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -588,7 +551,12 @@ impl ConfigCompiler {
                             &source_outbound_ids,
                             &source_outbounds,
                         )?,
-                        url: url.clone(),
+                        url: url::Url::parse(url).map_err(|error| {
+                            ConfigError::new(format!(
+                                "urltest outbound `{}` has invalid URL: {error}",
+                                outbound.logical_id()
+                            ))
+                        })?,
                         interval_seconds: *interval_seconds,
                         tolerance_ms: *tolerance_ms,
                         timeout_seconds: *timeout_seconds,
@@ -606,11 +574,11 @@ impl ConfigCompiler {
                         transport,
                     } => CompiledOutboundKind::Vmess {
                         server: server.clone(),
-                        uuid: uuid.clone(),
+                        uuid: compile_uuid("vmess", outbound.logical_id(), uuid)?,
                         security: security.clone(),
                         alter_id: *alter_id,
-                        tls: tls.clone(),
-                        transport: transport.clone(),
+                        tls: compile_optional_tls(tls.as_ref(), server)?,
+                        transport: compile_transport(transport.as_ref(), server),
                     },
                     OutboundConfigKind::Vless {
                         server,
@@ -620,10 +588,10 @@ impl ConfigCompiler {
                         transport,
                     } => CompiledOutboundKind::Vless {
                         server: server.clone(),
-                        uuid: uuid.clone(),
+                        uuid: compile_uuid("vless", outbound.logical_id(), uuid)?,
                         flow: flow.clone(),
-                        tls: tls.clone(),
-                        transport: transport.clone(),
+                        tls: compile_optional_tls(tls.as_ref(), server)?,
+                        transport: compile_transport(transport.as_ref(), server),
                     },
                     OutboundConfigKind::Trojan {
                         server,
@@ -633,8 +601,8 @@ impl ConfigCompiler {
                     } => CompiledOutboundKind::Trojan {
                         server: server.clone(),
                         password: password.clone(),
-                        tls: tls.clone(),
-                        transport: transport.clone(),
+                        tls: compile_optional_tls(tls.as_ref(), server)?,
+                        transport: compile_transport(transport.as_ref(), server),
                     },
                     OutboundConfigKind::AnyTls {
                         server,
@@ -643,7 +611,7 @@ impl ConfigCompiler {
                     } => CompiledOutboundKind::AnyTls {
                         server: server.clone(),
                         password: password.clone(),
-                        tls: tls.clone(),
+                        tls: compile_optional_tls(tls.as_ref(), server)?,
                     },
                     OutboundConfigKind::Hysteria2 {
                         server,
@@ -682,7 +650,7 @@ impl ConfigCompiler {
                         server: server.clone(),
                         username: username.clone(),
                         password: password.clone(),
-                        tls: tls.clone(),
+                        tls: compile_optional_tls(tls.as_ref(), server)?,
                         headers: headers.clone(),
                     },
                     OutboundConfigKind::Tuic {
@@ -693,9 +661,9 @@ impl ConfigCompiler {
                         heartbeat,
                     } => CompiledOutboundKind::Tuic {
                         server: server.clone(),
-                        uuid: uuid.clone(),
+                        uuid: compile_uuid("tuic", outbound.logical_id(), uuid)?,
                         password: password.clone(),
-                        tls: tls.clone(),
+                        tls: compile_optional_tls(tls.as_ref(), server)?,
                         heartbeat: *heartbeat,
                     },
                     OutboundConfigKind::WireGuard {
@@ -704,13 +672,34 @@ impl ConfigCompiler {
                         listen_port,
                         peers,
                         mtu,
-                    } => CompiledOutboundKind::WireGuard {
+                    } => CompiledOutboundKind::WireGuard(rustbox_runtime_config::WireGuardPlan {
                         addresses: addresses.clone(),
-                        private_key: private_key.clone(),
+                        private_key: compile_wireguard_key("private_key", private_key)?,
                         listen_port: *listen_port,
-                        peers: peers.clone(),
+                        peers: peers
+                            .iter()
+                            .map(|peer| {
+                                Ok(rustbox_runtime_config::WireGuardPeerPlan {
+                                    server: peer.server.clone(),
+                                    public_key: compile_wireguard_key(
+                                        "peer public_key",
+                                        &peer.public_key,
+                                    )?,
+                                    pre_shared_key: peer
+                                        .pre_shared_key
+                                        .as_deref()
+                                        .map(|key| {
+                                            compile_wireguard_key("peer pre_shared_key", key)
+                                        })
+                                        .transpose()?,
+                                    allowed_ips: peer.allowed_ips.clone(),
+                                    persistent_keepalive: peer.persistent_keepalive,
+                                    reserved: peer.reserved,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, ConfigError>>()?,
                         mtu: *mtu,
-                    },
+                    }),
                     OutboundConfigKind::ShadowTls {
                         server,
                         version,
@@ -720,7 +709,7 @@ impl ConfigCompiler {
                         server: server.clone(),
                         version: *version,
                         password: password.clone(),
-                        tls: tls.clone(),
+                        tls: compile_optional_tls(tls.as_ref(), server)?,
                     },
                 };
                 Ok(CompiledOutbound {
@@ -792,8 +781,11 @@ impl ConfigCompiler {
                     invert,
                     action,
                 } => Ok(CompiledRouteRule::Rule {
-                    matcher: CompiledRouteMatcher::Logical {
-                        mode: mode.clone(),
+                    matcher: rustbox_route::RouteMatcher::Logical {
+                        mode: match mode {
+                            LogicalModeConfig::And => rustbox_route::LogicalMode::And,
+                            LogicalModeConfig::Or => rustbox_route::LogicalMode::Or,
+                        },
                         rules: rules
                             .iter()
                             .map(|matcher| compile_route_matcher(matcher, &inbound_by_logical_id))
@@ -868,7 +860,7 @@ impl CompiledOutbound {
             | CompiledOutboundKind::Hysteria2 { .. }
             | CompiledOutboundKind::Naive { .. }
             | CompiledOutboundKind::Tuic { .. }
-            | CompiledOutboundKind::WireGuard { .. }
+            | CompiledOutboundKind::WireGuard(..)
             | CompiledOutboundKind::ShadowTls { .. } => RouteDecision::Forward(self.id),
             CompiledOutboundKind::Block => RouteDecision::Reject(RejectReason::Policy),
             CompiledOutboundKind::Selector { .. } | CompiledOutboundKind::UrlTest { .. } => {
@@ -990,8 +982,8 @@ fn compile_dial_policy(
         detour: dial.detour.as_ref().map(|id| outbound_ids[id]),
         options: rustbox_kernel::DialOptions {
             bind_interface: dial.bind_interface.clone(),
-            inet4_bind_address: dial.inet4_bind_address.map(config_ip_address),
-            inet6_bind_address: dial.inet6_bind_address.map(config_ip_address),
+            inet4_bind_address: dial.inet4_bind_address,
+            inet6_bind_address: dial.inet6_bind_address,
             routing_mark: dial.routing_mark,
             connect_timeout: dial.connect_timeout,
             tcp_keepalive,
@@ -1001,11 +993,203 @@ fn compile_dial_policy(
     }
 }
 
-fn config_ip_address(address: std::net::IpAddr) -> IpAddress {
-    match address {
-        std::net::IpAddr::V4(address) => IpAddress::V4(address.octets()),
-        std::net::IpAddr::V6(address) => IpAddress::V6(address.octets()),
+fn compile_uuid(protocol: &str, logical_id: &str, value: &str) -> Result<uuid::Uuid, ConfigError> {
+    uuid::Uuid::parse_str(value).map_err(|error| {
+        ConfigError::new(format!(
+            "{protocol} outbound `{logical_id}` has invalid UUID: {error}"
+        ))
+    })
+}
+
+fn compile_wireguard_key(
+    field: &str,
+    value: &str,
+) -> Result<rustbox_runtime_config::WireGuardKey, ConfigError> {
+    value
+        .parse()
+        .map_err(|error: String| ConfigError::new(format!("WireGuard {field}: {error}")))
+}
+
+fn compile_optional_tls(
+    tls: Option<&OutboundTlsConfig>,
+    server: &Endpoint,
+) -> Result<Option<rustbox_runtime_config::TlsClientConfig>, ConfigError> {
+    tls.map(|tls| compile_tls(tls, &server.host.to_string()))
+        .transpose()
+}
+
+fn compile_tls(
+    tls: &OutboundTlsConfig,
+    default_server_name: &str,
+) -> Result<rustbox_runtime_config::TlsClientConfig, ConfigError> {
+    if let Some(certificate_pem) = &tls.client_certificate_pem {
+        let certificates = rustls_pemfile::certs(&mut certificate_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                ConfigError::new(format!("invalid TLS client certificate: {error}"))
+            })?;
+        if certificates.is_empty() {
+            return Err(ConfigError::new(
+                "TLS client certificate PEM contains no certificates",
+            ));
+        }
     }
+    if let Some(private_key_pem) = &tls.client_private_key_pem {
+        let key =
+            rustls_pemfile::private_key(&mut private_key_pem.as_bytes()).map_err(|error| {
+                ConfigError::new(format!("invalid TLS client private key: {error}"))
+            })?;
+        if key.is_none() {
+            return Err(ConfigError::new(
+                "TLS client private-key PEM contains no private key",
+            ));
+        }
+    }
+
+    let mut roots = Vec::new();
+    for pem in &tls.certificate_authorities_pem {
+        let certificates = rustls_pemfile::certs(&mut pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                ConfigError::new(format!("invalid TLS certificate authority PEM: {error}"))
+            })?;
+        if certificates.is_empty() {
+            return Err(ConfigError::new(
+                "TLS certificate authority PEM contains no certificates",
+            ));
+        }
+        roots.extend(
+            certificates
+                .into_iter()
+                .map(|certificate| certificate.to_vec()),
+        );
+    }
+
+    let ech_config = tls
+        .ech_config
+        .as_deref()
+        .map(|value| decode_base64("TLS ECH config", value))
+        .transpose()?;
+    let public_key_pins = tls
+        .certificate_public_key_sha256
+        .iter()
+        .map(|pin| {
+            decode_base64("TLS certificate public-key pin", pin)?
+                .try_into()
+                .map_err(|_| {
+                    ConfigError::new(
+                        "TLS certificate public-key pin must decode to exactly 32 bytes",
+                    )
+                })
+        })
+        .collect::<Result<Vec<[u8; 32]>, _>>()?;
+    let reality = tls
+        .reality
+        .as_ref()
+        .map(|reality| {
+            let public_key: [u8; 32] = decode_base64("REALITY public_key", &reality.public_key)?
+                .try_into()
+                .map_err(|_| {
+                    ConfigError::new("REALITY public_key must decode to exactly 32 bytes")
+                })?;
+            let short = hex::decode(&reality.short_id)
+                .map_err(|error| ConfigError::new(format!("invalid REALITY short_id: {error}")))?;
+            if short.len() > 8 {
+                return Err(ConfigError::new(
+                    "REALITY short_id must not exceed eight bytes",
+                ));
+            }
+            let mut short_id = [0_u8; 8];
+            short_id[..short.len()].copy_from_slice(&short);
+            Ok(rustbox_runtime_config::RealityConfig {
+                public_key,
+                short_id,
+                support_x25519_mlkem768: reality.support_x25519_mlkem768,
+            })
+        })
+        .transpose()?;
+
+    Ok(rustbox_runtime_config::TlsClientConfig {
+        enabled: tls.enabled,
+        server_name: Some(
+            tls.server_name
+                .clone()
+                .unwrap_or_else(|| default_server_name.to_string()),
+        ),
+        insecure: tls.insecure,
+        alpn: tls.alpn.clone(),
+        client_certificate_pem: tls
+            .client_certificate_pem
+            .as_ref()
+            .map(|value| value.as_bytes().to_vec()),
+        client_private_key_pem: tls
+            .client_private_key_pem
+            .as_ref()
+            .map(|value| value.as_bytes().to_vec()),
+        certificate_authorities_der: roots,
+        fingerprint: tls.fingerprint.clone(),
+        ech_config,
+        reality,
+        public_key_pins,
+    })
+}
+
+fn compile_transport(
+    transport: Option<&V2RayTransportConfig>,
+    server: &Endpoint,
+) -> Option<rustbox_runtime_config::V2RayTransportPlan> {
+    let host = server.host.to_string();
+    transport.and_then(|transport| match transport {
+        V2RayTransportConfig::Tcp => None,
+        V2RayTransportConfig::WebSocket {
+            path,
+            host: configured_host,
+            headers,
+            max_early_data,
+            early_data_header,
+        } => Some(rustbox_runtime_config::V2RayTransportPlan::WebSocket {
+            path: path.clone(),
+            host: Some(configured_host.clone().unwrap_or(host)),
+            headers: headers
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            max_early_data: *max_early_data,
+            early_data_header: early_data_header.clone(),
+        }),
+        V2RayTransportConfig::Http2 { path, hosts } => {
+            Some(rustbox_runtime_config::V2RayTransportPlan::Http2 {
+                path: path.clone(),
+                hosts: hosts.clone(),
+            })
+        }
+        V2RayTransportConfig::Grpc {
+            service_name,
+            authority,
+        } => Some(rustbox_runtime_config::V2RayTransportPlan::Grpc {
+            service_name: service_name.clone(),
+            authority: authority.clone().unwrap_or(host),
+        }),
+        V2RayTransportConfig::HttpUpgrade {
+            path,
+            host: configured_host,
+            headers,
+        } => Some(rustbox_runtime_config::V2RayTransportPlan::HttpUpgrade {
+            path: path.clone(),
+            host: Some(configured_host.clone().unwrap_or(host)),
+            headers: headers
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        }),
+    })
+}
+
+fn decode_base64(field: &str, value: &str) -> Result<Vec<u8>, ConfigError> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(value))
+        .map_err(|error| ConfigError::new(format!("invalid base64 encoded {field}: {error}")))
 }
 
 fn validate_optional_credentials(
@@ -1044,6 +1228,11 @@ fn validate_tun_inbound(logical_id: &str, config: &TunInboundConfig) -> Result<(
     if config.strict_route && !config.auto_route {
         return Err(ConfigError::new(format!(
             "tun inbound `{logical_id}` strict_route requires auto_route"
+        )));
+    }
+    if config.strict_route && config.dns_hijack.is_empty() {
+        return Err(ConfigError::new(format!(
+            "tun inbound `{logical_id}` strict_route requires a literal-IP dns_hijack endpoint"
         )));
     }
     if config.auto_redirect && !config.auto_route {
@@ -1396,7 +1585,7 @@ fn compile_dns_config(
 fn compile_route_matcher(
     matcher: &RouteMatcherConfig,
     inbound_by_logical_id: &HashMap<String, InboundId>,
-) -> Result<CompiledRouteMatcher, ConfigError> {
+) -> Result<rustbox_route::RouteMatcher, ConfigError> {
     match matcher {
         RouteMatcherConfig::Conditions(conditions) => {
             let inbounds = conditions
@@ -1410,8 +1599,8 @@ fn compile_route_matcher(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            Ok(CompiledRouteMatcher::Conditions(Box::new(
-                CompiledRouteConditions {
+            Ok(rustbox_route::RouteMatcher::Conditions(Box::new(
+                rustbox_route::RouteConditions {
                     inbounds,
                     networks: conditions.network.clone(),
                     protocols: conditions.protocol.clone(),
@@ -1441,8 +1630,11 @@ fn compile_route_matcher(
             mode,
             rules,
             invert,
-        } => Ok(CompiledRouteMatcher::Logical {
-            mode: mode.clone(),
+        } => Ok(rustbox_route::RouteMatcher::Logical {
+            mode: match mode {
+                LogicalModeConfig::And => rustbox_route::LogicalMode::And,
+                LogicalModeConfig::Or => rustbox_route::LogicalMode::Or,
+            },
             rules: rules
                 .iter()
                 .map(|rule| compile_route_matcher(rule, inbound_by_logical_id))
@@ -1454,7 +1646,7 @@ fn compile_route_matcher(
 
 pub fn compile_headless_route_matcher(
     matcher: &RouteMatcherConfig,
-) -> Result<CompiledRouteMatcher, ConfigError> {
+) -> Result<rustbox_route::RouteMatcher, ConfigError> {
     compile_route_matcher(matcher, &HashMap::new())
 }
 

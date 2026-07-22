@@ -1,9 +1,10 @@
 use clienthello::{Extractor as QuicClientHello, PushOutcome};
 use hickory_proto::op::{Message, MessageType};
 use hickory_proto::rr::RData;
-use rustbox_types::{IpAddress, ProtocolHint};
+use rustbox_types::ProtocolHint;
 use rustls::server::Acceptor;
 use std::io::Cursor;
+use std::net::IpAddr;
 
 #[derive(Default)]
 pub(crate) struct SniffResult {
@@ -106,7 +107,7 @@ pub(crate) fn dns_query(packet: &[u8]) -> Option<DnsQueryMeta> {
     })
 }
 
-pub(crate) fn dns_response_addresses(packet: &[u8], query_id: u16) -> Vec<(IpAddress, u32)> {
+pub(crate) fn dns_response_addresses(packet: &[u8], query_id: u16) -> Vec<(IpAddr, u32)> {
     let Ok(message) = Message::from_vec(packet) else {
         return Vec::new();
     };
@@ -117,8 +118,8 @@ pub(crate) fn dns_response_addresses(packet: &[u8], query_id: u16) -> Vec<(IpAdd
         .answers()
         .iter()
         .filter_map(|answer| match answer.data() {
-            RData::A(value) => Some((IpAddress::V4(value.0.octets()), answer.ttl())),
-            RData::AAAA(value) => Some((IpAddress::V6(value.0.octets()), answer.ttl())),
+            RData::A(value) => Some((IpAddr::V4(value.0), answer.ttl())),
+            RData::AAAA(value) => Some((IpAddr::V6(value.0), answer.ttl())),
             _ => None,
         })
         .collect()

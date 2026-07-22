@@ -14,6 +14,7 @@ md-5 = "0.10"
 rand = "0.9"
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
+rustbox-runtime-config = { path = "../../../foundation/rustbox-runtime-config" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 rustbox-transport = { path = "../../transport/rustbox-transport" }
 rustls = "0.23.41"
@@ -22,7 +23,6 @@ tokio = { version = "1", features = ["io-util", "rt"] }
 tokio-rustls = "0.26.4"
 tracing = "0.1"
 uuid = "1"
-webpki-roots = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "time"] }

@@ -7,15 +7,14 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use ipstack::{IpStack, IpStackConfig, IpStackStream};
-use rustbox_io::{DatagramSocket, IoError, IoErrorKind, PacketDevice};
-use rustbox_kernel::net::socket_addr_to_endpoint;
+use rustbox_io::{DatagramSocket, IoError, PacketDevice};
 use rustbox_kernel::{
     BoxFuture, Event, EventKind, EventLevel, NoopObservabilitySink, ObservabilitySink,
 };
 use rustbox_kernel::{Flow, FlowPayload, FlowSink, TaskScope};
-use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network};
 #[cfg(test)]
-use rustbox_types::{Host, IpAddress};
+use rustbox_types::Host;
+use rustbox_types::{Endpoint, FlowId, FlowMeta, InboundId, Network};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -48,6 +47,7 @@ pub struct PacketFlowStack {
     observability: Arc<dyn ObservabilitySink>,
     mtu: u16,
     interface: Option<String>,
+    icmp_interface_index: Option<std::num::NonZeroU32>,
 }
 
 impl PacketFlowStack {
@@ -57,6 +57,7 @@ impl PacketFlowStack {
             observability: Arc::new(NoopObservabilitySink),
             mtu: 1500,
             interface: None,
+            icmp_interface_index: None,
         }
     }
 
@@ -72,6 +73,11 @@ impl PacketFlowStack {
 
     pub fn with_interface(mut self, interface: Option<String>) -> Self {
         self.interface = interface;
+        self
+    }
+
+    pub fn with_icmp_interface_index(mut self, index: Option<u32>) -> Self {
+        self.icmp_interface_index = index.and_then(std::num::NonZeroU32::new);
         self
     }
 
@@ -100,6 +106,32 @@ impl PacketFlowStack {
                 .accept()
                 .await
                 .map_err(|err| StackError::new(format!("ipstack accept failed: {err}")))?;
+            let stream = match stream {
+                IpStackStream::UnknownTransport(packet)
+                    if self.icmp_interface_index.is_some()
+                        && matches!(
+                            packet.ip_protocol(),
+                            etherparse::IpNumber::ICMP | etherparse::IpNumber::IPV6_ICMP
+                        ) =>
+                {
+                    let interface_index = self.icmp_interface_index.expect("checked above");
+                    let observability = self.observability.clone();
+                    sessions.spawn(async move {
+                        if let Err(error) = forward_icmp_echo(packet, interface_index).await {
+                            observability
+                                .emit(Event::new(
+                                    EventLevel::Debug,
+                                    "rustbox.stack.icmp",
+                                    None,
+                                    EventKind::Diagnostic(error.message),
+                                ))
+                                .await;
+                        }
+                    });
+                    continue;
+                }
+                stream => stream,
+            };
             match flow_from_ipstack_stream(self.inbound, self.interface.as_deref(), stream) {
                 Ok(flow) => {
                     self.emit(
@@ -145,6 +177,95 @@ impl PacketFlowStack {
     }
 }
 
+async fn forward_icmp_echo(
+    packet: ipstack::IpStackUnknownTransport,
+    interface_index: std::num::NonZeroU32,
+) -> Result<(), StackError> {
+    let destination = packet.dst_addr();
+    let (identifier, sequence, payload) = match destination {
+        std::net::IpAddr::V4(_) => {
+            let (header, payload) = etherparse::Icmpv4Header::from_slice(packet.payload())
+                .map_err(|error| StackError::new(format!("parse ICMPv4 packet: {error}")))?;
+            let etherparse::Icmpv4Type::EchoRequest(echo) = header.icmp_type else {
+                return Err(StackError::new("unsupported ICMPv4 control message"));
+            };
+            (echo.id, echo.seq, payload.to_vec())
+        }
+        std::net::IpAddr::V6(_) => {
+            let (header, payload) = etherparse::Icmpv6Header::from_slice(packet.payload())
+                .map_err(|error| StackError::new(format!("parse ICMPv6 packet: {error}")))?;
+            let etherparse::Icmpv6Type::EchoRequest(echo) = header.icmp_type else {
+                return Err(StackError::new("unsupported ICMPv6 control message"));
+            };
+            (echo.id, echo.seq, payload.to_vec())
+        }
+    };
+
+    let mut builder = surge_ping::Config::builder().interface_index(interface_index);
+    if destination.is_ipv6() {
+        builder = builder.kind(surge_ping::ICMP::V6);
+    }
+    let client = surge_ping::Client::new(&builder.build())
+        .map_err(|error| StackError::new(format!("open bound ICMP socket: {error}")))?;
+    let mut pinger = client
+        .pinger(destination, surge_ping::PingIdentifier(identifier))
+        .await;
+    pinger.timeout(std::time::Duration::from_secs(2));
+    pinger
+        .ping(surge_ping::PingSequence(sequence), &payload)
+        .await
+        .map_err(|error| StackError::new(format!("ICMP echo failed: {error}")))?;
+
+    let response = build_icmp_echo_reply(
+        packet.src_addr(),
+        packet.dst_addr(),
+        identifier,
+        sequence,
+        &payload,
+    )?;
+    packet
+        .send(response)
+        .map_err(|error| StackError::new(format!("inject ICMP echo reply: {error}")))
+}
+
+fn build_icmp_echo_reply(
+    source: std::net::IpAddr,
+    destination: std::net::IpAddr,
+    identifier: u16,
+    sequence: u16,
+    payload: &[u8],
+) -> Result<Vec<u8>, StackError> {
+    let mut response = match (source, destination) {
+        (std::net::IpAddr::V4(_), std::net::IpAddr::V4(_)) => {
+            let echo = etherparse::IcmpEchoHeader {
+                id: identifier,
+                seq: sequence,
+            };
+            let mut header = etherparse::Icmpv4Header::new(etherparse::Icmpv4Type::EchoReply(echo));
+            header.update_checksum(payload);
+            header.to_bytes().to_vec()
+        }
+        (std::net::IpAddr::V6(source), std::net::IpAddr::V6(destination)) => {
+            let echo = etherparse::IcmpEchoHeader {
+                id: identifier,
+                seq: sequence,
+            };
+            etherparse::Icmpv6Header::with_checksum(
+                etherparse::Icmpv6Type::EchoReply(echo),
+                destination.octets(),
+                source.octets(),
+                payload,
+            )
+            .map_err(|error| StackError::new(format!("build ICMPv6 reply: {error}")))?
+            .to_bytes()
+            .to_vec()
+        }
+        _ => return Err(StackError::new("ICMP address families differ")),
+    };
+    response.extend_from_slice(payload);
+    Ok(response)
+}
+
 impl NetworkStack for PacketFlowStack {
     fn attach(
         &mut self,
@@ -185,6 +306,7 @@ impl NetworkStack for PlannedStack {
 pub struct StackCapability {
     pub supports_tcp: bool,
     pub supports_udp: bool,
+    pub supports_icmp_echo: bool,
     pub supports_ipv4: bool,
     pub supports_ipv6: bool,
 }
@@ -196,16 +318,16 @@ fn flow_from_ipstack_stream(
 ) -> Result<Flow, StackError> {
     match stream {
         IpStackStream::Tcp(stream) => {
-            let source = socket_addr_to_endpoint(stream.local_addr());
-            let destination = socket_addr_to_endpoint(stream.peer_addr());
+            let source: Endpoint = stream.local_addr().into();
+            let destination: Endpoint = stream.peer_addr().into();
             Ok(Flow {
                 meta: flow_meta(inbound, interface, Network::Tcp, source, destination),
                 payload: FlowPayload::Stream(Box::new(stream)),
             })
         }
         IpStackStream::Udp(stream) => {
-            let source = socket_addr_to_endpoint(stream.local_addr());
-            let destination = socket_addr_to_endpoint(stream.peer_addr());
+            let source: Endpoint = stream.local_addr().into();
+            let destination: Endpoint = stream.peer_addr().into();
             Ok(Flow {
                 meta: flow_meta(
                     inbound,
@@ -276,7 +398,7 @@ impl AsyncRead for PacketDeviceAsyncIo {
                 buf.advance(len);
                 Poll::Ready(Ok(()))
             }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(std_io_error(err))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -290,7 +412,7 @@ impl AsyncWrite for PacketDeviceAsyncIo {
     ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut *self.device)
             .poll_send_packet(cx, buf)
-            .map_err(std_io_error)
+            .map_err(Into::into)
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
@@ -319,7 +441,7 @@ impl DatagramSocket for IpStackDatagram {
                 let len = read_buf.filled().len();
                 Poll::Ready(Ok((len, self.destination.clone())))
             }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -332,47 +454,17 @@ impl DatagramSocket for IpStackDatagram {
     ) -> Poll<Result<usize, IoError>> {
         Pin::new(&mut self.inner)
             .poll_write(cx, buf)
-            .map_err(io_error)
-    }
-}
-
-fn io_error(err: std::io::Error) -> IoError {
-    let kind = match err.kind() {
-        std::io::ErrorKind::BrokenPipe
-        | std::io::ErrorKind::ConnectionAborted
-        | std::io::ErrorKind::ConnectionReset
-        | std::io::ErrorKind::UnexpectedEof => IoErrorKind::Closed,
-        std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => {
-            IoErrorKind::Interrupted
-        }
-        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
-            IoErrorKind::InvalidInput
-        }
-        std::io::ErrorKind::Unsupported => IoErrorKind::Unsupported,
-        _ => IoErrorKind::Other,
-    };
-    IoError::new(kind, err.to_string())
-}
-
-fn std_io_error(err: IoError) -> std::io::Error {
-    std::io::Error::new(std_io_error_kind(err.kind), err.message)
-}
-
-fn std_io_error_kind(kind: IoErrorKind) -> std::io::ErrorKind {
-    match kind {
-        IoErrorKind::Closed => std::io::ErrorKind::UnexpectedEof,
-        IoErrorKind::Interrupted => std::io::ErrorKind::WouldBlock,
-        IoErrorKind::InvalidInput => std::io::ErrorKind::InvalidInput,
-        IoErrorKind::Unsupported => std::io::ErrorKind::Unsupported,
-        IoErrorKind::Other => std::io::ErrorKind::Other,
+            .map_err(Into::into)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustbox_io::IoErrorKind;
     use rustbox_kernel::{FlowError, FlowOutcome};
     use rustbox_types::RejectReason;
+    use std::net::IpAddr;
     use std::sync::Mutex;
 
     type RecordedDatagram = (FlowMeta, Vec<u8>, Endpoint);
@@ -432,22 +524,46 @@ mod tests {
 
     #[test]
     fn converts_socket_addr_to_endpoint() {
-        let endpoint = socket_addr_to_endpoint("127.0.0.1:53".parse().expect("socket addr"));
+        let endpoint: Endpoint = "127.0.0.1:53"
+            .parse::<std::net::SocketAddr>()
+            .expect("socket addr")
+            .into();
 
         assert_eq!(
             endpoint,
-            Endpoint::new(Host::Ip(IpAddress::V4([127, 0, 0, 1])), 53)
+            Endpoint::new(Host::Ip(IpAddr::from([127, 0, 0, 1])), 53)
         );
+    }
+
+    #[test]
+    fn builds_icmpv4_echo_reply_with_original_identity_and_payload() {
+        let payload = b"rustbox-ping";
+        let reply = build_icmp_echo_reply(
+            "10.0.0.2".parse().expect("source"),
+            "1.1.1.1".parse().expect("destination"),
+            77,
+            9,
+            payload,
+        )
+        .expect("reply");
+        let (header, reply_payload) =
+            etherparse::Icmpv4Header::from_slice(&reply).expect("ICMPv4 reply");
+
+        assert!(matches!(
+            header.icmp_type,
+            etherparse::Icmpv4Type::EchoReply(etherparse::IcmpEchoHeader { id: 77, seq: 9 })
+        ));
+        assert_eq!(reply_payload, payload);
     }
 
     #[test]
     fn maps_io_error_kinds() {
         assert_eq!(
-            std_io_error_kind(IoErrorKind::Closed),
+            std::io::Error::from(IoError::new(IoErrorKind::Closed, "closed")).kind(),
             std::io::ErrorKind::UnexpectedEof
         );
         assert_eq!(
-            io_error(std::io::Error::new(
+            IoError::from(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "unsupported"
             ))
@@ -492,11 +608,11 @@ mod tests {
         assert_eq!(meta.network, Network::Udp);
         assert_eq!(
             meta.source,
-            Endpoint::new(Host::Ip(IpAddress::V4([10, 0, 0, 2])), 12_345)
+            Endpoint::new(Host::Ip(IpAddr::from([10, 0, 0, 2])), 12_345)
         );
         assert_eq!(
             meta.destination,
-            Endpoint::new(Host::Ip(IpAddress::V4([1, 1, 1, 1])), 53)
+            Endpoint::new(Host::Ip(IpAddr::from([1, 1, 1, 1])), 53)
         );
         assert_eq!(destination, meta.destination);
         assert_eq!(payload, b"hi");

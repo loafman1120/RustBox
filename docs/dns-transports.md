@@ -1,5 +1,9 @@
 # DNS
 
+桌面客户端的系统 DNS 接管、Windows WFP 防泄漏、切网和崩溃恢复设计见
+[客户端 DNS 与 Windows TUN](client-dns-windows.md)。本文只描述可移植的 DNS resolver
+与 transport 数据面。
+
 RustBox 的 DNS 子系统使用 Hickory wire model 与 Tokio provider，不自行实现
 UDP/TCP/DoT/DoH/DoQ 协议栈。
 

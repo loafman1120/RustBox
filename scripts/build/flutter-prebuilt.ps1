@@ -34,13 +34,49 @@ function Copy-Binary([string]$Source, [string]$Destination) {
     Write-Host "Prepared $Destination"
 }
 
+function Install-Wintun([string]$Arch) {
+    $Version = "0.14.1"
+    $ExpectedSha256 = "07C256185D6EE3652E09FA55C0B673E2624B565E02C4B9091C79CA7D2F24EF51"
+    $WintunArch = if ($Arch -eq "arm64") { "arm64" } else { "amd64" }
+    $Cache = Join-Path ([System.IO.Path]::GetTempPath()) "rustbox-wintun-$Version"
+    $Archive = Join-Path $Cache "wintun.zip"
+    $Extracted = Join-Path $Cache "extracted"
+    New-Item -ItemType Directory -Force $Cache | Out-Null
+    if (-not (Test-Path -LiteralPath $Archive) -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash -ne $ExpectedSha256) {
+        Invoke-WebRequest "https://www.wintun.net/builds/wintun-$Version.zip" -OutFile $Archive
+    }
+    $ActualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash
+    if ($ActualSha256 -ne $ExpectedSha256) {
+        throw "Wintun archive checksum mismatch: expected $ExpectedSha256, got $ActualSha256"
+    }
+    if (Test-Path -LiteralPath $Extracted) {
+        Remove-Item -Recurse -Force -LiteralPath $Extracted
+    }
+    Expand-Archive -LiteralPath $Archive -DestinationPath $Extracted
+    $WintunDll = Join-Path $Extracted "wintun/bin/$WintunArch/wintun.dll"
+    $Signature = Get-AuthenticodeSignature -LiteralPath $WintunDll
+    if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Wintun Authenticode signature is not valid: $($Signature.StatusMessage)"
+    }
+    Copy-Binary `
+        $WintunDll `
+        (Join-Path $Native "windows/$Arch/wintun.dll")
+}
+
 switch ($Platform) {
     "windows" {
         $Target = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
         $Arch = if ($Target.StartsWith("aarch64")) { "arm64" } else { "x64" }
         Install-Targets @($Target)
         Build-Target $Target
+        $WatchdogArgs = @("build", "--release", "--package", "rustbox-watchdog", "--target", $Target)
+        if ($Locked) { $WatchdogArgs += "--locked" }
+        & cargo @WatchdogArgs
+        if ($LASTEXITCODE -ne 0) { throw "Watchdog build failed for $Target" }
         Copy-Binary (Join-Path $Root "target/$Target/release/rustbox_flutter_bridge.dll") (Join-Path $Native "windows/$Arch/rustbox_flutter_bridge.dll")
+        Copy-Binary (Join-Path $Root "target/$Target/release/rustbox-watchdog.exe") (Join-Path $Native "windows/$Arch/rustbox-watchdog.exe")
+        Install-Wintun $Arch
     }
     "linux" {
         $Target = if ((uname -m) -eq "aarch64") { "aarch64-unknown-linux-gnu" } else { "x86_64-unknown-linux-gnu" }

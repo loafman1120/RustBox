@@ -10,7 +10,8 @@ use rustbox_kernel::{
     NetworkTransaction, PacketDeviceConfig, PacketDeviceError, PacketDeviceInfo, PacketDeviceLease,
     PacketDeviceProvider, RollbackPolicy,
 };
-use rustbox_types::{IpAddress, IpCidr};
+use rustbox_types::IpCidr;
+use std::net::IpAddr;
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
 pub(super) const CAPABILITIES: crate::PlatformCapabilities = crate::PlatformCapabilities {
@@ -20,6 +21,7 @@ pub(super) const CAPABILITIES: crate::PlatformCapabilities = crate::PlatformCapa
     route_control: crate::CapabilitySupport::Supported,
     transparent_proxy: crate::CapabilitySupport::Unsupported,
     process_lookup: crate::CapabilitySupport::Unsupported,
+    strict_route_requires_interface_binding: false,
 };
 
 pub(super) fn tun() -> Option<crate::TunCapabilities> {
@@ -39,6 +41,22 @@ pub(super) fn process() -> Option<std::sync::Arc<dyn rustbox_kernel::ProcessLook
 pub(super) fn network_metadata() -> Option<std::sync::Arc<dyn rustbox_kernel::NetworkMetadataLookup>>
 {
     None
+}
+
+pub(super) fn socket_policy() -> std::sync::Arc<dyn rustbox_kernel::TokioSocketPolicy> {
+    std::sync::Arc::new(rustbox_kernel::DefaultTokioSocketPolicy)
+}
+
+pub(super) fn default_route_interface() -> Option<InterfaceRef> {
+    None
+}
+
+pub(super) fn default_route_interface_index() -> Option<u32> {
+    None
+}
+
+pub(super) async fn recover_stale_network_state() -> Result<(), String> {
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,12 +103,8 @@ fn open_packet_device(config: PacketDeviceConfig) -> Result<PacketDeviceLease, P
     }
     for address in config.addresses {
         builder = match address.address {
-            IpAddress::V4(value) => {
-                builder.ipv4(std::net::Ipv4Addr::from(value), address.prefix_len, None)
-            }
-            IpAddress::V6(value) => {
-                builder.ipv6(std::net::Ipv6Addr::from(value), address.prefix_len)
-            }
+            IpAddr::V4(value) => builder.ipv4(value, address.prefix_len, None),
+            IpAddr::V6(value) => builder.ipv6(value, address.prefix_len),
         };
     }
     let device = builder
@@ -119,6 +133,7 @@ async fn apply_transaction(
         return Ok(NetworkLease {
             id: 0,
             operations: Vec::new(),
+            undo_operations: Vec::new(),
             active: false,
         });
     }
@@ -126,6 +141,9 @@ async fn apply_transaction(
     let existing = handle.list().await.map_err(error)?;
     let mut applied = Vec::new();
     for operation in &transaction.operations {
+        if matches!(operation, NetworkOperation::EnforceDnsLeakProtection { .. }) {
+            continue;
+        }
         let route = operation_route(operation, &existing)?;
         if let Err(err) = handle.add(&route).await {
             if transaction.rollback_policy == RollbackPolicy::Required {
@@ -140,6 +158,7 @@ async fn apply_transaction(
     Ok(NetworkLease {
         id: NEXT_LEASE.fetch_add(1, Ordering::Relaxed),
         operations: transaction.operations,
+        undo_operations: Vec::new(),
         active: true,
     })
 }
@@ -152,6 +171,9 @@ async fn release_lease(lease: NetworkLease) -> Result<(), NetworkControlError> {
     let existing = handle.list().await.map_err(error)?;
     let mut failures = Vec::new();
     for operation in lease.operations.iter().rev() {
+        if matches!(operation, NetworkOperation::EnforceDnsLeakProtection { .. }) {
+            continue;
+        }
         match operation_route(operation, &existing) {
             Ok(route) => {
                 if let Err(err) = handle.delete(&route).await {
@@ -179,10 +201,10 @@ fn operation_route(
             interface,
             ..
         } => {
-            let mut route = Route::new(ip(destination.address), destination.prefix_len)
+            let mut route = Route::new(destination.address, destination.prefix_len)
                 .with_ifindex(interface_index(interface)?);
             if let Some(gateway) = gateway {
-                route = route.with_gateway(ip(*gateway));
+                route = route.with_gateway(*gateway);
             }
             Ok(route)
         }
@@ -194,7 +216,7 @@ fn operation_route(
 }
 
 fn preserve(destination: IpCidr, routes: &[Route]) -> Result<Route, NetworkControlError> {
-    let address = ip(destination.address);
+    let address = destination.address;
     let best = routes
         .iter()
         .filter(|route| contains(route, address))
@@ -231,13 +253,6 @@ fn interface_index(interface: &InterfaceRef) -> Result<u32, NetworkControlError>
         InterfaceRef::Index(index) => Ok(*index),
         InterfaceRef::Name(name) => net_route::ifname_to_index(name)
             .ok_or_else(|| NetworkControlError::new(format!("unknown interface `{name}`"))),
-    }
-}
-
-fn ip(value: IpAddress) -> std::net::IpAddr {
-    match value {
-        IpAddress::V4(v) => std::net::Ipv4Addr::from(v).into(),
-        IpAddress::V6(v) => std::net::Ipv6Addr::from(v).into(),
     }
 }
 

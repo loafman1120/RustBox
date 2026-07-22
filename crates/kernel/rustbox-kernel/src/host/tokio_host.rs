@@ -1,7 +1,3 @@
-use super::net::{
-    endpoint_to_socket_addr as try_endpoint_to_socket_addr, ip_address_to_std as ip_to_std,
-    socket_addr_to_endpoint,
-};
 use super::{
     BoxFuture, DialOptions, DomainResolver, NetError, NetworkProvider, NetworkProviderFactory,
     NetworkProviderPurpose, StreamListener, TcpBind, TcpConnect, UdpBind,
@@ -13,15 +9,60 @@ use rustbox_types::{Endpoint, Host};
 use socket2::{Domain, Protocol, SockAddr, Socket, TcpKeepalive, Type};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use tokio::io::ReadBuf;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;
 
+/// Platform-owned socket behavior used by the portable Tokio adapter.
+///
+/// Implementations live in `rustbox-platform`; the kernel only coordinates
+/// address resolution, socket lifetimes, and platform-neutral dial options.
+pub trait TokioSocketPolicy: Send + Sync {
+    fn bind_interface(
+        &self,
+        _socket: &Socket,
+        interface: &str,
+        _destination: IpAddr,
+    ) -> Result<(), NetError> {
+        Err(NetError::new(format!(
+            "bind_interface `{interface}` is unsupported on this platform"
+        )))
+    }
+
+    fn set_routing_mark(&self, _socket: &Socket, mark: u32) -> Result<(), NetError> {
+        Err(NetError::new(format!(
+            "routing_mark {mark} is unsupported on this platform"
+        )))
+    }
+
+    fn bind_udp_socket(
+        &self,
+        socket: &Socket,
+        requested: SocketAddr,
+        options: &DialOptions,
+    ) -> Result<(), NetError> {
+        if let Some(mark) = options.routing_mark {
+            self.set_routing_mark(socket, mark)?;
+        }
+        if let Some(interface) = &options.bind_interface {
+            self.bind_interface(socket, interface, requested.ip())?;
+        }
+        bind_udp_local_address(socket, requested, options)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DefaultTokioSocketPolicy;
+
+impl TokioSocketPolicy for DefaultTokioSocketPolicy {}
+
 /// RustBox 默认使用的 Tokio 网络能力实现。
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TokioNetworkProvider {
     options: DialOptions,
-    resolver: Option<std::sync::Arc<dyn DomainResolver>>,
+    resolver: Option<Arc<dyn DomainResolver>>,
+    socket_policy: Arc<dyn TokioSocketPolicy>,
 }
 
 impl TokioNetworkProvider {
@@ -33,31 +74,58 @@ impl TokioNetworkProvider {
         Self {
             options,
             resolver: None,
+            socket_policy: Arc::new(DefaultTokioSocketPolicy),
         }
     }
 
-    pub fn with_resolver(mut self, resolver: std::sync::Arc<dyn DomainResolver>) -> Self {
+    pub fn with_resolver(mut self, resolver: Arc<dyn DomainResolver>) -> Self {
         self.resolver = Some(resolver);
+        self
+    }
+
+    pub fn with_socket_policy(mut self, socket_policy: Arc<dyn TokioSocketPolicy>) -> Self {
+        self.socket_policy = socket_policy;
         self
     }
 }
 
+impl Default for TokioNetworkProvider {
+    fn default() -> Self {
+        Self::with_options(DialOptions::default())
+    }
+}
+
 /// Default factory used by CLI and desktop embeddings.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TokioNetworkProviderFactory;
+#[derive(Clone)]
+pub struct TokioNetworkProviderFactory {
+    socket_policy: Arc<dyn TokioSocketPolicy>,
+}
+
+impl TokioNetworkProviderFactory {
+    pub fn new(socket_policy: Arc<dyn TokioSocketPolicy>) -> Self {
+        Self { socket_policy }
+    }
+}
+
+impl Default for TokioNetworkProviderFactory {
+    fn default() -> Self {
+        Self::new(Arc::new(DefaultTokioSocketPolicy))
+    }
+}
 
 impl NetworkProviderFactory for TokioNetworkProviderFactory {
     fn create(
         &self,
         _purpose: NetworkProviderPurpose,
         options: DialOptions,
-        resolver: Option<std::sync::Arc<dyn DomainResolver>>,
-    ) -> std::sync::Arc<dyn NetworkProvider> {
-        let mut provider = TokioNetworkProvider::with_options(options);
+        resolver: Option<Arc<dyn DomainResolver>>,
+    ) -> Arc<dyn NetworkProvider> {
+        let mut provider = TokioNetworkProvider::with_options(options)
+            .with_socket_policy(self.socket_policy.clone());
         if let Some(resolver) = resolver {
             provider = provider.with_resolver(resolver);
         }
-        std::sync::Arc::new(provider)
+        Arc::new(provider)
     }
 }
 
@@ -68,7 +136,7 @@ impl NetworkProvider for TokioNetworkProvider {
     ) -> BoxFuture<'_, Result<Box<dyn ByteStream>, NetError>> {
         Box::pin(async move {
             let addresses = self.resolve_endpoint(&request.target).await?;
-            let connect = connect_first(addresses, &self.options);
+            let connect = connect_first(addresses, &self.options, self.socket_policy.as_ref());
             let stream = match self.options.connect_timeout {
                 Some(limit) => timeout(limit, connect).await.map_err(|_| {
                     NetError::new(format!(
@@ -99,21 +167,59 @@ impl NetworkProvider for TokioNetworkProvider {
     ) -> BoxFuture<'_, Result<Box<dyn DatagramSocket>, NetError>> {
         Box::pin(async move {
             let addr = endpoint_to_socket_addr(&request.listen)?;
-            let socket = UdpSocket::bind(addr).await.map_err(net_error)?;
+            let socket = bind_udp_socket(addr, &self.options, self.socket_policy.as_ref())?;
             Ok(Box::new(TokioUdpSocket { inner: socket }) as Box<dyn DatagramSocket>)
         })
     }
 }
 
+fn bind_udp_socket(
+    address: SocketAddr,
+    options: &DialOptions,
+    socket_policy: &dyn TokioSocketPolicy,
+) -> Result<UdpSocket, NetError> {
+    let domain = if address.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP)).map_err(net_error)?;
+    socket.set_nonblocking(true).map_err(net_error)?;
+    socket_policy.bind_udp_socket(&socket, address, options)?;
+
+    UdpSocket::from_std(socket.into()).map_err(net_error)
+}
+
+fn bind_udp_local_address(
+    socket: &Socket,
+    requested: SocketAddr,
+    options: &DialOptions,
+) -> Result<(), NetError> {
+    let configured = if requested.is_ipv4() {
+        options.inet4_bind_address
+    } else {
+        options.inet6_bind_address
+    };
+    let address = configured.map_or(requested, |source| {
+        SocketAddr::new(source, requested.port())
+    });
+    if address.is_ipv4() != requested.is_ipv4() {
+        return Err(NetError::new(
+            "UDP source and listener address families differ",
+        ));
+    }
+    socket.bind(&SockAddr::from(address)).map_err(net_error)
+}
+
 impl TokioNetworkProvider {
     async fn resolve_endpoint(&self, endpoint: &Endpoint) -> Result<Vec<SocketAddr>, NetError> {
         match &endpoint.host {
-            Host::Ip(ip) => Ok(vec![SocketAddr::new(ip_to_std(*ip), endpoint.port)]),
+            Host::Ip(ip) => Ok(vec![SocketAddr::new(*ip, endpoint.port)]),
             Host::Domain(domain) => match &self.resolver {
                 Some(resolver) => resolver.resolve(domain.clone()).await.map(|addresses| {
                     addresses
                         .into_iter()
-                        .map(|ip| SocketAddr::new(ip_to_std(ip), endpoint.port))
+                        .map(|ip| SocketAddr::new(ip, endpoint.port))
                         .collect()
                 }),
                 None => tokio::net::lookup_host((domain.as_str(), endpoint.port))
@@ -128,13 +234,14 @@ impl TokioNetworkProvider {
 async fn connect_first(
     addresses: Vec<SocketAddr>,
     options: &DialOptions,
+    socket_policy: &dyn TokioSocketPolicy,
 ) -> Result<TcpStream, NetError> {
     if addresses.is_empty() {
         return Err(NetError::new("domain resolver returned no addresses"));
     }
     let mut last_error = None;
     for address in addresses {
-        match connect_one(address, options).await {
+        match connect_one(address, options, socket_policy).await {
             Ok(stream) => return Ok(stream),
             Err(error) => last_error = Some(error),
         }
@@ -142,7 +249,11 @@ async fn connect_first(
     Err(last_error.unwrap_or_else(|| NetError::new("no address could be connected")))
 }
 
-async fn connect_one(address: SocketAddr, options: &DialOptions) -> Result<TcpStream, NetError> {
+async fn connect_one(
+    address: SocketAddr,
+    options: &DialOptions,
+    socket_policy: &dyn TokioSocketPolicy,
+) -> Result<TcpStream, NetError> {
     let domain = if address.is_ipv4() {
         Domain::IPV4
     } else {
@@ -150,7 +261,7 @@ async fn connect_one(address: SocketAddr, options: &DialOptions) -> Result<TcpSt
     };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP)).map_err(net_error)?;
     socket.set_nonblocking(true).map_err(net_error)?;
-    apply_socket_options(&socket, address.ip(), options)?;
+    apply_socket_options(&socket, address.ip(), options, socket_policy)?;
     match socket.connect(&SockAddr::from(address)) {
         Ok(()) => {}
         Err(error) if connect_in_progress(&error) => {}
@@ -168,19 +279,19 @@ fn apply_socket_options(
     socket: &Socket,
     destination: IpAddr,
     options: &DialOptions,
+    socket_policy: &dyn TokioSocketPolicy,
 ) -> Result<(), NetError> {
     if let Some(interface) = &options.bind_interface {
-        bind_interface(socket, interface)?;
+        socket_policy.bind_interface(socket, interface, destination)?;
     }
     if let Some(mark) = options.routing_mark {
-        set_routing_mark(socket, mark)?;
+        socket_policy.set_routing_mark(socket, mark)?;
     }
     let source = match destination {
         IpAddr::V4(_) => options.inet4_bind_address,
         IpAddr::V6(_) => options.inet6_bind_address,
     };
     if let Some(source) = source {
-        let source = ip_to_std(source);
         if source.is_ipv4() != destination.is_ipv4() {
             return Err(NetError::new(
                 "source and destination address families differ",
@@ -210,32 +321,6 @@ fn apply_socket_options(
     Ok(())
 }
 
-#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-fn bind_interface(socket: &Socket, interface: &str) -> Result<(), NetError> {
-    socket
-        .bind_device(Some(interface.as_bytes()))
-        .map_err(net_error)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
-fn bind_interface(_socket: &Socket, interface: &str) -> Result<(), NetError> {
-    Err(NetError::new(format!(
-        "bind_interface `{interface}` is unsupported on this platform"
-    )))
-}
-
-#[cfg(any(target_os = "android", target_os = "linux"))]
-fn set_routing_mark(socket: &Socket, mark: u32) -> Result<(), NetError> {
-    socket.set_mark(mark).map_err(net_error)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
-fn set_routing_mark(_socket: &Socket, mark: u32) -> Result<(), NetError> {
-    Err(NetError::new(format!(
-        "routing_mark {mark} is supported only on Linux/Android"
-    )))
-}
-
 fn connect_in_progress(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::WouldBlock
         || matches!(
@@ -252,16 +337,13 @@ struct TokioTcpListener {
 
 impl StreamListener for TokioTcpListener {
     fn local_endpoint(&self) -> Option<Endpoint> {
-        self.inner.local_addr().ok().map(socket_addr_to_endpoint)
+        self.inner.local_addr().ok().map(Endpoint::from)
     }
 
     fn accept(&mut self) -> BoxFuture<'_, Result<(Box<dyn ByteStream>, Endpoint), NetError>> {
         Box::pin(async move {
             let (stream, peer) = self.inner.accept().await.map_err(net_error)?;
-            Ok((
-                Box::new(stream) as Box<dyn ByteStream>,
-                socket_addr_to_endpoint(peer),
-            ))
+            Ok((Box::new(stream) as Box<dyn ByteStream>, peer.into()))
         })
     }
 }
@@ -272,7 +354,7 @@ struct TokioUdpSocket {
 
 impl DatagramSocket for TokioUdpSocket {
     fn local_endpoint(&self) -> Option<Endpoint> {
-        self.inner.local_addr().ok().map(socket_addr_to_endpoint)
+        self.inner.local_addr().ok().map(Endpoint::from)
     }
 
     fn poll_recv_from(
@@ -282,10 +364,8 @@ impl DatagramSocket for TokioUdpSocket {
     ) -> Poll<Result<(usize, Endpoint), IoError>> {
         let mut read_buf = ReadBuf::new(buf);
         match self.inner.poll_recv_from(cx, &mut read_buf) {
-            Poll::Ready(Ok(addr)) => {
-                Poll::Ready(Ok((read_buf.filled().len(), socket_addr_to_endpoint(addr))))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(io_error(err))),
+            Poll::Ready(Ok(addr)) => Poll::Ready(Ok((read_buf.filled().len(), addr.into()))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -302,12 +382,12 @@ impl DatagramSocket for TokioUdpSocket {
                 return Poll::Ready(Err(IoError::new(IoErrorKind::InvalidInput, err.message)));
             }
         };
-        self.inner.poll_send_to(cx, buf, addr).map_err(io_error)
+        self.inner.poll_send_to(cx, buf, addr).map_err(Into::into)
     }
 }
 
 fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, NetError> {
-    try_endpoint_to_socket_addr(endpoint).ok_or_else(|| match &endpoint.host {
+    endpoint.socket_addr().ok_or_else(|| match &endpoint.host {
         Host::Domain(domain) => NetError::new(format!(
             "cannot bind UDP/TCP listener to domain host {domain}"
         )),
@@ -317,17 +397,6 @@ fn endpoint_to_socket_addr(endpoint: &Endpoint) -> Result<SocketAddr, NetError> 
 
 fn net_error(err: io::Error) -> NetError {
     NetError::new(err.to_string())
-}
-
-fn io_error(err: io::Error) -> IoError {
-    let kind = match err.kind() {
-        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionAborted => IoErrorKind::Closed,
-        io::ErrorKind::Interrupted => IoErrorKind::Interrupted,
-        io::ErrorKind::InvalidInput => IoErrorKind::InvalidInput,
-        io::ErrorKind::Unsupported => IoErrorKind::Unsupported,
-        _ => IoErrorKind::Other,
-    };
-    IoError::new(kind, err.to_string())
 }
 
 #[cfg(test)]

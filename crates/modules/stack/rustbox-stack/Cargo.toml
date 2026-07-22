@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 ipstack = "1.0.0"
+etherparse = "0.19"
+surge-ping = "0.8.4"
 rustbox-kernel = { path = "../../../kernel/rustbox-kernel" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
 rustbox-types = { path = "../../../foundation/rustbox-types" }

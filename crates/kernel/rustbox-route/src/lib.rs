@@ -6,11 +6,11 @@ use arc_swap::ArcSwap;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use regex::Regex;
 use rustbox_types::{
-    FlowMeta, Host, InboundId, IpAddress, IpCidr, Network, NetworkType, OutboundId, PortRange,
-    ProtocolHint, RejectReason, RouteDecision,
+    FlowMeta, Host, InboundId, IpCidr, Network, NetworkType, OutboundId, PortRange, ProtocolHint,
+    RejectReason, RouteDecision,
 };
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -532,14 +532,14 @@ fn flow_domain(flow: &FlowMeta) -> Option<String> {
     }
 }
 
-fn destination_ip(flow: &FlowMeta) -> Option<IpAddress> {
+fn destination_ip(flow: &FlowMeta) -> Option<IpAddr> {
     match flow.destination.host {
         Host::Ip(ip) => Some(ip),
         Host::Domain(_) => None,
     }
 }
 
-fn source_ip(flow: &FlowMeta) -> Option<IpAddress> {
+fn source_ip(flow: &FlowMeta) -> Option<IpAddr> {
     match flow.source.host {
         Host::Ip(ip) => Some(ip),
         Host::Domain(_) => None,
@@ -560,28 +560,17 @@ fn domain_matches_suffix(domain: &str, suffix: &str) -> bool {
             .is_some_and(|head| head.ends_with('.'))
 }
 
-fn cidr_contains(cidr: IpCidr, address: IpAddress) -> bool {
+fn cidr_contains(cidr: IpCidr, address: IpAddr) -> bool {
     let Ok(network) = ip_net(cidr) else {
         return false;
     };
-    network.contains(&ip_addr(address))
+    network.contains(&address)
 }
 
 fn ip_net(cidr: IpCidr) -> Result<IpNet, ipnet::PrefixLenError> {
     match cidr.address {
-        IpAddress::V4(octets) => {
-            Ipv4Net::new(Ipv4Addr::from(octets), cidr.prefix_len).map(IpNet::V4)
-        }
-        IpAddress::V6(octets) => {
-            Ipv6Net::new(Ipv6Addr::from(octets), cidr.prefix_len).map(IpNet::V6)
-        }
-    }
-}
-
-fn ip_addr(address: IpAddress) -> IpAddr {
-    match address {
-        IpAddress::V4(octets) => IpAddr::V4(Ipv4Addr::from(octets)),
-        IpAddress::V6(octets) => IpAddr::V6(Ipv6Addr::from(octets)),
+        IpAddr::V4(address) => Ipv4Net::new(address, cidr.prefix_len).map(IpNet::V4),
+        IpAddr::V6(address) => Ipv6Net::new(address, cidr.prefix_len).map(IpNet::V6),
     }
 }
 
@@ -693,7 +682,7 @@ mod tests {
         table.push_rule(RouteRule::new(
             RouteMatcher::Conditions(Box::new(RouteConditions {
                 networks: vec![Network::Tcp],
-                ip_cidrs: vec![IpCidr::new(IpAddress::V4([10, 0, 0, 0]), 8).expect("cidr")],
+                ip_cidrs: vec![IpCidr::new(IpAddr::from([10, 0, 0, 0]), 8).expect("cidr")],
                 ports: vec![PortRange::single(443)],
                 invert: true,
                 ..RouteConditions::default()
@@ -801,7 +790,7 @@ mod tests {
 
     fn flow_with_ip(ip: [u8; 4], port: u16) -> FlowMeta {
         FlowMeta {
-            destination: Endpoint::new(Host::Ip(IpAddress::V4(ip)), port),
+            destination: Endpoint::new(Host::Ip(IpAddr::V4(ip.into())), port),
             domain: None,
             ..flow_with_domain("example.test")
         }

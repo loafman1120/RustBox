@@ -1,4 +1,5 @@
 use super::*;
+use std::net::IpAddr;
 
 impl PacketDeviceProvider for LinuxPlatform {
     fn open(
@@ -44,11 +45,11 @@ fn build_tun_device(config: PacketDeviceConfig) -> std::io::Result<SyncDevice> {
     }
     for address in config.addresses {
         match address.address {
-            IpAddress::V4(octets) => {
-                builder = builder.ipv4(std::net::Ipv4Addr::from(octets), address.prefix_len, None);
+            IpAddr::V4(octets) => {
+                builder = builder.ipv4(octets, address.prefix_len, None);
             }
-            IpAddress::V6(octets) => {
-                builder = builder.ipv6(std::net::Ipv6Addr::from(octets), address.prefix_len);
+            IpAddr::V6(octets) => {
+                builder = builder.ipv6(octets, address.prefix_len);
             }
         }
     }
@@ -81,7 +82,7 @@ impl PacketDevice for TunPacketDevice {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
-            Err(err) => Poll::Ready(Err(io_error(err))),
+            Err(err) => Poll::Ready(Err(err.into())),
         }
     }
 
@@ -96,23 +97,9 @@ impl PacketDevice for TunPacketDevice {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
-            Err(err) => Poll::Ready(Err(io_error(err))),
+            Err(err) => Poll::Ready(Err(err.into())),
         }
     }
-}
-
-fn io_error(err: std::io::Error) -> IoError {
-    let kind = match err.kind() {
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
-            IoErrorKind::Interrupted
-        }
-        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
-            IoErrorKind::InvalidInput
-        }
-        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::BrokenPipe => IoErrorKind::Closed,
-        _ => IoErrorKind::Other,
-    };
-    IoError::new(kind, err.to_string())
 }
 
 #[cfg(test)]
@@ -120,7 +107,7 @@ mod tests {
     use super::super::network_control::{has_exact_route, route_from_add_route};
     use super::*;
     use rustbox_kernel::{InterfaceRef, NetworkControlReason};
-    use rustbox_types::{IpAddress, IpCidr};
+    use rustbox_types::IpCidr;
 
     #[test]
     fn declares_linux_capabilities_for_current_target() {
@@ -152,8 +139,8 @@ mod tests {
     #[test]
     fn converts_add_route_operation_to_net_route() {
         let route = route_from_add_route(
-            IpCidr::new(IpAddress::V4([10, 14, 0, 0]), 24).expect("cidr"),
-            Some(IpAddress::V4([192, 0, 2, 1])),
+            IpCidr::new(IpAddr::from([10, 14, 0, 0]), 24).expect("cidr"),
+            Some(IpAddr::from([192, 0, 2, 1])),
             &InterfaceRef::Index(9),
             Some(5),
         )
@@ -174,7 +161,7 @@ mod tests {
 
     #[test]
     fn recognizes_an_existing_exact_exclusion_route() {
-        let destination = IpCidr::new(IpAddress::V4([192, 0, 2, 7]), 32).expect("host route");
+        let destination = IpCidr::new(IpAddr::from([192, 0, 2, 7]), 32).expect("host route");
         let routes = vec![
             Route::new(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 7)),
@@ -197,9 +184,7 @@ mod tests {
         let lease = runtime
             .block_on(LinuxPlatform::new().open(PacketDeviceConfig {
                 name: Some(format!("rtun{}", std::process::id() % 10000)),
-                addresses: vec![
-                    IpCidr::new(IpAddress::V4([198, 18, 0, 1]), 30).expect("test CIDR"),
-                ],
+                addresses: vec![IpCidr::new(IpAddr::from([198, 18, 0, 1]), 30).expect("test CIDR")],
                 mtu: Some(1500),
                 route_mode: rustbox_kernel::RouteMode::Manual,
                 dns_mode: rustbox_kernel::TunDnsMode::None,

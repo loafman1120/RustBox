@@ -5,10 +5,8 @@ use rustbox_inbound_http::{HttpInboundCredentials, HttpProxyInbound};
 use rustbox_inbound_socks5::{
     MixedInbound, MixedInboundCredentials, Socks5Inbound, Socks5InboundCredentials,
 };
-use rustbox_inbound_transparent::{
-    TransparentInboundConfig as RuntimeTransparentInboundConfig, TransparentProxyInbound,
-};
-use rustbox_inbound_tun::{TunInbound, TunInboundConfig as RuntimeTunInboundConfig};
+use rustbox_inbound_transparent::{TransparentInboundPlan, TransparentProxyInbound};
+use rustbox_inbound_tun::{TunInbound, TunInboundPlan};
 use rustbox_kernel::{FlowSink, Service};
 use rustbox_kernel::{NetworkProvider, ObservabilitySink};
 use rustbox_types::Host;
@@ -116,7 +114,7 @@ pub(crate) fn compose_inbounds(
                     config.listen,
                     provider,
                     sink.clone(),
-                    RuntimeTransparentInboundConfig {
+                    TransparentInboundPlan {
                         mode: config.mode,
                         mark: config.mark,
                     },
@@ -138,6 +136,7 @@ pub(crate) fn compose_inbounds(
                 let mtu = config.mtu.unwrap_or(1500) as usize;
                 let stack = rustbox_stack::PacketFlowStack::new(inbound.id)
                     .with_interface(config.interface_name.clone())
+                    .with_icmp_interface_index(rustbox_platform::default_route_interface_index())
                     .with_mtu(mtu)
                     .with_observability(observability.clone());
                 let dns_servers = config
@@ -168,13 +167,14 @@ pub(crate) fn compose_inbounds(
                     network_control,
                     Box::new(stack),
                     sink.clone(),
-                    RuntimeTunInboundConfig {
+                    TunInboundPlan {
                         interface_name: config.interface_name,
                         addresses: config.addresses,
                         mtu: config.mtu,
                         route_mode: config.route_mode,
                         dns_mode: config.dns_mode,
                         auto_route: config.auto_route,
+                        auto_detect_interface: config.auto_detect_interface,
                         strict_route: config.strict_route,
                         route_includes: config.route_includes,
                         route_excludes: config.route_excludes,

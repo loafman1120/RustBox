@@ -44,9 +44,6 @@ rustbox-stack = { path = "../modules/stack/rustbox-stack" }
 rustbox-types = { path = "../foundation/rustbox-types" }
 rustbox-transport = { path = "../modules/transport/rustbox-transport" }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
-base64 = "0.22"
-hex = "0.4"
-rustls-pemfile = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio-rustls = "0.26"
 

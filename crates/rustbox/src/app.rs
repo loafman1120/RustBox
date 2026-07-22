@@ -320,6 +320,18 @@ impl RustBox {
         Ok(())
     }
 
+    /// Rebuild after a native interface notification. The old TUN is stopped
+    /// first so default-interface detection cannot accidentally select the
+    /// TUN's own /1 routes as the new physical path.
+    pub async fn reconcile_network_change(&mut self) -> Result<(), RustBoxError> {
+        if self.snapshot.state != EngineState::Running {
+            return Ok(());
+        }
+        self.stop().await?;
+        self.snapshot.generation = self.snapshot.generation.saturating_add(1);
+        self.start().await
+    }
+
     /// Cancel a single active flow through the kernel's Tokio cancellation token.
     pub fn close_connection(&self, flow_id: u64) -> bool {
         self.runtime.close_connection(flow_id)

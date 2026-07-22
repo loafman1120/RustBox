@@ -19,6 +19,7 @@ tokio-rustls = "0.26.4"
 rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs", "pem"] }
 rustbox-outbound-anytls = { path = "../../outbound/rustbox-outbound-anytls" }
 rustbox-outbound-direct = { path = "../../outbound/rustbox-outbound-direct" }
+rustbox-runtime-config = { path = "../../../foundation/rustbox-runtime-config" }
 rustbox-route = { path = "../../../kernel/rustbox-route" }
 rustbox-test-host = { path = "../../../kernel/rustbox-test-host" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

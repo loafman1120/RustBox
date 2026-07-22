@@ -52,7 +52,8 @@ impl RuntimeGraphBuilder {
         let parsed = ConfigCompiler::parse(source).map_err(ComposeError::Config)?;
         let normalized = ConfigCompiler::normalize(parsed).map_err(ComposeError::Config)?;
         let validated = ConfigCompiler::validate(normalized).map_err(ComposeError::Config)?;
-        let compiled = ConfigCompiler::compile(&validated).map_err(ComposeError::Config)?;
+        let mut compiled = ConfigCompiler::compile(&validated).map_err(ComposeError::Config)?;
+        apply_auto_interface_binding(&mut compiled)?;
         self.compose(compiled)
     }
 
@@ -111,6 +112,37 @@ impl RuntimeGraphBuilder {
             rule_set_controller,
         ))
     }
+}
+
+fn apply_auto_interface_binding(compiled: &mut CompiledConfig) -> Result<(), ComposeError> {
+    let enabled = compiled.inbounds.iter().any(|inbound| {
+        matches!(
+            &inbound.kind,
+            rustbox_config::CompiledInboundKind::Tun(config)
+                if config.auto_detect_interface
+                    || (config.strict_route
+                        && rustbox_platform::current_capabilities()
+                            .strict_route_requires_interface_binding)
+        )
+    });
+    if !enabled {
+        return Ok(());
+    }
+    let interface = rustbox_platform::default_route_interface().ok_or_else(|| {
+        ComposeError::Config(rustbox_config::ConfigError::new(
+            "auto_detect_interface could not find a physical default interface",
+        ))
+    })?;
+    let binding = match interface {
+        rustbox_kernel::InterfaceRef::Name(name) => name,
+        rustbox_kernel::InterfaceRef::Index(index) => index.to_string(),
+    };
+    for outbound in &mut compiled.outbounds {
+        if outbound.dial.detour.is_none() && outbound.dial.options.bind_interface.is_none() {
+            outbound.dial.options.bind_interface = Some(binding.clone());
+        }
+    }
+    Ok(())
 }
 
 impl Default for RuntimeGraphBuilder {

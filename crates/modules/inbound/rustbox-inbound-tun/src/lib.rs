@@ -12,21 +12,23 @@ use rustbox_kernel::{
 };
 use rustbox_kernel::{FlowSink, Inbound, Service, ServiceContext, ServiceError};
 use rustbox_stack::NetworkStack;
-use rustbox_types::{InboundId, IpAddress, IpCidr};
+use rustbox_types::{InboundId, IpCidr};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TunInboundConfig {
+pub struct TunInboundPlan {
     pub interface_name: Option<String>,
     pub addresses: Vec<IpCidr>,
     pub mtu: Option<u16>,
     pub route_mode: RouteMode,
     pub dns_mode: TunDnsMode,
     pub auto_route: bool,
+    pub auto_detect_interface: bool,
     pub strict_route: bool,
     pub route_includes: Vec<IpCidr>,
     pub route_excludes: Vec<IpCidr>,
-    pub dns_servers: Vec<IpAddress>,
+    pub dns_servers: Vec<IpAddr>,
     pub platform_proxy: Option<rustbox_kernel::PlatformProxyConfig>,
     pub platform_http_proxy: bool,
     pub auto_redirect: bool,
@@ -38,7 +40,7 @@ pub struct TunInbound {
     network_control: Arc<dyn NetworkControl>,
     stack: Option<Box<dyn NetworkStack>>,
     sink: Arc<dyn FlowSink>,
-    config: TunInboundConfig,
+    config: TunInboundPlan,
     observability: Arc<dyn ObservabilitySink>,
     started: AtomicBool,
     network_lease: Arc<Mutex<Option<rustbox_kernel::NetworkLease>>>,
@@ -51,7 +53,7 @@ impl TunInbound {
         network_control: Arc<dyn NetworkControl>,
         stack: Box<dyn NetworkStack>,
         sink: Arc<dyn FlowSink>,
-        config: TunInboundConfig,
+        config: TunInboundPlan,
     ) -> Self {
         Self {
             id,
@@ -195,7 +197,7 @@ impl TunInbound {
 }
 
 fn network_transaction(
-    config: &TunInboundConfig,
+    config: &TunInboundPlan,
     info: &rustbox_kernel::PacketDeviceInfo,
 ) -> NetworkTransaction {
     let mut operations = Vec::new();
@@ -223,6 +225,11 @@ fn network_transaction(
                     metric: Some(1),
                 }),
         );
+        if config.strict_route {
+            operations.push(NetworkOperation::EnforceDnsLeakProtection {
+                tunnel_interface_alias: info.name.clone(),
+            });
+        }
         if !config.dns_servers.is_empty() {
             operations.push(NetworkOperation::SetInterfaceDns {
                 interface: interface.clone(),
@@ -252,15 +259,15 @@ fn default_route_includes(addresses: &[IpCidr]) -> Vec<IpCidr> {
     let mut includes = Vec::new();
     if addresses
         .iter()
-        .any(|address| matches!(address.address, IpAddress::V4(_)))
+        .any(|address| matches!(address.address, IpAddr::V4(_)))
     {
-        includes.push(IpCidr::new(IpAddress::V4([0, 0, 0, 0]), 0).expect("default v4 route"));
+        includes.push(IpCidr::new(IpAddr::from([0, 0, 0, 0]), 0).expect("default v4 route"));
     }
     if addresses
         .iter()
-        .any(|address| matches!(address.address, IpAddress::V6(_)))
+        .any(|address| matches!(address.address, IpAddr::V6(_)))
     {
-        includes.push(IpCidr::new(IpAddress::V6([0; 16]), 0).expect("default v6 route"));
+        includes.push(IpCidr::new(IpAddr::from([0; 16]), 0).expect("default v6 route"));
     }
     includes
 }
@@ -269,19 +276,19 @@ fn strict_route_includes(addresses: &[IpCidr]) -> Vec<IpCidr> {
     let mut includes = Vec::new();
     if addresses
         .iter()
-        .any(|address| matches!(address.address, IpAddress::V4(_)))
+        .any(|address| matches!(address.address, IpAddr::V4(_)))
     {
-        includes.push(IpCidr::new(IpAddress::V4([0, 0, 0, 0]), 1).expect("v4 lower half"));
-        includes.push(IpCidr::new(IpAddress::V4([128, 0, 0, 0]), 1).expect("v4 upper half"));
+        includes.push(IpCidr::new(IpAddr::from([0, 0, 0, 0]), 1).expect("v4 lower half"));
+        includes.push(IpCidr::new(IpAddr::from([128, 0, 0, 0]), 1).expect("v4 upper half"));
     }
     if addresses
         .iter()
-        .any(|address| matches!(address.address, IpAddress::V6(_)))
+        .any(|address| matches!(address.address, IpAddr::V6(_)))
     {
-        includes.push(IpCidr::new(IpAddress::V6([0; 16]), 1).expect("v6 lower half"));
+        includes.push(IpCidr::new(IpAddr::from([0; 16]), 1).expect("v6 lower half"));
         let mut upper = [0; 16];
         upper[0] = 0x80;
-        includes.push(IpCidr::new(IpAddress::V6(upper), 1).expect("v6 upper half"));
+        includes.push(IpCidr::new(IpAddr::V6(upper.into()), 1).expect("v6 upper half"));
     }
     includes
 }
@@ -309,13 +316,14 @@ mod tests {
             network_control.clone(),
             Box::new(FakeStack),
             sink,
-            TunInboundConfig {
+            TunInboundPlan {
                 interface_name: Some("rustbox0".to_string()),
-                addresses: vec![IpCidr::new(IpAddress::V4([172, 18, 0, 1]), 30).expect("cidr")],
+                addresses: vec![IpCidr::new(IpAddr::from([172, 18, 0, 1]), 30).expect("cidr")],
                 mtu: Some(1500),
                 route_mode: RouteMode::Manual,
                 dns_mode: TunDnsMode::None,
                 auto_route: false,
+                auto_detect_interface: false,
                 strict_route: false,
                 route_includes: Vec::new(),
                 route_excludes: Vec::new(),
@@ -339,15 +347,16 @@ mod tests {
 
     #[test]
     fn plans_auto_route_from_device_index() {
-        let config = TunInboundConfig {
+        let config = TunInboundPlan {
             interface_name: Some("rustbox0".to_string()),
-            addresses: vec![IpCidr::new(IpAddress::V4([172, 18, 0, 1]), 30).expect("cidr")],
+            addresses: vec![IpCidr::new(IpAddr::from([172, 18, 0, 1]), 30).expect("cidr")],
             mtu: Some(1500),
             route_mode: RouteMode::Auto,
             dns_mode: TunDnsMode::None,
             auto_route: true,
+            auto_detect_interface: true,
             strict_route: false,
-            route_includes: vec![IpCidr::new(IpAddress::V4([10, 0, 0, 0]), 8).expect("cidr")],
+            route_includes: vec![IpCidr::new(IpAddr::from([10, 0, 0, 0]), 8).expect("cidr")],
             route_excludes: Vec::new(),
             dns_servers: Vec::new(),
             platform_proxy: None,
@@ -396,7 +405,7 @@ mod tests {
         config.auto_route = true;
         config.strict_route = true;
         config.route_mode = RouteMode::Strict;
-        config.dns_servers = vec![IpAddress::V4([172, 18, 0, 1])];
+        config.dns_servers = vec![IpAddr::from([172, 18, 0, 1])];
         config.platform_proxy = Some(rustbox_kernel::PlatformProxyConfig {
             listen: rustbox_types::Endpoint::localhost_v4(7890),
             bypass: vec!["<local>".to_string()],
@@ -411,7 +420,7 @@ mod tests {
             },
         );
 
-        assert_eq!(transaction.operations.len(), 4);
+        assert_eq!(transaction.operations.len(), 5);
         assert!(transaction.operations.iter().any(|operation| matches!(
             operation,
             NetworkOperation::AddRoute { destination, .. } if destination.prefix_len == 1
@@ -428,6 +437,10 @@ mod tests {
                 .iter()
                 .any(|operation| matches!(operation, NetworkOperation::SetPlatformHttpProxy(_)))
         );
+        assert!(transaction.operations.iter().any(|operation| matches!(
+            operation,
+            NetworkOperation::EnforceDnsLeakProtection { .. }
+        )));
     }
 
     fn test_inbound(network_control: Arc<FakeNetworkControl>) -> TunInbound {
@@ -441,14 +454,15 @@ mod tests {
         )
     }
 
-    fn test_tun_config() -> TunInboundConfig {
-        TunInboundConfig {
+    fn test_tun_config() -> TunInboundPlan {
+        TunInboundPlan {
             interface_name: Some("rustbox0".to_string()),
-            addresses: vec![IpCidr::new(IpAddress::V4([172, 18, 0, 1]), 30).expect("cidr")],
+            addresses: vec![IpCidr::new(IpAddr::from([172, 18, 0, 1]), 30).expect("cidr")],
             mtu: Some(1500),
             route_mode: RouteMode::Manual,
             dns_mode: TunDnsMode::None,
             auto_route: false,
+            auto_detect_interface: false,
             strict_route: false,
             route_includes: Vec::new(),
             route_excludes: Vec::new(),
@@ -500,6 +514,7 @@ mod tests {
                 Ok(NetworkLease {
                     id: 1,
                     operations: transaction.operations,
+                    undo_operations: Vec::new(),
                     active: true,
                 })
             })

@@ -163,14 +163,14 @@ async fn dail_out_callback(
     use rustls::pki_types::ServerName;
     let server_name = if let Some(sni) = sni {
         if let Ok(ip) = sni.parse::<std::net::IpAddr>() {
-            ServerName::IpAddress(ip.into())
+            ServerName::IpAddr(ip.into())
         } else {
             // For domain, use owned string
             use std::io::{Error, ErrorKind::InvalidInput};
             ServerName::try_from(sni).map_err(|e| Error::new(InvalidInput, e))?
         }
     } else {
-        ServerName::IpAddress(server.ip().into())
+        ServerName::IpAddr(server.ip().into())
     };
 
     let connector = TlsConnector::from(tls_config);

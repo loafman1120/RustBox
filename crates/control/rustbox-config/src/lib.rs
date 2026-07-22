@@ -12,8 +12,8 @@ pub use rustbox_dns_core::{
 pub use rustbox_kernel::{RouteMode, TransparentRedirectMode, TunDnsMode};
 use rustbox_route::{ResolveStrategy, RouteAction, RouteOptions, RouteResolve};
 use rustbox_types::{
-    Endpoint, Host, InboundId, IpAddress, IpCidr, Network, OutboundId, PortRange, ProtocolHint,
-    RejectReason, RouteDecision,
+    Endpoint, Host, InboundId, IpCidr, Network, OutboundId, PortRange, ProtocolHint, RejectReason,
+    RouteDecision,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -55,6 +55,119 @@ mod tests {
             dial: DialConfig::default(),
             kind: OutboundConfigKind::Direct,
         }
+    }
+
+    fn source_with(outbound: OutboundConfig) -> SourceConfig {
+        let id = outbound.id.clone();
+        SourceConfig {
+            inbounds: vec![inbound_http("http")],
+            outbounds: vec![outbound],
+            dns: None,
+            route_rule_sets: Vec::new(),
+            routes: vec![RouteRuleConfig::Default { outbound: id }],
+        }
+    }
+
+    #[test]
+    fn garde_rejects_invalid_compiled_scalar_inputs() {
+        let invalid_uuid = OutboundConfig {
+            id: "vmess".into(),
+            dial: DialConfig::default(),
+            kind: OutboundConfigKind::Vmess {
+                server: Endpoint::localhost_v4(443),
+                uuid: "not-a-uuid".into(),
+                security: None,
+                alter_id: None,
+                tls: None,
+                transport: None,
+            },
+        };
+        assert!(
+            validate_error(source_with(invalid_uuid))
+                .message
+                .contains("UUID")
+        );
+
+        let invalid_url = OutboundConfig {
+            id: "auto".into(),
+            dial: DialConfig::default(),
+            kind: OutboundConfigKind::UrlTest {
+                outbounds: vec!["auto".into()],
+                url: "not a URL".into(),
+                interval_seconds: 300,
+                tolerance_ms: 0,
+                timeout_seconds: 10,
+                concurrency: 1,
+                failure_threshold: 1,
+                cache_path: None,
+                interrupt_exist_connections: false,
+            },
+        };
+        assert!(
+            validate_error(source_with(invalid_url))
+                .message
+                .contains("URL")
+        );
+    }
+
+    #[test]
+    fn garde_rejects_invalid_wireguard_and_reality_material() {
+        let invalid_wireguard = OutboundConfig {
+            id: "wg".into(),
+            dial: DialConfig::default(),
+            kind: OutboundConfigKind::WireGuard {
+                addresses: vec!["10.0.0.1/32".parse().expect("CIDR")],
+                private_key: "AA==".into(),
+                listen_port: 0,
+                peers: vec![WireGuardPeerConfig {
+                    server: Endpoint::localhost_v4(51820),
+                    public_key: "AA==".into(),
+                    pre_shared_key: None,
+                    allowed_ips: vec!["0.0.0.0/0".parse().expect("CIDR")],
+                    persistent_keepalive: None,
+                    reserved: [0; 3],
+                }],
+                mtu: 1408,
+            },
+        };
+        assert!(
+            validate_error(source_with(invalid_wireguard))
+                .message
+                .contains("32 bytes")
+        );
+
+        let invalid_reality = OutboundConfig {
+            id: "vless".into(),
+            dial: DialConfig::default(),
+            kind: OutboundConfigKind::Vless {
+                server: Endpoint::localhost_v4(443),
+                uuid: "b831381d-6324-4d53-ad4f-8cda48b30811".into(),
+                flow: None,
+                tls: Some(OutboundTlsConfig {
+                    enabled: true,
+                    server_name: None,
+                    insecure: false,
+                    alpn: Vec::new(),
+                    client_certificate_pem: None,
+                    client_private_key_pem: None,
+                    certificate_authorities_pem: Vec::new(),
+                    certificate_public_key_sha256: Vec::new(),
+                    fingerprint: None,
+                    ech_config: None,
+                    reality: Some(OutboundRealityConfig {
+                        public_key: "AA==".into(),
+                        short_id: "00".into(),
+                        support_x25519_mlkem768: false,
+                    }),
+                }),
+                transport: None,
+            },
+        };
+        assert!(
+            validate_error(source_with(invalid_reality))
+                .message
+                .contains("32 bytes")
+        );
     }
 
     #[test]

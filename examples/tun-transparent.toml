@@ -19,6 +19,7 @@ interface_name = "rustbox0"
 addresses = ["172.18.0.1/30"]
 mtu = 1500
 auto_route = false
+auto_detect_interface = false
 strict_route = false
 route_excludes = ["127.0.0.0/8"]
 dns_hijack = [{ endpoint = "1.1.1.1:53", network = "udp" }]
