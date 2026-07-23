@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - website/**
+      - crates/control/rustbox-clash-api/**
+      - crates/rustbox-config-file/schema/**
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -43,12 +45,23 @@ jobs:
           cache: pnpm
           cache-dependency-path: website/pnpm-lock.yaml
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
       - name: Configure GitHub Pages
         id: pages
         uses: actions/configure-pages@v6
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Generate OpenAPI reference
+        run: pnpm generate:openapi
 
       - name: Build website
         run: pnpm build -- --base "${{ steps.pages.outputs.base_path }}/"

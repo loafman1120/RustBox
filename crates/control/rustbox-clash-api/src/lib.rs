@@ -12,6 +12,7 @@ use axum::routing::{delete, get, patch, put};
 use axum::{Json, Router};
 use bytes::Bytes;
 use futures_util::stream;
+use rustbox_config_file::native_config_schema_json;
 use rustbox_control::{EngineCommand, OutboundGroupKind, SelectOutboundError};
 use rustbox_control_service::{
     ControlPlaneHandle, ExecuteCommandError, OutboundCatalogEntry, SendCommandError,
@@ -257,10 +258,18 @@ pub fn router(config: ClashApiConfig, plane: ControlPlaneHandle) -> Router {
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
+        .route("/docs/config.schema.json", get(config_schema))
         .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", openapi()))
         .merge(api)
         .layer(cors)
         .with_state(state)
+}
+
+async fn config_schema() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/schema+json")],
+        native_config_schema_json(),
+    )
 }
 
 fn cors_layer(origins: &[String]) -> CorsLayer {
@@ -1215,6 +1224,28 @@ mod tests {
             value["components"]["securitySchemes"]["bearer_auth"]["scheme"],
             "bearer"
         );
+    }
+
+    #[tokio::test]
+    async fn serves_native_config_schema_without_control_authentication() {
+        let response = test_router(Some("secret"))
+            .oneshot(
+                Request::builder()
+                    .uri("/docs/config.schema.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/schema+json"
+        );
+        let bytes = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["x-rustbox-schema-version"], 1);
+        assert_eq!(value["properties"]["schema_version"]["const"], 1);
     }
 
     #[tokio::test]

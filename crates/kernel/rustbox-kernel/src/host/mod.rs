@@ -318,6 +318,7 @@ pub enum InterfaceRef {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum TransparentRedirectMode {
     Redirect,

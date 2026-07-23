@@ -24,18 +24,25 @@ impl FileObservabilityConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Validate)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlObservabilityConfig {
+    /// Minimum retained and emitted level: trace, debug, info, warn, error, or off.
     #[garde(custom(validation::observability_level))]
     level: Option<String>,
+    /// Local log destination.
     output: Option<TomlObservabilityOutput>,
+    /// Log file path required by file-based output modes.
     file: Option<String>,
+    /// Whether platform-native logging should be enabled by an embedding host.
     platform: Option<bool>,
+    /// Optional embedding-host remote diagnostics destination.
     remote_endpoint: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 enum TomlObservabilityOutput {
     Console,

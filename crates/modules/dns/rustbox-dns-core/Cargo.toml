@@ -4,12 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+schema = [
+    "dep:schemars",
+    "rustbox-types/schema",
+    "serde_with/schemars_1",
+]
+
 [dependencies]
 atomicwrites = "0.4"
 garde = { version = "0.23", features = ["derive"] }
 hickory-resolver = { version = "0.25.2", default-features = false, features = ["tokio", "tls-aws-lc-rs", "https-aws-lc-rs", "quic-aws-lc-rs", "webpki-roots"] }
 rustbox-types = { path = "../../../foundation/rustbox-types" }
 rustbox-io = { path = "../../../foundation/rustbox-io" }
+schemars = { version = "1.2.1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_with = "3"

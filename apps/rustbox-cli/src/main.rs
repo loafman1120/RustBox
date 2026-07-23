@@ -4,7 +4,7 @@ mod observability;
 use observability::ObservabilityArgs;
 use rustbox::{RustBox, RustBoxOptions};
 use rustbox_clash_api::ClashApiConfig;
-use rustbox_config_file::{load_config_file, load_config_source};
+use rustbox_config_file::{load_config_file, load_config_source, native_config_schema_json};
 use rustbox_control::EngineCommand;
 use rustbox_control_api::{AuthPolicy, ControlApiConfig};
 use std::net::SocketAddr;
@@ -46,6 +46,10 @@ async fn main() {
     let (mut runtime, listen) = match cli.command {
         CliCommand::PlatformCapabilities => {
             print_platform_capabilities();
+            return;
+        }
+        CliCommand::ConfigSchema => {
+            print!("{}", native_config_schema_json());
             return;
         }
         CliCommand::CheckConfig { config } => {
@@ -193,6 +197,8 @@ enum CliCommand {
     },
     /// Print detected platform capability support.
     PlatformCapabilities,
+    /// Print the versioned JSON Schema shared by native TOML and JSON.
+    ConfigSchema,
 }
 
 fn print_platform_capabilities() {

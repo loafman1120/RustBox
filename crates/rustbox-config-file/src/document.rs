@@ -262,15 +262,24 @@ impl SourceRouteMatcher {
 }
 
 #[derive(Clone, Debug, Deserialize, Validate)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
-struct ConfigDocument {
+pub(crate) struct ConfigDocument {
+    /// Native configuration language version. It must match the schema contract.
+    #[cfg_attr(
+        feature = "schema-generation",
+        schemars(extend("const" = SUPPORTED_SCHEMA_VERSION))
+    )]
     schema_version: u32,
+    /// Application-level logging and diagnostics settings.
     #[garde(dive)]
     observability: Option<TomlObservabilityConfig>,
+    /// Traffic entry points exposed by this RustBox instance.
     #[serde(default)]
     #[garde(dive)]
     inbounds: Vec<InboundConfig>,
+    /// Route-addressable direct, proxy, and group exits.
     #[serde(default)]
     #[garde(dive)]
     outbounds: Vec<OutboundConfig>,
@@ -280,10 +289,13 @@ struct ConfigDocument {
     #[serde(default)]
     #[garde(dive)]
     endpoints: Vec<OutboundConfig>,
+    /// Optional DNS resolver, cache, FakeIP, and hijack policy.
     #[garde(dive)]
     dns: Option<DnsConfig>,
+    /// Inline, local, or remotely refreshed route rule sets.
     #[serde(default)]
     rule_sets: Vec<TomlRouteRuleSetConfig>,
+    /// Ordered routing actions followed by a required terminal default.
     #[serde(default)]
     routes: Vec<TomlRouteRuleConfig>,
 }
@@ -342,6 +354,7 @@ impl ConfigDocument {
     }
 }
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlRouteRuleConfig {
     Default {
@@ -368,6 +381,7 @@ enum TomlRouteRuleConfig {
         override_address: Option<String>,
         override_port: Option<u16>,
         #[serde(default, with = "humantime_serde::option")]
+        #[cfg_attr(feature = "schema-generation", schemars(with = "Option<String>"))]
         udp_timeout: Option<std::time::Duration>,
         udp_connect: Option<bool>,
         udp_disable_domain_unmapping: Option<bool>,
@@ -457,6 +471,7 @@ impl TomlRouteRuleConfig {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 enum TomlResolveStrategy {
     #[default]
@@ -478,6 +493,7 @@ impl From<TomlResolveStrategy> for ResolveStrategy {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlRouteMatcherConfig {
     Rule {
@@ -516,6 +532,7 @@ impl TomlRouteMatcherConfig {
 
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct TomlRouteMatchFields {
     #[serde(default)]
@@ -612,6 +629,7 @@ impl From<TomlRouteMatchFields> for RouteMatchConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 enum TomlNetwork {
     Tcp,
@@ -619,6 +637,7 @@ enum TomlNetwork {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 enum TomlProtocol {
     Http,
@@ -650,6 +669,7 @@ impl From<TomlNetwork> for Network {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 enum TomlLogicalMode {
     And,
@@ -666,6 +686,7 @@ impl From<TomlLogicalMode> for LogicalModeConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum TomlRouteRuleSetConfig {
     Local {
@@ -674,6 +695,7 @@ enum TomlRouteRuleSetConfig {
         #[serde(default)]
         format: TomlRouteRuleSetFormat,
         #[serde(default = "default_rule_set_reload_interval", with = "humantime_serde")]
+        #[cfg_attr(feature = "schema-generation", schemars(with = "String"))]
         reload_interval: std::time::Duration,
     },
     Inline {
@@ -686,6 +708,7 @@ enum TomlRouteRuleSetConfig {
         #[serde(default = "default_remote_rule_set_format")]
         format: TomlRouteRuleSetFormat,
         #[serde(default = "default_rule_set_update_interval", with = "humantime_serde")]
+        #[cfg_attr(feature = "schema-generation", schemars(with = "String"))]
         update_interval: std::time::Duration,
         cache_path: Option<String>,
     },
@@ -797,6 +820,7 @@ fn load_rule_set_rules(
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 enum TomlRouteRuleSetFormat {
     #[default]
@@ -846,6 +870,7 @@ impl TomlRouteRuleSetDocument {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "schema-generation", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 enum TomlRejectReason {
     Policy,

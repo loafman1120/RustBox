@@ -37,9 +37,9 @@ const integrations = {
   },
   config: {
     filename: 'TOML / SHARED CONFIG', kicker: 'ONE CONFIGURATION', title: 'Describe a complete local runtime.',
-    copy: 'Native TOML and JSON share one typed model. Import supported Clash YAML in the CLI, or keep full DNS and TUN control in RustBox-native configuration.',
-    list: ['References resolved before runtime', 'Unsupported combinations fail explicitly', 'Runnable examples are the field reference'],
-    link: `${REPO}/blob/main/docs/configuration.md`, linkLabel: 'Read configuration guide',
+    copy: 'Native TOML and JSON share one typed model and one generated JSON Schema contract. Import supported Clash YAML in the CLI, or keep full DNS and TUN control in RustBox-native configuration.',
+    list: ['References resolved before runtime', 'Unsupported combinations fail explicitly', 'Versioned Schema for completion and tooling'],
+    link: `${REPO}/blob/main/docs/configuration-contract.md`, linkLabel: 'Open configuration contract',
     code: `schema_version = 1\n\n[[inbounds]]\nid = "local"\ntype = "mixed"\nlisten = "127.0.0.1:2080"\n\n[[outbounds]]\nid = "direct"\ntype = "direct"\n\n[[routes]]\ntype = "default"\noutbound = "direct"`,
   },
 };
@@ -56,12 +56,20 @@ function Brand({ footer = false }) {
 
 function Header({ activeSection }) {
   const [open, setOpen] = useState(false);
-  const links = [['capabilities', 'Capabilities'], ['runtime', 'Runtime'], ['integrate', 'Integrate'], ['control', 'Control'], ['start', 'Get started']];
+  const links = [
+    ['#capabilities', 'Capabilities', 'capabilities'],
+    ['#runtime', 'Runtime', 'runtime'],
+    ['#integrate', 'Integrate', 'integrate'],
+    ['#control', 'Control', 'control'],
+    ['./config/', 'Config', ''],
+    ['./api/', 'API', ''],
+    ['#start', 'Get started', 'start'],
+  ];
   return (
     <header className="site-header">
       <Brand />
       <nav id="primary-nav" className={open ? 'is-open' : ''} aria-label="Primary navigation">
-        {links.map(([id, label]) => <a key={id} className={activeSection === id ? 'is-active' : ''} href={`#${id}`} onClick={() => setOpen(false)}>{label}</a>)}
+        {links.map(([href, label, id]) => <a key={href} className={activeSection === id ? 'is-active' : ''} href={href} onClick={() => setOpen(false)}>{label}</a>)}
       </nav>
       <div className="header-actions">
         <span className="project-state"><i />Active development</span>
@@ -182,12 +190,12 @@ function StartSection() {
   const quickCode = `git clone https://github.com/loafman1120/RustBox.git\ncd RustBox\n\ncargo build --workspace\n\ncargo run -p rustbox-app -- run \\\n  --config examples/rustbox.toml\n\ncurl.exe -x http://127.0.0.1:18080 \\\n  https://example.com -I`;
   const copy = async () => { await navigator.clipboard.writeText(quickCode); setCopied(true); window.setTimeout(() => setCopied(false), 1400); };
   return (
-    <section className="start section-shell" id="start"><div className="start-panel reveal"><div className="start-copy"><p className="eyebrow"><span>07</span> START LOCALLY</p><h2>From source<br />to <em>traffic.</em></h2><p>Build the workspace, start the example configuration, and verify the local HTTP CONNECT listener.</p></div><div className="terminal-window"><div className="terminal-title"><span>QUICK START / POWERSHELL</span><button type="button" onClick={copy}>{copied ? 'Copied' : 'Copy all'}</button></div><pre tabIndex="0"><code>{quickCode}</code></pre><div className="terminal-result"><i /><span>HTTP/2 200</span><small>Traffic is flowing through RustBox</small></div></div></div><div className="next-links reveal"><a href={`${REPO}/blob/main/docs/configuration.md`}><span>01 / CONFIGURE</span><strong>Routing, DNS & protocols</strong><i>↗</i></a><a href={`${REPO}/blob/main/docs/client-networking.md`}><span>02 / INTEGRATE</span><strong>TUN & client networking</strong><i>↗</i></a><a href={`${REPO}/tree/main/examples`}><span>03 / EXPLORE</span><strong>Runnable configurations</strong><i>↗</i></a></div></section>
+    <section className="start section-shell" id="start"><div className="start-panel reveal"><div className="start-copy"><p className="eyebrow"><span>07</span> START LOCALLY</p><h2>From source<br />to <em>traffic.</em></h2><p>Build the workspace, start the example configuration, and verify the local HTTP CONNECT listener.</p></div><div className="terminal-window"><div className="terminal-title"><span>QUICK START / POWERSHELL</span><button type="button" onClick={copy}>{copied ? 'Copied' : 'Copy all'}</button></div><pre tabIndex="0"><code>{quickCode}</code></pre><div className="terminal-result"><i /><span>HTTP/2 200</span><small>Traffic is flowing through RustBox</small></div></div></div><div className="next-links reveal"><a href="./config/"><span>01 / REFERENCE</span><strong>Every configuration field</strong><i>→</i></a><a href="./api/"><span>02 / CONTROL</span><strong>Interactive API reference</strong><i>→</i></a><a href={`${REPO}/blob/main/docs/client-networking.md`}><span>03 / INTEGRATE</span><strong>TUN & client networking</strong><i>↗</i></a><a href={`${REPO}/tree/main/examples`}><span>04 / EXPLORE</span><strong>Runnable configurations</strong><i>↗</i></a></div></section>
   );
 }
 
 function Footer() {
-  return <footer><div><Brand footer /><p>A dependable local network engine for desktop and mobile clients.</p></div><div className="footer-links"><a href={REPO}>GitHub ↗</a><a href={`${REPO}/tree/main/docs`}>Documentation ↗</a><a href={`${REPO}/blob/main/LICENSE`}>MIT License ↗</a></div><div className="footer-meta"><span>BUILT WITH RUST + TOKIO</span><span>UNDER ACTIVE DEVELOPMENT</span></div></footer>;
+  return <footer><div><Brand footer /><p>A dependable local network engine for desktop and mobile clients.</p></div><div className="footer-links"><a href="./config/">Configuration →</a><a href="./api/">Control API →</a><a href={REPO}>GitHub ↗</a><a href={`${REPO}/blob/main/LICENSE`}>MIT License ↗</a></div><div className="footer-meta"><span>BUILT WITH RUST + TOKIO</span><span>UNDER ACTIVE DEVELOPMENT</span></div></footer>;
 }
 
 export default function App() {

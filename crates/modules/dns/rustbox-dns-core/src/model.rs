@@ -49,6 +49,7 @@ pub struct DnsQuery {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum DnsRecordType {
     A,
@@ -116,36 +117,49 @@ impl std::fmt::Display for DnsError {
 impl std::error::Error for DnsError {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct DnsConfig {
+    /// Named upstream DNS servers.
     #[serde(default)]
     pub servers: Vec<DnsServerConfig>,
+    /// Ordered DNS routing and action rules.
     #[serde(default)]
     pub rules: Vec<DnsRuleConfig>,
+    /// Server ID used when no DNS rule selects another action.
     pub final_server: Option<String>,
+    /// Bounded positive and negative DNS cache policy.
     #[serde(default)]
     #[garde(dive)]
     pub cache: DnsCacheConfig,
+    /// Optional synthetic address allocation and persistence.
     #[garde(dive)]
     pub fake_ip: Option<FakeIpConfig>,
+    /// DNS destinations captured directly by a TUN inbound.
     #[serde(default)]
     pub hijack: Vec<DnsHijackTarget>,
 }
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct DnsServerConfig {
+    /// Stable server identifier referenced by DNS rules and final_server.
     pub id: String,
+    /// DNS transport protocol.
     pub protocol: DnsServerProtocol,
+    /// Upstream host and port.
     #[serde_as(as = "DisplayFromStr")]
     pub endpoint: Endpoint,
+    /// Optional outbound ID used to reach this upstream.
     pub outbound: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum DnsServerProtocol {
     Udp,
@@ -156,6 +170,7 @@ pub enum DnsServerProtocol {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum DnsRuleConfig {
@@ -175,6 +190,7 @@ pub enum DnsRuleConfig {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct DnsRuleMatcher {
     #[serde(rename = "domain")]
@@ -243,6 +259,7 @@ impl DnsRuleMatcher {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(default, deny_unknown_fields)]
 pub struct DnsCacheConfig {
@@ -267,6 +284,7 @@ impl Default for DnsCacheConfig {
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct FakeIpConfig {
@@ -286,6 +304,7 @@ pub struct FakeIpConfig {
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DnsHijackTarget {
     pub network: Option<Network>,

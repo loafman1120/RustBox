@@ -1,3 +1,5 @@
+#:schema https://loafman1120.github.io/RustBox/schema/rustbox-config-v1.schema.json
+
 schema_version = 1
 
 [observability]

@@ -6,6 +6,12 @@ RustBox 原生配置可使用 TOML 或字段完全相同的 JSON 描述客户端
 [`examples/rustbox.toml`](../examples/rustbox.toml)，Clash 导入示例见
 [`examples/clash.yaml`](../examples/clash.yaml)。
 
+原生 TOML 和 JSON 共用版本化的
+[JSON Schema 契约](../crates/rustbox-config-file/schema/rustbox-config-v1.schema.json)。
+该契约从实际 Rust 反序列化类型生成，可用于字段发现、编辑器补全和结构校验；引用、
+平台能力和跨字段语义仍以 `check-config` 为准。生成与发布约定见
+[原生配置契约](configuration-contract.md)。
+
 ## Clash YAML 兼容范围
 
 Clash 文档会先转换成统一的 `SourceConfig`，而不是把 Clash 字段带入运行时。目前支持：

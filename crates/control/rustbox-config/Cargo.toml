@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+schema = [
+    "dep:schemars",
+    "rustbox-dns-core/schema",
+    "rustbox-kernel/schema",
+    "rustbox-types/schema",
+    "serde_with/schemars_1",
+]
+
 [dependencies]
 base64 = "0.22"
 garde = { version = "0.23", features = ["derive"] }
@@ -16,6 +25,7 @@ rustbox-runtime-config = { path = "../../foundation/rustbox-runtime-config" }
 rustbox-route = { path = "../../kernel/rustbox-route" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
 rustls-pemfile = "2"
+schemars = { version = "1.2.1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"
 url = "2"

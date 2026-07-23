@@ -228,6 +228,7 @@ fn split_host_port(value: &str) -> Result<(&str, &str), String> {
 
 /// RustBox 数据面当前处理的网络类别。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum Network {
     Tcp,
@@ -254,6 +255,7 @@ pub enum ProtocolHint {
 
 /// Platform network classification captured before routing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkType {
     Ethernet,

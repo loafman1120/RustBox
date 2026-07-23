@@ -5,6 +5,7 @@ mod document;
 mod error;
 mod loader;
 mod migration;
+mod schema;
 mod srs;
 mod validation;
 
@@ -17,6 +18,9 @@ pub use document::{
     parse_toml_source, parse_toml_str,
 };
 pub use error::ConfigFileError;
+#[cfg(feature = "schema-generation")]
+pub use schema::generate_native_config_schema;
+pub use schema::{NATIVE_CONFIG_SCHEMA_JSON, native_config_schema_json};
 pub use srs::parse_rule_set_srs;
 
 #[cfg(test)]

@@ -1,0 +1,717 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RustBox Clash/Mihomo Compatibility API",
+    "description": "Clash/Mihomo-compatible HTTP and streaming control surface backed by the RustBox shared control plane",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "hello",
+        "responses": {
+          "200": {
+            "description": "Mihomo-compatible greeting"
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "version",
+        "responses": {
+          "200": {
+            "description": "RustBox version using the Mihomo response shape"
+          }
+        }
+      }
+    },
+    "/configs": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "configs",
+        "responses": {
+          "200": {
+            "description": "Current runtime configuration summary"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "configs_reload",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Configuration reloaded"
+          },
+          "400": {
+            "description": "Invalid reload request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "configs_patch",
+        "responses": {
+          "400": {
+            "description": "Selective runtime mutation is intentionally unsupported"
+          }
+        }
+      }
+    },
+    "/traffic": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "operationId": "traffic",
+        "parameters": [
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NDJSON or WebSocket traffic stream"
+          }
+        }
+      }
+    },
+    "/memory": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "operationId": "memory",
+        "parameters": [
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NDJSON or WebSocket process-memory stream"
+          }
+        }
+      }
+    },
+    "/logs": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "operationId": "logs",
+        "parameters": [
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NDJSON or WebSocket structured log stream"
+          }
+        }
+      }
+    },
+    "/connections": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "operationId": "connections",
+        "parameters": [
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection snapshot or WebSocket stream"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "observability"
+        ],
+        "operationId": "close_all_connections",
+        "responses": {
+          "204": {
+            "description": "All connections closed"
+          }
+        }
+      }
+    },
+    "/connections/{id}": {
+      "delete": {
+        "tags": [
+          "observability"
+        ],
+        "operationId": "close_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Flow identifier",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Connection closed"
+          },
+          "400": {
+            "description": "Invalid flow identifier"
+          }
+        }
+      }
+    },
+    "/proxies": {
+      "get": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "proxies",
+        "responses": {
+          "200": {
+            "description": "Mihomo proxy map"
+          }
+        }
+      }
+    },
+    "/proxies/{name}": {
+      "get": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "proxy",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Outbound or group tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proxy details"
+          },
+          "404": {
+            "description": "Proxy not found"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "select_proxy",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Selector group tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectProxyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Selector updated"
+          },
+          "400": {
+            "description": "Selection rejected"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "unfix_proxy",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Automatic group pinning is unsupported"
+          }
+        }
+      }
+    },
+    "/proxies/{name}/delay": {
+      "get": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "proxy_delay",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Outbound tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timeout",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "expected",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Measured delay"
+          },
+          "503": {
+            "description": "Probe unavailable or failed"
+          }
+        }
+      }
+    },
+    "/group": {
+      "get": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "groups",
+        "responses": {
+          "200": {
+            "description": "Proxy groups"
+          }
+        }
+      }
+    },
+    "/group/{name}": {
+      "get": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group details"
+          },
+          "404": {
+            "description": "Group not found"
+          }
+        }
+      }
+    },
+    "/group/{name}/delay": {
+      "get": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "group_delay",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timeout",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "expected",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-member measured delays"
+          },
+          "503": {
+            "description": "Probe unavailable or failed"
+          }
+        }
+      }
+    },
+    "/rules": {
+      "get": {
+        "tags": [
+          "rules"
+        ],
+        "operationId": "rules",
+        "responses": {
+          "200": {
+            "description": "Compiled routing rules"
+          }
+        }
+      }
+    },
+    "/rules/disable": {
+      "patch": {
+        "tags": [
+          "rules"
+        ],
+        "operationId": "disable_rules",
+        "responses": {
+          "400": {
+            "description": "Temporarily disabling rules is unsupported"
+          }
+        }
+      }
+    },
+    "/providers/proxies": {
+      "get": {
+        "tags": [
+          "proxies"
+        ],
+        "operationId": "proxy_providers",
+        "responses": {
+          "200": {
+            "description": "Proxy providers; empty when not configured"
+          }
+        }
+      }
+    },
+    "/providers/rules": {
+      "get": {
+        "tags": [
+          "rules"
+        ],
+        "operationId": "rule_providers",
+        "responses": {
+          "200": {
+            "description": "Rule provider snapshots"
+          }
+        }
+      }
+    },
+    "/providers/rules/{name}": {
+      "put": {
+        "tags": [
+          "rules"
+        ],
+        "operationId": "refresh_rule_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Rule-set tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Refresh requested"
+          },
+          "404": {
+            "description": "Rule provider not found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ReloadRequest": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          }
+        }
+      },
+      "SelectProxyRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer_auth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Clash secret"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer_auth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "system",
+      "description": "Runtime identity and configuration"
+    },
+    {
+      "name": "observability",
+      "description": "Traffic, memory, logs and connections"
+    },
+    {
+      "name": "proxies",
+      "description": "Outbound and group inspection or control"
+    },
+    {
+      "name": "rules",
+      "description": "Routing rules and rule providers"
+    }
+  ]
+}

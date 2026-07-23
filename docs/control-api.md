@@ -44,6 +44,7 @@ provider。流式端点支持 NDJSON 与 WebSocket；selector 切换、连接关
 TOML payload reload 和延迟测试都调用真实 runtime。
 
 - OpenAPI 3.1：`/docs/openapi.json`
+- 原生 TOML/JSON 配置契约：`/docs/config.schema.json`
 - 离线 Swagger UI：`/docs`
 - 普通鉴权：`Authorization: Bearer <token>`
 - WebSocket 兼容鉴权：`?token=<token>`

@@ -4,10 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+schema = ["dep:schemars", "rustbox-types/schema"]
+
 [dependencies]
 rustbox-io = { path = "../../foundation/rustbox-io" }
 rustbox-route = { path = "../rustbox-route" }
 rustbox-types = { path = "../../foundation/rustbox-types" }
+schemars = { version = "1.2.1", optional = true }
 serde = { version = "1", features = ["derive"] }
 socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time"] }

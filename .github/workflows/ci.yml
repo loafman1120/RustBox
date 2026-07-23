@@ -76,6 +76,12 @@ jobs:
         shell: pwsh
         run: ./scripts/build/rust.ps1 -Doc -AllTargets -Locked
 
+      - name: Verify native configuration contract
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo test --locked -p rustbox-config-file --features schema-generation
+          cargo run --locked -p rustbox-config-file --features schema-generation --example generate-schema -- --check
+
       - name: Build CLI
         shell: pwsh
         run: ./scripts/build/rust.ps1 -Build -Locked

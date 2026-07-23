@@ -53,8 +53,10 @@ pub struct CompiledConfig {
 
 /// inbound 的源配置，描述用户想暴露的入口类型和监听地址。
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 pub struct InboundConfig {
+    /// Stable logical identifier used by routing and observability.
     pub id: String,
     #[serde(flatten)]
     #[garde(dive)]
@@ -63,6 +65,7 @@ pub struct InboundConfig {
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InboundConfigKind {
@@ -71,6 +74,7 @@ pub enum InboundConfigKind {
         #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
         username: Option<String>,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: Option<String>,
     },
     /// HTTP 代理入口，监听本地 TCP 地址并支持 CONNECT 和普通 absolute-form 请求。
@@ -78,6 +82,7 @@ pub enum InboundConfigKind {
         #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
         username: Option<String>,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: Option<String>,
     },
     /// SOCKS5 入口，监听本地 TCP 地址并支持 CONNECT/UDP ASSOCIATE。
@@ -85,12 +90,14 @@ pub enum InboundConfigKind {
         #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
         username: Option<String>,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: Option<String>,
     },
     /// AnyTLS 服务端入口，同时支持普通 TCP 流与 UOT datagram mode。
     AnyTls {
         #[serde_as(as = "DisplayFromStr")]
         listen: Endpoint,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
         tls: AnyTlsInboundTlsConfig,
     },
@@ -103,6 +110,7 @@ pub enum InboundConfigKind {
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct TunInboundConfig {
@@ -182,6 +190,7 @@ impl TunInboundConfig {
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct TransparentInboundConfig {
@@ -197,6 +206,7 @@ pub struct TransparentInboundConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct AnyTlsInboundTlsConfig {
@@ -207,6 +217,7 @@ pub struct AnyTlsInboundTlsConfig {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum TransparentNetwork {
     Tcp,
@@ -216,9 +227,12 @@ pub enum TransparentNetwork {
 
 /// outbound 的源配置，描述可被路由引用的出站能力。
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 pub struct OutboundConfig {
+    /// Stable logical identifier referenced by routes and outbound groups.
     pub id: String,
+    /// Socket and detour policy applied before the outbound protocol connects.
     #[serde(default)]
     pub dial: DialConfig,
     #[serde(flatten)]
@@ -228,29 +242,45 @@ pub struct OutboundConfig {
 
 #[serde_as]
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct DialConfig {
+    /// Optional outbound ID through which this outbound establishes its connection.
     pub detour: Option<String>,
+    /// Physical or logical interface name used for socket binding.
     pub bind_interface: Option<String>,
+    /// Optional local IPv4 source address.
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub inet4_bind_address: Option<IpAddr>,
+    /// Optional local IPv6 source address.
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub inet6_bind_address: Option<IpAddr>,
+    /// Platform routing mark applied to outbound sockets when supported.
     pub routing_mark: Option<u32>,
+    /// Maximum time allowed to establish an outbound connection.
     #[serde(default, with = "humantime_serde")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub connect_timeout: Option<Duration>,
+    /// Disables TCP keepalive when true.
     #[serde(default)]
     pub disable_tcp_keep_alive: bool,
+    /// Idle duration before TCP keepalive starts.
     #[serde(default, with = "humantime_serde")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub tcp_keep_alive: Option<Duration>,
+    /// Interval between TCP keepalive probes.
     #[serde(default, with = "humantime_serde")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub tcp_keep_alive_interval: Option<Duration>,
+    /// DNS server ID used to resolve this outbound's server domain.
     pub domain_resolver: Option<String>,
+    /// Optional stream multiplexing policy.
     pub multiplex: Option<MultiplexConfig>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct MultiplexConfig {
@@ -267,6 +297,7 @@ pub struct MultiplexConfig {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum MultiplexProtocol {
     #[default]
@@ -275,6 +306,7 @@ pub enum MultiplexProtocol {
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum OutboundConfigKind {
@@ -293,6 +325,7 @@ pub enum OutboundConfigKind {
         /// SOCKS5 用户名；设置时必须同时设置 `password`。
         username: Option<String>,
         /// SOCKS5 密码；设置时必须同时设置 `username`。
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: Option<String>,
     },
     /// HTTP CONNECT 上游代理，对应 sing-box `http` outbound 的基础字段。
@@ -303,6 +336,7 @@ pub enum OutboundConfigKind {
         /// HTTP 代理认证用户名；设置时必须同时设置 `password`。
         username: Option<String>,
         /// HTTP 代理认证密码；设置时必须同时设置 `username`。
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: Option<String>,
     },
     /// Shadowsocks 上游代理，对应 sing-box `shadowsocks` outbound 的基础字段。
@@ -313,6 +347,7 @@ pub enum OutboundConfigKind {
         /// Shadowsocks 加密方法名称，例如 `aes-128-gcm`。
         method: String,
         /// Shadowsocks 密码；部分 2022 方法要求这里是 base64 密钥材料。
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
     },
     /// 手动出站组，对应 sing-box `selector` outbound 的基础字段。
@@ -388,6 +423,7 @@ pub enum OutboundConfigKind {
     Trojan {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
         #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
@@ -397,6 +433,7 @@ pub enum OutboundConfigKind {
     Hysteria2 {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
         server_name: Option<String>,
         #[serde(default)]
@@ -408,6 +445,7 @@ pub enum OutboundConfigKind {
         obfs_password: Option<String>,
         hop_ports: Option<String>,
         #[serde(default, with = "humantime_serde")]
+        #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
         hop_interval: Option<Duration>,
         pin_sha256: Option<String>,
         ca_pem: Option<String>,
@@ -419,6 +457,7 @@ pub enum OutboundConfigKind {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
         username: String,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
         #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
@@ -431,10 +470,12 @@ pub enum OutboundConfigKind {
         server: Endpoint,
         #[garde(custom(validate_uuid))]
         uuid: String,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
         #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
         #[serde(default = "default_tuic_heartbeat", with = "humantime_serde")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
         heartbeat: Duration,
     },
     /// Userspace WireGuard endpoint exposed to the route graph as an outbound.
@@ -444,6 +485,7 @@ pub enum OutboundConfigKind {
         #[serde_as(as = "Vec<DisplayFromStr>")]
         addresses: Vec<IpCidr>,
         #[garde(custom(validate_wireguard_key))]
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         private_key: String,
         #[serde(default)]
         listen_port: u16,
@@ -460,6 +502,7 @@ pub enum OutboundConfigKind {
         server: Endpoint,
         #[serde(default = "default_shadowtls_version")]
         version: u8,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
         #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
@@ -469,6 +512,7 @@ pub enum OutboundConfigKind {
     AnyTls {
         #[serde_as(as = "DisplayFromStr")]
         server: Endpoint,
+        #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
         password: String,
         #[garde(dive)]
         tls: Option<OutboundTlsConfig>,
@@ -476,6 +520,7 @@ pub enum OutboundConfigKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct OutboundTlsConfig {
@@ -489,6 +534,7 @@ pub struct OutboundTlsConfig {
     /// PEM encoded client certificate chain for mutual TLS.
     pub client_certificate_pem: Option<String>,
     /// PEM encoded client private key for mutual TLS.
+    #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
     pub client_private_key_pem: Option<String>,
     /// Additional PEM encoded certificate authorities.
     #[serde(default)]
@@ -509,6 +555,7 @@ pub struct OutboundTlsConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct OutboundRealityConfig {
@@ -524,6 +571,7 @@ pub struct OutboundRealityConfig {
 
 #[serde_as]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[garde(allow_unvalidated)]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardPeerConfig {
@@ -532,17 +580,21 @@ pub struct WireGuardPeerConfig {
     #[garde(custom(validate_wireguard_key))]
     pub public_key: String,
     #[garde(custom(validate_optional_wireguard_key))]
+    #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
     pub pre_shared_key: Option<String>,
     #[serde(default)]
     #[serde_as(as = "Vec<DisplayFromStr>")]
     pub allowed_ips: Vec<IpCidr>,
     #[serde(default, with = "humantime_serde")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub persistent_keepalive: Option<Duration>,
     #[serde(default)]
     pub reserved: [u8; 3],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Validate)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(with = "V2RayTransportRepr"))]
 #[garde(allow_unvalidated)]
 pub enum V2RayTransportConfig {
     Tcp,
@@ -569,13 +621,22 @@ pub enum V2RayTransportConfig {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum V2RayTransportRepr {
-    Legacy(String),
+    Legacy(V2RayTransportLegacy),
     Typed(V2RayTransportDocument),
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+enum V2RayTransportLegacy {
+    Tcp,
+}
+
+#[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 enum V2RayTransportDocument {
     Tcp,
@@ -614,12 +675,8 @@ impl<'de> Deserialize<'de> for V2RayTransportConfig {
     where
         D: serde::Deserializer<'de>,
     {
-        use serde::de::Error;
         match V2RayTransportRepr::deserialize(deserializer)? {
-            V2RayTransportRepr::Legacy(value) if value.eq_ignore_ascii_case("tcp") => Ok(Self::Tcp),
-            V2RayTransportRepr::Legacy(value) => Err(D::Error::custom(format!(
-                "legacy string transport `{value}` is unsupported; use a typed transport table"
-            ))),
+            V2RayTransportRepr::Legacy(V2RayTransportLegacy::Tcp) => Ok(Self::Tcp),
             V2RayTransportRepr::Typed(value) => Ok(match value {
                 V2RayTransportDocument::Tcp => Self::Tcp,
                 V2RayTransportDocument::WebSocket {

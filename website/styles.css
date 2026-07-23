@@ -276,7 +276,7 @@ h1 em, .section-heading h2 em, .control-copy h2 em, .start-copy h2 em { color: v
 .terminal-result { min-height: 49px; padding: 0 16px; display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); font: 9px var(--mono); }
 .terminal-result i { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px var(--mint); }
 .terminal-result span { color: var(--mint); }.terminal-result small { margin-left: auto; color: var(--muted); font: inherit; }
-.next-links { display: grid; grid-template-columns: repeat(3, 1fr); }
+.next-links { display: grid; grid-template-columns: repeat(4, 1fr); }
 .next-links a { min-height: 130px; padding: 24px; border: 1px solid var(--line); border-top: 0; border-right: 0; text-decoration: none; position: relative; transition: background .2s; }
 .next-links a:last-child { border-right: 1px solid var(--line); }
 .next-links a:hover { background: var(--panel); }

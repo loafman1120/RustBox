@@ -1,0 +1,3135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RustBox native configuration v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "Native configuration language version. It must match the schema contract.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "const": 1
+    },
+    "observability": {
+      "description": "Application-level logging and diagnostics settings.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TomlObservabilityConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inbounds": {
+      "description": "Traffic entry points exposed by this RustBox instance.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/InboundConfig"
+      }
+    },
+    "outbounds": {
+      "description": "Route-addressable direct, proxy, and group exits.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OutboundConfig"
+      }
+    },
+    "endpoints": {
+      "description": "Bidirectional network endpoints. They are lowered into the same\nroute-addressable runtime graph as outbounds; keeping the distinction\nin the document avoids duplicating compiler and data-plane machinery.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OutboundConfig"
+      }
+    },
+    "dns": {
+      "description": "Optional DNS resolver, cache, FakeIP, and hijack policy.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DnsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rule_sets": {
+      "description": "Inline, local, or remotely refreshed route rule sets.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TomlRouteRuleSetConfig"
+      }
+    },
+    "routes": {
+      "description": "Ordered routing actions followed by a required terminal default.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TomlRouteRuleConfig"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version"
+  ],
+  "$defs": {
+    "TomlObservabilityConfig": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "Minimum retained and emitted level: trace, debug, info, warn, error, or off.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "Local log destination.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TomlObservabilityOutput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file": {
+          "description": "Log file path required by file-based output modes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "description": "Whether platform-native logging should be enabled by an embedding host.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "remote_endpoint": {
+          "description": "Optional embedding-host remote diagnostics destination.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TomlObservabilityOutput": {
+      "type": "string",
+      "enum": [
+        "console",
+        "file",
+        "console-and-file"
+      ]
+    },
+    "InboundConfig": {
+      "description": "inbound 的源配置，描述用户想暴露的入口类型和监听地址。",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable logical identifier used by routing and observability.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "oneOf": [
+        {
+          "description": "mixed 入口，在同一 TCP 监听地址上接受 HTTP 代理和 SOCKS5。",
+          "type": "object",
+          "properties": {
+            "listen": {
+              "type": "string"
+            },
+            "username": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "password": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "type": {
+              "type": "string",
+              "const": "mixed"
+            }
+          },
+          "required": [
+            "type",
+            "listen"
+          ]
+        },
+        {
+          "description": "HTTP 代理入口，监听本地 TCP 地址并支持 CONNECT 和普通 absolute-form 请求。",
+          "type": "object",
+          "properties": {
+            "listen": {
+              "type": "string"
+            },
+            "username": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "password": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "type": {
+              "type": "string",
+              "const": "http-connect"
+            }
+          },
+          "required": [
+            "type",
+            "listen"
+          ]
+        },
+        {
+          "description": "SOCKS5 入口，监听本地 TCP 地址并支持 CONNECT/UDP ASSOCIATE。",
+          "type": "object",
+          "properties": {
+            "listen": {
+              "type": "string"
+            },
+            "username": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "password": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "type": {
+              "type": "string",
+              "const": "socks5"
+            }
+          },
+          "required": [
+            "type",
+            "listen"
+          ]
+        },
+        {
+          "description": "AnyTLS 服务端入口，同时支持普通 TCP 流与 UOT datagram mode。",
+          "type": "object",
+          "properties": {
+            "listen": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "tls": {
+              "$ref": "#/$defs/AnyTlsInboundTlsConfig"
+            },
+            "type": {
+              "type": "string",
+              "const": "any-tls"
+            }
+          },
+          "required": [
+            "type",
+            "listen",
+            "password",
+            "tls"
+          ]
+        },
+        {
+          "description": "TUN packet-device inbound. The packet-to-flow stack is composed by the\nruntime/platform layer, not by the config model.",
+          "type": "object",
+          "properties": {
+            "interface_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "addresses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "mtu": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "auto_route": {
+              "type": "boolean",
+              "default": false
+            },
+            "auto_detect_interface": {
+              "description": "Bind client-originated sockets to the physical default interface so a\nfull-tunnel route cannot capture RustBox's own outbound traffic.",
+              "type": "boolean",
+              "default": false
+            },
+            "strict_route": {
+              "type": "boolean",
+              "default": false
+            },
+            "route_includes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "route_excludes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "dns_hijack": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DnsHijackTarget"
+              }
+            },
+            "platform_http_proxy": {
+              "type": "boolean",
+              "default": false
+            },
+            "auto_redirect": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "tun"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Transparent TCP redirect/TPROXY/WFP inbound using platform original-dst.",
+          "type": "object",
+          "properties": {
+            "listen": {
+              "type": "string"
+            },
+            "network": {
+              "$ref": "#/$defs/TransparentNetwork"
+            },
+            "mode": {
+              "$ref": "#/$defs/TransparentRedirectMode"
+            },
+            "auto_rules": {
+              "type": "boolean",
+              "default": false
+            },
+            "mark": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "transparent"
+            }
+          },
+          "required": [
+            "type",
+            "listen"
+          ]
+        }
+      ]
+    },
+    "AnyTlsInboundTlsConfig": {
+      "type": "object",
+      "properties": {
+        "certificate_path": {
+          "type": "string"
+        },
+        "private_key_path": {
+          "type": "string"
+        },
+        "alpn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "certificate_path",
+        "private_key_path"
+      ]
+    },
+    "DnsHijackTarget": {
+      "type": "object",
+      "properties": {
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Network"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "endpoint"
+      ]
+    },
+    "Network": {
+      "description": "RustBox 数据面当前处理的网络类别。",
+      "type": "string",
+      "enum": [
+        "tcp",
+        "udp"
+      ]
+    },
+    "TransparentNetwork": {
+      "type": "string",
+      "enum": [
+        "tcp",
+        "udp",
+        "tcp-udp"
+      ]
+    },
+    "TransparentRedirectMode": {
+      "type": "string",
+      "enum": [
+        "redirect",
+        "tproxy",
+        "wfp-redirect"
+      ]
+    },
+    "OutboundConfig": {
+      "description": "outbound 的源配置，描述可被路由引用的出站能力。",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable logical identifier referenced by routes and outbound groups.",
+          "type": "string"
+        },
+        "dial": {
+          "description": "Socket and detour policy applied before the outbound protocol connects.",
+          "$ref": "#/$defs/DialConfig"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "oneOf": [
+        {
+          "description": "直连出站，对应 sing-box `direct` outbound。",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "direct"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "阻断出站，对应 sing-box `block` outbound。\n\n当前路由编译器会把指向该 ID 的默认路由转成 `Reject(Policy)`，\n避免数据面为“阻断”创建无意义的上游连接。",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "block"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "SOCKS5 上游代理，对应 sing-box `socks` outbound 的基础字段。",
+          "type": "object",
+          "properties": {
+            "server": {
+              "description": "SOCKS5 代理服务器地址和端口。",
+              "type": "string"
+            },
+            "username": {
+              "description": "SOCKS5 用户名；设置时必须同时设置 `password`。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "password": {
+              "description": "SOCKS5 密码；设置时必须同时设置 `username`。",
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "type": {
+              "type": "string",
+              "const": "socks5"
+            }
+          },
+          "required": [
+            "type",
+            "server"
+          ]
+        },
+        {
+          "description": "HTTP CONNECT 上游代理，对应 sing-box `http` outbound 的基础字段。",
+          "type": "object",
+          "properties": {
+            "server": {
+              "description": "HTTP 代理服务器地址和端口。",
+              "type": "string"
+            },
+            "username": {
+              "description": "HTTP 代理认证用户名；设置时必须同时设置 `password`。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "password": {
+              "description": "HTTP 代理认证密码；设置时必须同时设置 `username`。",
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "type": {
+              "type": "string",
+              "const": "http"
+            }
+          },
+          "required": [
+            "type",
+            "server"
+          ]
+        },
+        {
+          "description": "Shadowsocks 上游代理，对应 sing-box `shadowsocks` outbound 的基础字段。",
+          "type": "object",
+          "properties": {
+            "server": {
+              "description": "Shadowsocks 服务器地址和端口。",
+              "type": "string"
+            },
+            "method": {
+              "description": "Shadowsocks 加密方法名称，例如 `aes-128-gcm`。",
+              "type": "string"
+            },
+            "password": {
+              "description": "Shadowsocks 密码；部分 2022 方法要求这里是 base64 密钥材料。",
+              "type": "string",
+              "writeOnly": true
+            },
+            "type": {
+              "type": "string",
+              "const": "shadowsocks"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "method",
+            "password"
+          ]
+        },
+        {
+          "description": "手动出站组，对应 sing-box `selector` outbound 的基础字段。",
+          "type": "object",
+          "properties": {
+            "outbounds": {
+              "description": "可被选择的子出站逻辑 ID。",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "default": {
+              "description": "初始选择；未设置时使用 `outbounds` 第一项。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cache_path": {
+              "description": "可选选择状态文件；成功切换后持久化，启动时恢复。",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "selector"
+            }
+          },
+          "required": [
+            "type",
+            "outbounds"
+          ]
+        },
+        {
+          "description": "延迟测试出站组，对应 sing-box `urltest` outbound 的基础字段。",
+          "type": "object",
+          "properties": {
+            "outbounds": {
+              "description": "可参与测试的子出站逻辑 ID。",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "url": {
+              "description": "测试 URL。",
+              "type": "string",
+              "default": "https://www.gstatic.com/generate_204"
+            },
+            "interval_seconds": {
+              "description": "测试间隔秒数。",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1,
+              "default": 300
+            },
+            "tolerance_ms": {
+              "description": "延迟容差毫秒数。",
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535,
+              "default": 0
+            },
+            "timeout_seconds": {
+              "description": "单个探测的总超时秒数。",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1,
+              "default": 10
+            },
+            "concurrency": {
+              "description": "同一组最多并发探测数。",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 1,
+              "default": 4
+            },
+            "failure_threshold": {
+              "description": "连续失败达到该值后立即从候选中摘除。",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 1,
+              "default": 2
+            },
+            "cache_path": {
+              "description": "可选自动选择状态文件。",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "interrupt_exist_connections": {
+              "description": "选择改变时是否中断已有连接（当前平台需支持会话中断）。",
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "urltest"
+            }
+          },
+          "required": [
+            "type",
+            "outbounds"
+          ]
+        },
+        {
+          "description": "VMess AEAD 上游代理。",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "uuid": {
+              "type": "string"
+            },
+            "security": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "alter_id": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "tls": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutboundTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "transport": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/V2RayTransportRepr"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "vmess"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "uuid"
+          ]
+        },
+        {
+          "description": "VLESS 上游代理；当前数据面支持普通 TCP 模式。",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "uuid": {
+              "type": "string"
+            },
+            "flow": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tls": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutboundTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "transport": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/V2RayTransportRepr"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "vless"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "uuid"
+          ]
+        },
+        {
+          "description": "Trojan TLS 上游代理。",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "tls": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutboundTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "transport": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/V2RayTransportRepr"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "trojan"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "password"
+          ]
+        },
+        {
+          "description": "Hysteria2 QUIC outbound with TCP streams and native UDP relay.",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "server_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "insecure": {
+              "type": "boolean",
+              "default": false
+            },
+            "up_mbps": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "default": 0
+            },
+            "down_mbps": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "default": 0
+            },
+            "obfs_password": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hop_ports": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hop_interval": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "pin_sha256": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ca_pem": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fast_open": {
+              "type": "boolean",
+              "default": true
+            },
+            "type": {
+              "type": "string",
+              "const": "hysteria2"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "password"
+          ]
+        },
+        {
+          "description": "NaiveProxy over a multiplexed HTTP/2 CONNECT session.",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "tls": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutboundTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            },
+            "type": {
+              "type": "string",
+              "const": "naive"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "username",
+            "password"
+          ]
+        },
+        {
+          "description": "TUIC v5 over a shared authenticated QUIC connection.",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "uuid": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "tls": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutboundTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "heartbeat": {
+              "type": "string",
+              "default": "3s"
+            },
+            "type": {
+              "type": "string",
+              "const": "tuic"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "uuid",
+            "password"
+          ]
+        },
+        {
+          "description": "Userspace WireGuard endpoint exposed to the route graph as an outbound.",
+          "type": "object",
+          "properties": {
+            "addresses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "private_key": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "listen_port": {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535,
+              "default": 0
+            },
+            "peers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WireGuardPeerConfig"
+              }
+            },
+            "mtu": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 1408
+            },
+            "type": {
+              "type": "string",
+              "const": "wireguard"
+            }
+          },
+          "required": [
+            "type",
+            "private_key",
+            "peers"
+          ]
+        },
+        {
+          "description": "ShadowTLS v3 camouflage transport. Other protocol outbounds can use it\nthrough `dial.detour`.",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255,
+              "default": 3
+            },
+            "password": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "tls": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutboundTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "shadowtls"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "password"
+          ]
+        },
+        {
+          "description": "AnyTLS 上游代理；组合根通过 `rustbox-outbound-anytls` 实例化数据面。",
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "tls": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutboundTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "anytls"
+            }
+          },
+          "required": [
+            "type",
+            "server",
+            "password"
+          ]
+        }
+      ]
+    },
+    "DialConfig": {
+      "type": "object",
+      "properties": {
+        "detour": {
+          "description": "Optional outbound ID through which this outbound establishes its connection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bind_interface": {
+          "description": "Physical or logical interface name used for socket binding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inet4_bind_address": {
+          "description": "Optional local IPv4 source address.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "inet6_bind_address": {
+          "description": "Optional local IPv6 source address.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "routing_mark": {
+          "description": "Platform routing mark applied to outbound sockets when supported.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "connect_timeout": {
+          "description": "Maximum time allowed to establish an outbound connection.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "disable_tcp_keep_alive": {
+          "description": "Disables TCP keepalive when true.",
+          "type": "boolean",
+          "default": false
+        },
+        "tcp_keep_alive": {
+          "description": "Idle duration before TCP keepalive starts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tcp_keep_alive_interval": {
+          "description": "Interval between TCP keepalive probes.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "domain_resolver": {
+          "description": "DNS server ID used to resolve this outbound's server domain.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "multiplex": {
+          "description": "Optional stream multiplexing policy.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiplexConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MultiplexConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "protocol": {
+          "$ref": "#/$defs/MultiplexProtocol"
+        },
+        "max_streams": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 32
+        },
+        "max_connections": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 4
+        },
+        "buffer_size": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 65536
+        }
+      },
+      "additionalProperties": false
+    },
+    "MultiplexProtocol": {
+      "type": "string",
+      "enum": [
+        "mux-cool"
+      ]
+    },
+    "OutboundTlsConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "server_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "insecure": {
+          "type": "boolean",
+          "default": false
+        },
+        "alpn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "client_certificate_pem": {
+          "description": "PEM encoded client certificate chain for mutual TLS.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_private_key_pem": {
+          "description": "PEM encoded client private key for mutual TLS.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "writeOnly": true
+        },
+        "certificate_authorities_pem": {
+          "description": "Additional PEM encoded certificate authorities.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "certificate_public_key_sha256": {
+          "description": "Base64 encoded SHA-256 hashes of leaf certificate SubjectPublicKeyInfo.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "fingerprint": {
+          "description": "ClientHello profile, for example `chrome` or `firefox`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ech_config": {
+          "description": "Base64 encoded ECHConfigList.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reality": {
+          "description": "REALITY authentication parameters.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutboundRealityConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OutboundRealityConfig": {
+      "type": "object",
+      "properties": {
+        "public_key": {
+          "description": "URL-safe base64 encoded X25519 public key.",
+          "type": "string"
+        },
+        "short_id": {
+          "description": "Hex encoded short id (at most eight bytes; right padded with zeroes).",
+          "type": "string"
+        },
+        "support_x25519_mlkem768": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "public_key",
+        "short_id"
+      ]
+    },
+    "V2RayTransportRepr": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V2RayTransportLegacy"
+        },
+        {
+          "$ref": "#/$defs/V2RayTransportDocument"
+        }
+      ]
+    },
+    "V2RayTransportLegacy": {
+      "type": "string",
+      "enum": [
+        "tcp"
+      ]
+    },
+    "V2RayTransportDocument": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tcp"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "default": "/"
+            },
+            "host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            },
+            "max_early_data": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 0
+            },
+            "early_data_header": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "web-socket"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "default": "/"
+            },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "type": {
+              "type": "string",
+              "const": "http2"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "service_name": {
+              "type": "string",
+              "default": "GunService"
+            },
+            "authority": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "grpc"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "default": "/"
+            },
+            "host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            },
+            "type": {
+              "type": "string",
+              "const": "http-upgrade"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "WireGuardPeerConfig": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string"
+        },
+        "public_key": {
+          "type": "string"
+        },
+        "pre_shared_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "writeOnly": true
+        },
+        "allowed_ips": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "persistent_keepalive": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "reserved": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "default": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "server",
+        "public_key"
+      ]
+    },
+    "DnsConfig": {
+      "type": "object",
+      "properties": {
+        "servers": {
+          "description": "Named upstream DNS servers.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DnsServerConfig"
+          }
+        },
+        "rules": {
+          "description": "Ordered DNS routing and action rules.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DnsRuleConfig"
+          }
+        },
+        "final_server": {
+          "description": "Server ID used when no DNS rule selects another action.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache": {
+          "description": "Bounded positive and negative DNS cache policy.",
+          "$ref": "#/$defs/DnsCacheConfig"
+        },
+        "fake_ip": {
+          "description": "Optional synthetic address allocation and persistence.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FakeIpConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hijack": {
+          "description": "DNS destinations captured directly by a TUN inbound.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DnsHijackTarget"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DnsServerConfig": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable server identifier referenced by DNS rules and final_server.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "DNS transport protocol.",
+          "$ref": "#/$defs/DnsServerProtocol"
+        },
+        "endpoint": {
+          "description": "Upstream host and port.",
+          "type": "string"
+        },
+        "outbound": {
+          "description": "Optional outbound ID used to reach this upstream.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "protocol",
+        "endpoint"
+      ]
+    },
+    "DnsServerProtocol": {
+      "type": "string",
+      "enum": [
+        "udp",
+        "tcp",
+        "tls",
+        "https",
+        "quic"
+      ]
+    },
+    "DnsRuleConfig": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "record_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DnsRecordType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "action": {
+              "type": "string",
+              "const": "server"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "server"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "record_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DnsRecordType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "action": {
+              "type": "string",
+              "const": "fake-ip"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "record_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DnsRecordType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "action": {
+              "type": "string",
+              "const": "reject"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        }
+      ]
+    },
+    "DnsRecordType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "a",
+            "aaaa",
+            "cname",
+            "mx",
+            "ns",
+            "ptr",
+            "soa",
+            "srv",
+            "txt",
+            "caa",
+            "https",
+            "svcb",
+            "naptr",
+            "tlsa",
+            "ds",
+            "dnskey",
+            "any"
+          ]
+        },
+        {
+          "description": "An RR type not yet assigned a named configuration spelling.",
+          "type": "object",
+          "properties": {
+            "other": {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          "required": [
+            "other"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "DnsCacheConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_entries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "default": 1024
+        },
+        "min_ttl_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_ttl_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "default": 3600
+        }
+      },
+      "additionalProperties": false
+    },
+    "FakeIpConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "ipv4_pool": {
+          "type": "string"
+        },
+        "ipv6_pool": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "state_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "default": 60
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ipv4_pool"
+      ]
+    },
+    "TomlRouteRuleSetConfig": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "format": {
+              "$ref": "#/$defs/TomlRouteRuleSetFormat"
+            },
+            "reload_interval": {
+              "type": "string",
+              "default": "1s"
+            },
+            "type": {
+              "type": "string",
+              "const": "local"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlRouteMatcherConfig"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "inline"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "rules"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "format": {
+              "$ref": "#/$defs/TomlRouteRuleSetFormat"
+            },
+            "update_interval": {
+              "type": "string",
+              "default": "1day"
+            },
+            "cache_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "remote"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "url"
+          ]
+        }
+      ]
+    },
+    "TomlRouteRuleSetFormat": {
+      "type": "string",
+      "enum": [
+        "rustbox",
+        "source",
+        "binary"
+      ]
+    },
+    "TomlRouteMatcherConfig": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "inbound": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlNetwork"
+              }
+            },
+            "protocol": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlProtocol"
+              }
+            },
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_regex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "source_port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "rule_set": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "package_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "user_id": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "default": []
+            },
+            "user_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "interface": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_ssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_bssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/NetworkType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "rule"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/TomlLogicalMode"
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlRouteMatcherConfig"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "logical"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "mode",
+            "rules"
+          ]
+        }
+      ]
+    },
+    "TomlNetwork": {
+      "type": "string",
+      "enum": [
+        "tcp",
+        "udp"
+      ]
+    },
+    "TomlProtocol": {
+      "type": "string",
+      "enum": [
+        "http",
+        "tls",
+        "quic",
+        "dns",
+        "socks5"
+      ]
+    },
+    "NetworkType": {
+      "description": "Platform network classification captured before routing.",
+      "type": "string",
+      "enum": [
+        "ethernet",
+        "wifi",
+        "cellular",
+        "other"
+      ]
+    },
+    "TomlLogicalMode": {
+      "type": "string",
+      "enum": [
+        "and",
+        "or"
+      ]
+    },
+    "TomlRouteRuleConfig": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "outbound": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "default"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "outbound"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/TomlRejectReason"
+            },
+            "type": {
+              "type": "string",
+              "const": "reject-default"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outbound": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reject": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TomlRejectReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "inbound": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlNetwork"
+              }
+            },
+            "protocol": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlProtocol"
+              }
+            },
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_regex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "source_port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "rule_set": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "package_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "user_id": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "default": []
+            },
+            "user_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "interface": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_ssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_bssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/NetworkType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "rule"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/TomlLogicalMode"
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlRouteMatcherConfig"
+              }
+            },
+            "outbound": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reject": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TomlRejectReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "logical"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "mode",
+            "rules"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "override_address": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "override_port": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "udp_timeout": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "udp_connect": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "udp_disable_domain_unmapping": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "inbound": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlNetwork"
+              }
+            },
+            "protocol": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlProtocol"
+              }
+            },
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_regex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "source_port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "rule_set": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "package_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "user_id": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "default": []
+            },
+            "user_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "interface": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_ssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_bssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/NetworkType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "route-options"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "strategy": {
+              "$ref": "#/$defs/TomlResolveStrategy"
+            },
+            "inbound": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlNetwork"
+              }
+            },
+            "protocol": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlProtocol"
+              }
+            },
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_regex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "source_port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "rule_set": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "package_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "user_id": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "default": []
+            },
+            "user_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "interface": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_ssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_bssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/NetworkType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "resolve"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "inbound": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlNetwork"
+              }
+            },
+            "protocol": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TomlProtocol"
+              }
+            },
+            "domain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_suffix": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_keyword": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "domain_regex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_ip_cidr": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "source_port": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "default": []
+            },
+            "source_port_range": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "rule_set": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "process_path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "package_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "user_id": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "default": []
+            },
+            "user_name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "interface": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_ssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "wifi_bssid": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "network_type": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/NetworkType"
+              }
+            },
+            "invert": {
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "hijack-dns"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "TomlRejectReason": {
+      "type": "string",
+      "enum": [
+        "policy",
+        "no-route",
+        "unsupported-network",
+        "drop",
+        "tcp-reset",
+        "icmp-port-unreachable",
+        "icmp-host-unreachable"
+      ]
+    },
+    "TomlResolveStrategy": {
+      "type": "string",
+      "enum": [
+        "prefer-ipv4",
+        "prefer-ipv6",
+        "ipv4-only",
+        "ipv6-only"
+      ]
+    }
+  },
+  "$id": "https://loafman1120.github.io/RustBox/schema/rustbox-config-v1.schema.json",
+  "description": "Structural contract shared by RustBox native TOML and JSON configuration files.",
+  "$comment": "Generated from Rust deserialization types; do not edit this file manually.",
+  "x-rustbox-schema-version": 1
+}

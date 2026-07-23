@@ -45,6 +45,9 @@ The example opens HTTP CONNECT on `127.0.0.1:18080`, SOCKS5 on
 # Validate configuration without starting the client
 cargo run -p rustbox-app -- check-config --config examples/rustbox.toml
 
+# Print the machine-readable contract shared by native TOML and JSON
+cargo run -p rustbox-app -- config-schema
+
 # Test a local listener
 curl.exe -x http://127.0.0.1:18080 https://example.com -I
 ```
@@ -105,6 +108,7 @@ Start with the [documentation index](docs/README.md):
 
 - [Architecture](docs/architecture.md)
 - [Configuration and protocols](docs/configuration.md)
+- [Native configuration contract](docs/configuration-contract.md)
 - [Client networking and TUN](docs/client-networking.md)
 - [Control APIs](docs/control-api.md)
 
